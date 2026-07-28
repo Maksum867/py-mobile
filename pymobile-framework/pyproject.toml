@@ -1,0 +1,97 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+# Published on PyPI as py-mobile; the import name and CLI command stay
+# `pymobile`.
+name = "py-mobile"
+version = "0.1.0"
+description = "A small, fast and extensible Python framework for building Android applications."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "PyMobile Contributors" }]
+keywords = ["android", "apk", "mobile", "framework", "ui", "compiler"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Build Tools",
+    "Topic :: Software Development :: User Interfaces",
+    "Typing :: Typed",
+]
+
+# The runtime core deliberately depends on the standard library only: every
+# extra dependency costs APK size and build time. certifi is the one exception
+# — Android ships no OpenSSL cert file, so a CA bundle must be packaged or
+# every HTTPS request fails. It is a build-time input, not shipped as code.
+dependencies = ["certifi>=2024.2.2"]
+
+[project.optional-dependencies]
+icons = ["Pillow>=10.0"]
+android = ["pyjnius>=1.6"]
+dev = [
+    "pytest>=7.4",
+    "pytest-cov>=4.1",
+    "mypy>=1.8",
+    "ruff>=0.4",
+    "build>=1.2",
+    "twine>=5.0",
+    "Pillow>=10.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/Maksum867/py-mobile"
+Documentation = "https://github.com/pymobile/pymobile#readme"
+Source = "https://github.com/Maksum867/py-mobile"
+Changelog = "https://github.com/pymobile/pymobile/blob/main/CHANGELOG.md"
+
+[project.scripts]
+pymobile = "pymobile.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["pymobile*"]
+
+[tool.setuptools.package-data]
+pymobile = [
+    "py.typed",
+    "resources/*",
+    "resources/**/*",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["pymobile/tests"]
+addopts = "-q"
+filterwarnings = ["error::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+ignore = [
+    # __all__ and __slots__ are grouped by meaning, not alphabetically:
+    # readers look for "the UI exports", not for the letter L.
+    "RUF022",
+    "RUF023",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"pymobile/tests/*" = ["B018"]  # attribute access is the assertion under test
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_unused_ignores = false
+ignore_missing_imports = true

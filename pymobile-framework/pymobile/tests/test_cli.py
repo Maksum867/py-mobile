@@ -1,0 +1,267 @@
+"""Tests for the command line interface."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from pymobile import __version__
+from pymobile.cli import main
+from pymobile.compiler.scaffold import create_project
+
+
+class TestParser:
+    def test_no_command_prints_help(self, capsys: pytest.CaptureFixture[str]) -> None:
+        assert main([]) == 0
+        assert "usage" in capsys.readouterr().out.lower()
+
+    def test_version_flag(self, capsys: pytest.CaptureFixture[str]) -> None:
+        with pytest.raises(SystemExit) as info:
+            main(["--version"])
+        assert info.value.code == 0
+        assert __version__ in capsys.readouterr().out
+
+    def test_unknown_command(self) -> None:
+        with pytest.raises(SystemExit):
+            main(["nonsense"])
+
+
+class TestInit:
+    def test_creates_project(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        target = tmp_path / "newapp"
+        assert main(["init", str(target), "--name", "New App"]) == 0
+        assert (target / "pymobile.toml").exists()
+        assert "created project" in capsys.readouterr().out
+
+    def test_name_derived_from_directory(self, tmp_path: Path) -> None:
+        target = tmp_path / "my-cool-app"
+        main(["init", str(target)])
+        text = (target / "pymobile.toml").read_text(encoding="utf-8")
+        assert 'name = "My Cool App"' in text
+
+    def test_custom_package(self, tmp_path: Path) -> None:
+        target = tmp_path / "app"
+        main(["init", str(target), "-p", "com.acme.thing"])
+        assert 'package = "com.acme.thing"' in (target / "pymobile.toml").read_text()
+
+    def test_non_empty_fails(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        (tmp_path / "file.txt").write_text("x", encoding="utf-8")
+        assert main(["init", str(tmp_path)]) == 1
+        assert "hint:" in capsys.readouterr().err
+
+    def test_force(self, tmp_path: Path) -> None:
+        (tmp_path / "file.txt").write_text("x", encoding="utf-8")
+        assert main(["init", str(tmp_path), "--force"]) == 0
+
+
+class TestBuild:
+    def test_builds_apk(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        create_project(tmp_path, "Build Me")
+        assert main(["-c", str(tmp_path), "build"]) == 0
+        assert list((tmp_path / "build").glob("*.apk"))
+        assert "✓" in capsys.readouterr().out
+
+    def test_second_build_reports_cache(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        create_project(tmp_path, "Cached")
+        main(["-c", str(tmp_path), "build"])
+        capsys.readouterr()
+        assert main(["-c", str(tmp_path), "build"]) == 0
+        assert "up to date" in capsys.readouterr().out
+
+    def test_clean_flag_rebuilds(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        create_project(tmp_path, "Clean Build")
+        main(["-c", str(tmp_path), "build"])
+        capsys.readouterr()
+        assert main(["-c", str(tmp_path), "build", "--clean"]) == 0
+        assert "up to date" not in capsys.readouterr().out
+
+    def test_no_cache_flag(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        create_project(tmp_path, "No Cache")
+        main(["-c", str(tmp_path), "build"])
+        capsys.readouterr()
+        main(["-c", str(tmp_path), "build", "--no-cache"])
+        assert "up to date" not in capsys.readouterr().out
+
+    def test_custom_output_dir(self, tmp_path: Path) -> None:
+        create_project(tmp_path, "Out")
+        main(["-c", str(tmp_path), "build", "-o", "artifacts"])
+        assert list((tmp_path / "artifacts").glob("*.apk"))
+
+    def test_icon_flag(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        create_project(tmp_path, "Iconed")
+        icon = tmp_path / "logo.png"
+        _write_png(icon)
+        assert main(["-c", str(tmp_path), "build", "-i", "logo.png"]) == 0
+        assert "logo.png" in capsys.readouterr().out
+
+    def test_missing_icon_reports_hint(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        create_project(tmp_path, "Bad Icon")
+        assert main(["-c", str(tmp_path), "build", "-i", "nope.png"]) == 1
+        assert "hint:" in capsys.readouterr().err
+
+    def test_verbose_shows_timings(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        create_project(tmp_path, "Verbose")
+        main(["-v", "-c", str(tmp_path), "build"])
+        assert "package" in capsys.readouterr().out
+
+    def test_no_config_reports_error(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        assert main(["-c", str(tmp_path), "build"]) == 1
+        assert "pymobile init" in capsys.readouterr().err
+
+
+class TestInfoCleanDoctor:
+    def test_info_human_output(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        create_project(tmp_path, "Info App")
+        assert main(["-c", str(tmp_path), "info"]) == 0
+        out = capsys.readouterr().out
+        assert "Info App" in out
+        assert "permissions" in out
+
+    def test_info_json_output(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        create_project(tmp_path, "Json App")
+        assert main(["-c", str(tmp_path), "info", "--json"]) == 0
+        data = json.loads(capsys.readouterr().out)
+        assert data["name"] == "Json App"
+
+    def test_clean_removes_build(self, tmp_path: Path) -> None:
+        create_project(tmp_path, "Clean Me")
+        main(["-c", str(tmp_path), "build"])
+        assert main(["-c", str(tmp_path), "clean"]) == 0
+        assert not (tmp_path / "build").exists()
+
+    def test_clean_when_nothing_to_do(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        create_project(tmp_path, "Nothing")
+        assert main(["-c", str(tmp_path), "clean"]) == 0
+        assert "nothing to clean" in capsys.readouterr().out
+
+    def test_doctor_on_valid_project(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        create_project(tmp_path, "Healthy")
+        assert main(["-c", str(tmp_path), "doctor"]) == 0
+        assert "everything looks good" in capsys.readouterr().out
+
+    def test_doctor_detects_missing_entrypoint(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        create_project(tmp_path, "Broken")
+        (tmp_path / "main.py").unlink()
+        assert main(["-c", str(tmp_path), "doctor"]) == 1
+        assert "entry point missing" in capsys.readouterr().err
+
+    def test_doctor_without_project(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        assert main(["-c", str(tmp_path), "doctor"]) == 0
+        assert "no usable project" in capsys.readouterr().err
+
+
+class TestRun:
+    def test_executes_entrypoint(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        create_project(tmp_path, "Runnable")
+        assert main(["-c", str(tmp_path), "run"]) == 0
+        captured = capsys.readouterr()
+        assert "desktop preview" in captured.out
+        # the app itself logs to stderr and renders its first screen
+        assert "Runnable" in captured.err
+        assert "render" in captured.err
+
+    def test_missing_entrypoint(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+        create_project(tmp_path, "Gone")
+        (tmp_path / "main.py").unlink()
+        assert main(["-c", str(tmp_path), "run"]) == 1
+        assert "Entry point not found" in capsys.readouterr().err
+
+
+def _write_png(path: Path) -> None:
+    from PIL import Image
+
+    Image.new("RGBA", (64, 64), (1, 2, 3, 255)).save(path)
+
+
+class TestModuleEntryPoint:
+    """`python -m pymobile` must work when pip's Scripts dir is not on PATH."""
+
+    def test_module_is_runnable(self) -> None:
+        import subprocess
+        import sys
+
+        completed = subprocess.run(
+            [sys.executable, "-m", "pymobile", "--version"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert "pymobile" in completed.stdout
+
+    def test_module_reports_errors_like_the_script(self, tmp_path: Path) -> None:
+        import subprocess
+        import sys
+
+        completed = subprocess.run(
+            [sys.executable, "-m", "pymobile", "-c", str(tmp_path), "info"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert completed.returncode == 1
+        assert "pymobile init" in completed.stderr
+
+
+class TestHintsMatchTheEnvironment:
+    """Printed commands must be runnable as-is by whoever sees them.
+
+    Users whose PATH lacks pip's Scripts directory run `python -m pymobile`;
+    echoing a bare `pymobile ...` back at them prints a command that fails.
+    """
+
+    def test_export_syntax_is_shell_specific(self) -> None:
+        from unittest.mock import patch
+
+        from pymobile.cli import _export_command
+
+        with patch("platform.system", return_value="Windows"):
+            assert _export_command("ANDROID_HOME", "C:\\sdk").startswith("$env:")
+        with patch("platform.system", return_value="Linux"):
+            assert _export_command("ANDROID_HOME", "/sdk") == "export ANDROID_HOME=/sdk"
+
+    def test_module_invocation_is_echoed_back(self) -> None:
+        from unittest.mock import patch
+
+        from pymobile.cli import _invocation
+
+        with patch("sys.argv", ["/usr/lib/python3.13/pymobile/__main__.py", "build"]):
+            assert _invocation().endswith("-m pymobile")
+
+    def test_script_invocation_is_echoed_back(self) -> None:
+        from unittest.mock import patch
+
+        from pymobile.cli import _invocation
+
+        with patch("sys.argv", ["/usr/local/bin/pymobile", "build"]):
+            assert _invocation() == "pymobile"
+
+    def test_init_suggests_a_working_command(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        main(["init", str(tmp_path / "app"), "-n", "App"])
+        out = capsys.readouterr().out
+        assert "build --native" in out
+
+    def test_icons_hint_uses_a_real_package_name(self) -> None:
+        """`pymobile[icons]` was wrong: the distribution is py-mobile."""
+        source = Path("pymobile/cli.py").read_text(encoding="utf-8")
+        assert "pymobile[icons]" not in source
+        assert "pip install Pillow" in source

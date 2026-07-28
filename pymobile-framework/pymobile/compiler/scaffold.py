@@ -1,0 +1,87 @@
+"""New project generation.
+
+Renders the packaged templates into a directory. The substitution syntax is
+intentionally trivial (``{{key}}``) — a template engine would be another
+dependency for something that needs three replacements.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from pathlib import Path
+
+from ..errors import ConfigError
+from ..logging import get_logger
+from ..resources import read_template
+
+__all__ = ["create_project", "ScaffoldResult", "slugify", "default_package"]
+
+_log = get_logger("compiler.scaffold")
+
+_PLACEHOLDER = re.compile(r"\{\{(\w+)\}\}")
+
+#: template file -> generated file
+_FILES = {
+    "main.py.template": "main.py",
+    "pymobile.toml.template": "pymobile.toml",
+    "README.md.template": "README.md",
+    "gitignore.template": ".gitignore",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class ScaffoldResult:
+    """Files created for a new project."""
+
+    directory: Path
+    files: tuple[Path, ...]
+
+
+def slugify(name: str) -> str:
+    """Turn a display name into a lowercase identifier fragment."""
+    slug = re.sub(r"[^a-z0-9]+", "", name.lower())
+    return slug or "app"
+
+
+def default_package(name: str) -> str:
+    """Derive a reverse-DNS package id from an application name."""
+    return f"org.pymobile.{slugify(name)}"
+
+
+def render(template: str, values: dict[str, str]) -> str:
+    """Replace ``{{key}}`` placeholders, leaving unknown ones untouched."""
+    return _PLACEHOLDER.sub(lambda match: values.get(match.group(1), match.group(0)), template)
+
+
+def create_project(
+    directory: str | Path,
+    name: str,
+    *,
+    package: str | None = None,
+    force: bool = False,
+) -> ScaffoldResult:
+    """Create a runnable PyMobile project in ``directory``."""
+    target = Path(directory).resolve()
+    if target.exists() and any(target.iterdir()) and not force:
+        raise ConfigError(
+            f"Directory is not empty: {target}",
+            hint="Pass --force to write into it anyway, or choose another path.",
+        )
+
+    values = {"name": name, "package": package or default_package(name)}
+    target.mkdir(parents=True, exist_ok=True)
+
+    created: list[Path] = []
+    for template_name, output_name in _FILES.items():
+        content = render(read_template(template_name), values)
+        path = target / output_name
+        path.write_text(content, encoding="utf-8")
+        created.append(path)
+
+    assets = target / "assets"
+    assets.mkdir(exist_ok=True)
+    (assets / ".gitkeep").write_text("", encoding="utf-8")
+
+    _log.debug("scaffolded %d files in %s", len(created), target)
+    return ScaffoldResult(directory=target, files=tuple(created))

@@ -1,0 +1,541 @@
+"""Native APK backend — produces a real, installable, signed APK.
+
+Pipeline of this backend:
+
+1. compile the JNI bridge with the NDK          → ``libpymobile.so``
+2. compile the launcher activity with ``javac`` → ``.class`` files
+3. convert them with ``d8``                     → ``classes.dex``
+4. compile resources with ``aapt2``             → ``resources.arsc`` + manifest
+5. assemble assets (CPython stdlib + user code) → ``assets/``
+6. align with ``zipalign`` and sign with ``apksigner``
+
+Every external command goes through :func:`_run`, which turns a non-zero exit
+code into a :class:`~pymobile.errors.PyMobileError` carrying the tool's own
+error output — the user sees what ``aapt2`` said, not a Python traceback.
+"""
+
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+import zipfile
+from dataclasses import dataclass
+from pathlib import Path
+
+from ...core.config import ProjectConfig
+from ...errors import PyMobileError
+from ...logging import get_logger
+from ...resources import resource_path
+from ..manifest import build_manifest
+from ..toolchain import Toolchain
+
+__all__ = ["NativeBackend", "NativeBuildResult"]
+
+_log = get_logger("compiler.native")
+
+#: Default keystore used for debug builds.
+DEBUG_KEYSTORE_NAME = "pymobile-debug.jks"
+DEBUG_KEY_ALIAS = "pymobile"
+DEBUG_PASSWORD = "android"
+
+#: Parts of the standard library that are never needed on a phone.
+STDLIB_EXCLUDES = (
+    "test",
+    "tests",
+    "idlelib",
+    "tkinter",
+    "turtledemo",
+    "lib2to3",
+    "ensurepip",
+    "distutils",
+    "config-3.14",
+    "__pycache__",
+    "site-packages",
+)
+
+
+@dataclass(slots=True)
+class NativeBuildResult:
+    """Outcome of a native build."""
+
+    apk: Path
+    size: int
+    signed: bool
+    abis: tuple[str, ...]
+
+    @property
+    def size_mb(self) -> float:
+        """Artifact size in megabytes."""
+        return self.size / (1024 * 1024)
+
+
+def _run(
+    command: list[str | Path],
+    *,
+    cwd: Path | None = None,
+    step: str = "",
+    java_home: Path | None = None,
+) -> str:
+    """Run an external tool, converting failures into framework errors.
+
+    ``apksigner`` and ``d8`` are shell wrappers that need a JDK on PATH, so the
+    discovered ``java_home`` is injected rather than relying on the caller's
+    environment being set up correctly.
+    """
+    text_command = [str(part) for part in command]
+    _log.debug("$ %s", " ".join(text_command))
+    environment = dict(os.environ)
+    if java_home is not None:
+        environment["JAVA_HOME"] = str(java_home)
+        environment["PATH"] = f"{java_home / 'bin'}{os.pathsep}{environment.get('PATH', '')}"
+    completed = subprocess.run(
+        text_command,
+        cwd=str(cwd) if cwd else None,
+        capture_output=True,
+        text=True,
+        check=False,
+        env=environment,
+    )
+    if completed.returncode != 0:
+        detail = (completed.stderr or completed.stdout or "").strip()
+        raise PyMobileError(
+            f"{step or text_command[0]} failed (exit {completed.returncode})",
+            hint=detail[:800] or "The tool produced no output.",
+        )
+    return completed.stdout
+
+
+class NativeBackend:
+    """Builds a real APK from a project configuration."""
+
+    def __init__(
+        self,
+        config: ProjectConfig,
+        toolchain: Toolchain,
+        python_runtime: Path,
+        *,
+        keystore: Path | None = None,
+    ) -> None:
+        self.config = config
+        self.toolchain = toolchain
+        self.python_runtime = python_runtime
+        self.keystore = keystore
+        #: Non-fatal problems worth surfacing to the user.
+        self.warnings: list[str] = []
+
+    # -- 1. native library -------------------------------------------------
+    def compile_jni(self, workdir: Path) -> Path:
+        """Provide ``libpymobile.so``, compiling it only when an NDK is present.
+
+        The bridge contains no project-specific data, so the binary is
+        byte-identical for every application. A prebuilt copy ships with the
+        package, which lets users skip the 2 GB NDK download entirely.
+
+        Set ``PYMOBILE_BUILD_JNI=1`` to compile it from source with the NDK.
+        """
+        output_dir = workdir / "lib" / "arm64-v8a"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        libdir = self.python_runtime / "lib"
+
+        want_source_build = os.environ.get("PYMOBILE_BUILD_JNI") == "1"
+        if not want_source_build or self.toolchain.clang is None:
+            self._use_prebuilt_bridge(output_dir, libdir)
+            return output_dir
+
+        try:
+            return self._compile_jni_with_ndk(workdir, output_dir, libdir)
+        except PyMobileError as error:
+            self.warnings.append(f"falling back to the prebuilt JNI bridge: {error}")
+            _log.warning("NDK build failed, using the prebuilt bridge: %s", error)
+            self._use_prebuilt_bridge(output_dir, libdir)
+            return output_dir
+
+    def _use_prebuilt_bridge(self, output_dir: Path, libdir: Path) -> None:
+        """Copy the packaged ``libpymobile.so`` and the interpreter libraries."""
+        prebuilt = resource_path("android", "prebuilt", "arm64-v8a", "libpymobile.so")
+        shutil.copy2(prebuilt, output_dir / "libpymobile.so")
+        _log.debug("using the prebuilt JNI bridge")
+        self._copy_runtime_libraries(libdir, output_dir)
+
+    def _copy_runtime_libraries(self, libdir: Path, output_dir: Path) -> None:
+        """Ship the interpreter and its shared dependencies next to the bridge."""
+        for library in sorted(libdir.glob("*.so")):
+            if library.name.startswith(("libpython3.14", "libssl", "libcrypto", "libsqlite3")):
+                shutil.copy2(library, output_dir / library.name)
+
+    def _compile_jni_with_ndk(self, workdir: Path, output_dir: Path, libdir: Path) -> Path:
+        """Build the JNI bridge from source with the NDK."""
+        clang = self.toolchain.clang
+        assert clang is not None  # checked by the caller
+
+        source = resource_path("android", "jni", "pymobile_jni.c")
+        include = self.python_runtime / "include" / "python3.14"
+        output = output_dir / "libpymobile.so"
+
+        _run(
+            [
+                clang,
+                "-shared",
+                "-fPIC",
+                "-O2",
+                f"-I{include}",
+                str(source),
+                f"-L{libdir}",
+                "-lpython3.14",
+                "-llog",
+                "-o",
+                output,
+            ],
+            step="clang (JNI bridge)",
+        )
+        self._copy_runtime_libraries(libdir, output_dir)
+        return output_dir
+
+    # -- 2/3. java → dex ---------------------------------------------------
+    def compile_java(self, workdir: Path) -> Path:
+        """Provide ``classes.dex``.
+
+        The launcher classes carry no project-specific data — the app id lives
+        in the manifest — so the packaged prebuilt dex is used by default. It
+        is byte-identical to a freshly compiled one, but costs no time and
+        cannot fail, which matters because ``d8`` is fragile on some hosts.
+
+        Set ``PYMOBILE_BUILD_JAVA=1`` to compile from source instead; that path
+        is meant for people changing the Java layer of the framework itself.
+        """
+        want_source_build = os.environ.get("PYMOBILE_BUILD_JAVA") == "1"
+        if not want_source_build or not self.toolchain.javac.exists():
+            return self._use_prebuilt_dex(workdir)
+        try:
+            return self._compile_java_from_source(workdir)
+        except PyMobileError as error:
+            self.warnings.append(f"falling back to the prebuilt dex: {error}")
+            _log.warning("java build failed, using the prebuilt dex: %s", error)
+            return self._use_prebuilt_dex(workdir)
+
+    def _use_prebuilt_dex(self, workdir: Path) -> Path:
+        """Copy the packaged launcher dex into the work directory."""
+        prebuilt = resource_path("android", "prebuilt", "arm64-v8a", "classes.dex")
+        target = workdir / "dex" / "classes.dex"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(prebuilt, target)
+        _log.debug("using the prebuilt launcher dex")
+        return target
+
+    def _compile_java_from_source(self, workdir: Path) -> Path:
+        """Compile the launcher classes and convert them with ``d8``."""
+        src = workdir / "java"
+        src.mkdir(parents=True, exist_ok=True)
+        for name in (
+            "Native.java",
+            "DeviceServices.java",
+            "ViewBuilder.java",
+            "PythonRuntime.java",
+            "MainActivity.java",
+        ):
+            shutil.copy2(resource_path("android", "java", name), src / name)
+
+        classes = workdir / "classes"
+        classes.mkdir(parents=True, exist_ok=True)
+        _run(
+            [
+                self.toolchain.javac,
+                "-source", "8", "-target", "8",
+                # Sources may contain non-ASCII UI strings; javac defaults to
+                # the platform encoding, which is often US-ASCII in containers.
+                "-encoding", "UTF-8",
+                "-nowarn",
+                "-bootclasspath", self.toolchain.platform_jar,
+                "-classpath", self.toolchain.platform_jar,
+                "-d", classes,
+                *sorted(src.glob("*.java")),
+            ],
+            step="javac", java_home=self.toolchain.java_home,
+        )
+
+        # Feed d8 a single jar rather than every .class path: it keeps the
+        # command line short (Windows caps it at ~32k characters) and lets d8
+        # see the classes as one unit, which avoids inner-class resolution bugs.
+        archive = workdir / "classes.jar"
+        _run(
+            [self.toolchain.java_home / "bin" / "jar", "cf", archive, "-C", classes, "."],
+            step="jar", java_home=self.toolchain.java_home,
+        )
+
+        dex_dir = workdir / "dex"
+        dex_dir.mkdir(parents=True, exist_ok=True)
+        _run(
+            [
+                self.toolchain.d8,
+                "--min-api", str(self.config.min_sdk),
+                "--lib", self.toolchain.platform_jar,
+                "--output", dex_dir,
+                archive,
+            ],
+            step="d8", java_home=self.toolchain.java_home,
+        )
+        return dex_dir / "classes.dex"
+
+    # -- 4. resources ------------------------------------------------------
+    def link_resources(self, workdir: Path, icons: dict[str, Path]) -> Path:
+        """Compile resources and link the base APK with a binary manifest."""
+        res = workdir / "res"
+        for density, icon in icons.items():
+            target = res / f"mipmap-{density}" / "icon.png"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            # The icon stage may already have written straight into res/.
+            if icon.resolve() != target.resolve():
+                shutil.copy2(icon, target)
+
+        values = res / "values"
+        values.mkdir(parents=True, exist_ok=True)
+        (values / "strings.xml").write_text(
+            '<?xml version="1.0" encoding="utf-8"?>\n'
+            "<resources>\n"
+            f"    <string name=\"app_name\">{_xml_escape(self.config.name)}</string>\n"
+            "</resources>\n",
+            encoding="utf-8",
+        )
+
+        flat = workdir / "flat"
+        flat.mkdir(parents=True, exist_ok=True)
+        _run([self.toolchain.aapt2, "compile", "--dir", res, "-o", flat], step="aapt2 compile")
+
+        manifest = workdir / "AndroidManifest.xml"
+        manifest.write_text(
+            build_manifest(self.config, activity="org.pymobile.app.MainActivity"),
+            encoding="utf-8",
+        )
+
+        base = workdir / "base.apk"
+        _run(
+            [
+                self.toolchain.aapt2, "link",
+                "-o", base,
+                "-I", self.toolchain.platform_jar,
+                "--manifest", manifest,
+                *sorted(flat.glob("*.flat")),
+                "--min-sdk-version", str(self.config.min_sdk),
+                "--target-sdk-version", str(self.config.target_sdk),
+                "--auto-add-overlay",
+            ],
+            step="aapt2 link",
+        )
+        return base
+
+    # -- 5. assets ---------------------------------------------------------
+    def collect_assets(self, sources: list[tuple[str, Path]]) -> dict[str, Path]:
+        """Map archive paths to files for the stdlib and the application."""
+        assets: dict[str, Path] = {}
+
+        stdlib = self.python_runtime / "lib" / "python3.14"
+        for path in stdlib.rglob("*"):
+            if not path.is_file():
+                continue
+            relative = path.relative_to(stdlib)
+            if any(part in STDLIB_EXCLUDES for part in relative.parts):
+                continue
+            if path.suffix in (".pyc", ".pyo", ".a", ".exe"):
+                continue
+            assets[f"assets/python/lib/python3.14/{relative.as_posix()}"] = path
+
+        # Android has no OpenSSL cert bundle at the path CPython expects, so
+        # HTTPS fails with CERTIFICATE_VERIFY_FAILED unless we ship one.
+        bundle = _find_ca_bundle()
+        if bundle is not None:
+            assets["assets/python/etc/ssl/cert.pem"] = bundle
+        else:  # pragma: no cover - only on hosts without any CA store
+            self.warnings.append(
+                "no CA bundle found, so HTTPS will fail on device — "
+                "fix it with: pip install certifi"
+            )
+
+        for name, path in sources:
+            assets[f"assets/app/{name}"] = path
+
+        # Bundle the framework itself: the app imports `pymobile` on device.
+        assets.update(self._framework_assets())
+        return assets
+
+    def _framework_assets(self) -> dict[str, Path]:
+        """Map the installed ``pymobile`` package into the APK assets."""
+        package_root = Path(__file__).resolve().parent.parent.parent
+        assets: dict[str, Path] = {}
+        for path in package_root.rglob("*"):
+            if not path.is_file():
+                continue
+            relative = path.relative_to(package_root)
+            parts = relative.parts
+            if any(part in ("__pycache__", "tests") for part in parts):
+                continue
+            if path.suffix in (".pyc", ".pyo"):
+                continue
+            assets[f"assets/app/pymobile/{relative.as_posix()}"] = path
+        return assets
+
+    # -- 6. package --------------------------------------------------------
+    def package(
+        self,
+        base_apk: Path,
+        dex: Path,
+        native_dir: Path,
+        assets: dict[str, Path],
+        output: Path,
+        workdir: Path,
+    ) -> Path:
+        """Add dex, native libs and assets, then align and sign."""
+        staged = workdir / "unsigned.apk"
+        shutil.copy2(base_apk, staged)
+
+        with zipfile.ZipFile(staged, "a", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.write(dex, "classes.dex")
+            for library in sorted(native_dir.glob("*.so")):
+                # Native libraries must be stored uncompressed and page-aligned
+                # so Android can load them directly from the APK.
+                info = zipfile.ZipInfo(f"lib/arm64-v8a/{library.name}")
+                info.compress_type = zipfile.ZIP_STORED
+                info.external_attr = 0o755 << 16
+                archive.writestr(info, library.read_bytes())
+            for name, path in sorted(assets.items()):
+                archive.write(path, name)
+
+        aligned = workdir / "aligned.apk"
+        _run(
+            [self.toolchain.zipalign, "-f", "-p", "4", staged, aligned],
+            step="zipalign",
+        )
+
+        keystore = self.keystore or self._ensure_debug_keystore(workdir)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        _run(
+            [
+                self.toolchain.apksigner, "sign",
+                "--ks", keystore,
+                "--ks-pass", f"pass:{DEBUG_PASSWORD}",
+                "--key-pass", f"pass:{DEBUG_PASSWORD}",
+                "--out", output,
+                aligned,
+            ],
+            step="apksigner", java_home=self.toolchain.java_home,
+        )
+        return output
+
+    def _ensure_debug_keystore(self, workdir: Path) -> Path:
+        """Create (once) a debug keystore in the project's build directory."""
+        keystore = self.config.output_path / DEBUG_KEYSTORE_NAME
+        if keystore.exists():
+            return keystore
+        keystore.parent.mkdir(parents=True, exist_ok=True)
+        _run(
+            [
+                self.toolchain.keytool, "-genkeypair",
+                "-keystore", keystore,
+                "-storepass", DEBUG_PASSWORD,
+                "-keypass", DEBUG_PASSWORD,
+                "-alias", DEBUG_KEY_ALIAS,
+                "-keyalg", "RSA", "-keysize", "2048",
+                "-validity", "10000",
+                "-dname", "CN=PyMobile Debug, OU=PyMobile, O=PyMobile, C=UA",
+            ],
+            cwd=workdir,
+            step="keytool", java_home=self.toolchain.java_home,
+        )
+        return keystore
+
+    def verify(self, apk: Path) -> bool:
+        """Check the signature with ``apksigner verify``."""
+        output = _run(
+            [self.toolchain.apksigner, "verify", "--verbose", apk],
+            step="apksigner verify",
+            java_home=self.toolchain.java_home,
+        )
+        return "Verifies" in output
+
+
+def _find_ca_bundle(cache_dir: Path | None = None) -> Path | None:
+    """Locate a PEM bundle of root certificates on the build machine.
+
+    Android ships no OpenSSL cert file, so one has to travel inside the APK or
+    every HTTPS request fails with CERTIFICATE_VERIFY_FAILED. Sources are tried
+    in order of reliability:
+
+    1. ``certifi``, when installed;
+    2. the paths OpenSSL was compiled with (typical on Linux and macOS);
+    3. well-known distribution paths;
+    4. the Windows system trust store, exported to PEM on the fly — Windows
+       keeps certificates in a registry-backed store rather than a file, so
+       steps 2 and 3 find nothing there.
+    """
+    try:
+        import certifi
+
+        candidate = Path(certifi.where())
+        if candidate.exists():
+            return candidate
+    except ImportError:
+        pass
+
+    import ssl
+
+    paths = ssl.get_default_verify_paths()
+    for value in (paths.cafile, paths.openssl_cafile):
+        if value and Path(value).exists():
+            return Path(value)
+
+    for fallback in (
+        "/etc/ssl/certs/ca-certificates.crt",
+        "/etc/pki/tls/certs/ca-bundle.crt",
+        "/etc/ssl/cert.pem",
+        "/usr/local/etc/openssl/cert.pem",
+    ):
+        candidate = Path(fallback)
+        if candidate.exists():
+            return candidate
+
+    return _export_windows_trust_store(cache_dir)
+
+
+def _export_windows_trust_store(cache_dir: Path | None = None) -> Path | None:
+    """Write the Windows root store to a PEM file and return its path."""
+    import ssl
+
+    enumerate_certs = getattr(ssl, "enum_certificates", None)
+    if enumerate_certs is None:
+        return None
+
+    chunks: list[str] = []
+    for store in ("ROOT", "CA"):
+        try:
+            entries = enumerate_certs(store)
+        except (OSError, PermissionError):  # pragma: no cover - locked-down hosts
+            continue
+        for der, encoding, trust in entries:
+            # `trust` is True for "all purposes" or a set of allowed OIDs;
+            # 1.3.6.1.5.5.7.3.1 is TLS server authentication.
+            usable = trust is True or (
+                isinstance(trust, set) and "1.3.6.1.5.5.7.3.1" in trust
+            )
+            if encoding == "x509_asn" and usable:
+                chunks.append(ssl.DER_cert_to_PEM_cert(der))
+
+    if not chunks:
+        return None
+
+    target_dir = cache_dir or (Path.home() / ".cache" / "pymobile")
+    target_dir.mkdir(parents=True, exist_ok=True)
+    bundle = target_dir / "windows-cacert.pem"
+    bundle.write_text("".join(chunks), encoding="ascii")
+    _log.debug("exported %d certificates from the Windows trust store", len(chunks))
+    return bundle
+
+
+def _xml_escape(text: str) -> str:
+    """Escape a string for inclusion in an XML resource."""
+    return (
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "\\'")
+    )
