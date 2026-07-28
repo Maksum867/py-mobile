@@ -6,8 +6,8 @@
 
 Write a declarative UI, run one command, install the APK on your phone.
 
-[![PyPI](https://img.shields.io/pypi/v/py-mobile.svg)](https://pypi.org/project/py-mobile/)
-[![Python](https://img.shields.io/pypi/pyversions/py-mobile.svg)](https://pypi.org/project/py-mobile/)
+[![PyPI](https://img.shields.io/pypi/v/pymobile-framework.svg)](https://pypi.org/project/pymobile-framework/)
+[![Python](https://img.shields.io/pypi/pyversions/pymobile-framework.svg)](https://pypi.org/project/pymobile-framework/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](https://github.com/Maksum867/py-mobile/blob/main/LICENSE)
 
 </div>
@@ -44,7 +44,7 @@ App("Demo").run(Home())
 ```
 
 ```bash
-pip install py-mobile
+pip install pymobile-framework
 pymobile setup-sdk           # once per machine
 pymobile build --native      # → build/demo-0.1.0.apk
 ```

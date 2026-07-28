@@ -31,7 +31,7 @@ has been executed and verified.
 ## 1. Install
 
 ```bash
-pip install py-mobile
+pip install pymobile-framework
 ```
 
 The distribution is named `py-mobile` because `pymobile` on PyPI belongs to an
