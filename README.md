@@ -106,7 +106,7 @@ Verified on a physical device running Android 14.
 device.
 
 ```bash
-pip install py-mobile
+pip install pymobile-framework
 ```
 
 > The distribution is named **`py-mobile`** because `pymobile` on PyPI belongs
