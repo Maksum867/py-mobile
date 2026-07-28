@@ -719,6 +719,6 @@ Yes, in a `[tool.pymobile]` table. If both files exist, `pymobile.toml` wins.
 
 ## Next steps
 
-- [README.md](README.md) — overview and API summary
-- [CHANGELOG.md](CHANGELOG.md) — release history
+- [README.md](https://github.com/Maksum867/py-mobile/blob/main/README.md) — overview and API summary
+- [CHANGELOG.md](https://github.com/Maksum867/py-mobile/blob/main/CHANGELOG.md) — release history
 - `pymobile/tests/` — 316 tests that double as usage examples

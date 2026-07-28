@@ -947,8 +947,8 @@ Issues and pull requests are welcome.
 
 ## Documentation
 
-- **[GUIDE.md](GUIDE.md)** — extended guide with worked examples
-- **[CHANGELOG.md](CHANGELOG.md)** — release history
+- **[GUIDE.md](https://github.com/Maksum867/py-mobile/blob/main/GUIDE.md)** — extended guide with worked examples
+- **[CHANGELOG.md](https://github.com/Maksum867/py-mobile/blob/main/CHANGELOG.md)** — release history
 
 ## License
 

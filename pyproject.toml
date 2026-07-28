@@ -11,7 +11,7 @@ description = "A small, fast and extensible Python framework for building Androi
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
-authors = [{ name = "PyMobile Contributors" }]
+authors = [{ name = "Maksym Khlystun" }]
 keywords = ["android", "apk", "mobile", "framework", "ui", "compiler"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -51,9 +51,9 @@ dev = [
 
 [project.urls]
 Homepage = "https://github.com/Maksum867/py-mobile"
-Documentation = "https://github.com/pymobile/pymobile#readme"
-Source = "https://github.com/Maksum867/py-mobile"
-Changelog = "https://github.com/pymobile/pymobile/blob/main/CHANGELOG.md"
+Documentation = "https://github.com/Maksum867/py-mobile/blob/main/README.md"
+Source = "https://github.com/Maksum867/py-mobile/tree/main/pymobile"
+Changelog = "https://github.com/Maksum867/py-mobile/blob/main/CHANGELOG.md"
 
 [project.scripts]
 pymobile = "pymobile.cli:main"
