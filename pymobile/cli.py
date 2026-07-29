@@ -12,11 +12,13 @@ user who typed a wrong package name is not helpful.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import platform
 import shutil
 import sys
+import time
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -113,6 +115,10 @@ def cmd_build(args: argparse.Namespace) -> int:
         config.output_dir = args.output
     if args.no_optimize:
         config.optimize = False
+    if getattr(args, "minimal_stdlib", False):
+        config.minimal_stdlib = True
+    if getattr(args, "no_ssl", False):
+        config.no_ssl = True
     config.validate()
 
     if args.clean:
@@ -156,18 +162,207 @@ def cmd_build(args: argparse.Namespace) -> int:
 def cmd_run(args: argparse.Namespace) -> int:
     """Import the entry point and render the first screen on the desktop."""
     config = _load(args)
+    entry = _entrypoint(config)
+
+    if getattr(args, "web", False):
+        return _run_web(config, entry, args)
+    if getattr(args, "gui", False):
+        return _run_gui(config, entry)
+
+    _out.info(f"running {entry.name} in desktop preview mode")
+    _out.hint("use --gui for a clickable window")
+    _execute(config, entry)
+    return 0
+
+
+def _run_gui(config: ProjectConfig, entry: Path) -> int:
+    """Run the app in an interactive Tkinter window."""
+    from .core.bridge import GuiBridge, set_bridge
+    from .core.ui.gui import GuiPreview, tkinter_available
+
+    if not tkinter_available():
+        raise PyMobileError(
+            "Tkinter is not available in this Python installation",
+            hint="Install it (Debian/Ubuntu: `sudo apt install python3-tk`), "
+            "or use `pymobile preview` for a text picture.",
+        )
+
+    from .core.app import App
+
+    bridge = GuiBridge(verbose=False)
+    set_bridge(bridge)
+    _execute(config, entry)
+    app = App.current()
+    if app is None:
+        raise PyMobileError(
+            "No running application was found in the entry point.",
+            hint="Make sure it calls App(...).run(SomeScreen()) before returning.",
+        )
+
+    _out.ok(f"{config.name} is running — close the window to stop")
+    try:
+        preview = GuiPreview(app, title=config.name)
+        bridge.attach(preview)
+        preview.run()
+    except Exception as error:  # pragma: no cover - display problems
+        raise PyMobileError(
+            f"Could not open the preview window: {error}",
+            hint="On a headless machine use `pymobile preview` instead.",
+        ) from error
+    return 0
+
+
+def _run_web(config: ProjectConfig, entry: Path, args: argparse.Namespace) -> int:
+    """Serve the app to a browser."""
+    from .core.app import App
+    from .core.bridge import WebBridge, set_bridge
+    from .core.ui.web import WebPreview
+
+    bridge = WebBridge(verbose=False)
+    set_bridge(bridge)
+    _execute(config, entry)
+    app = App.current()
+    if app is None:
+        raise PyMobileError(
+            "No running application was found in the entry point.",
+            hint="Make sure it calls App(...).run(SomeScreen()) before returning.",
+        )
+
+    preview = WebPreview(app, host=args.host, port=args.port)
+    bridge.attach(preview)
+    _out.ok(f"{config.name} is running at http://{args.host}:{preview.port}")
+    _out.info("press Ctrl+C to stop")
+    with contextlib.suppress(KeyboardInterrupt):  # Ctrl+C is how you stop it
+        preview.serve_forever()
+    _out.ok("stopped")
+    return 0
+
+
+def cmd_watch(args: argparse.Namespace) -> int:
+    """Re-render the app whenever a source file changes."""
+    from .core.watcher import FileWatcher
+
+    config = _load(args)
+    entry = _entrypoint(config)
+    roots = [config.source_path]
+
+    _out.info(f"watching {config.source_path} — press Ctrl+C to stop")
+    _reload(config, entry, args)
+
+    watcher = FileWatcher(roots, interval=args.interval)
+    try:
+        while True:
+            changed = watcher.wait()
+            names = ", ".join(path.name for path in changed[:3])
+            if len(changed) > 3:
+                names += f" (+{len(changed) - 3})"
+            print()
+            _out.info(f"changed: {names}")
+            _reload(config, entry, args)
+    except KeyboardInterrupt:  # pragma: no cover - interactive
+        print()
+        _out.ok("stopped watching")
+        return 0
+
+
+def _reload(config: ProjectConfig, entry: Path, args: argparse.Namespace) -> None:
+    """Run the entry point once and show the result.
+
+    Every reload starts from a clean module table for the project's own
+    modules, so editing an imported helper takes effect too — a plain re-exec
+    of main.py would keep the stale version cached in sys.modules.
+    """
+    from .core.bridge import StubBridge, set_bridge
+    from .core.ui.preview import render_ascii, render_png
+
+    started = time.perf_counter()
+    bridge = StubBridge(verbose=False)
+    set_bridge(bridge)
+    _purge_project_modules(config.source_path)
+
+    try:
+        _execute(config, entry)
+    except Exception as error:
+        _out.error(f"{type(error).__name__}: {error}")
+        if args.verbose:
+            import traceback
+
+            traceback.print_exc()
+        return
+
+    tree = bridge.last_tree
+    if tree is None:
+        _out.warn("the app rendered nothing")
+        return
+
+    elapsed = (time.perf_counter() - started) * 1000
+    if args.png:
+        render_png(tree, args.png)
+        _out.ok(f"wrote {args.png} in {elapsed:.0f} ms")
+    else:
+        print(render_ascii(tree, show_ids=args.ids, title=config.name))
+        _out.ok(f"rendered in {elapsed:.0f} ms")
+
+
+def _purge_project_modules(source: Path) -> None:
+    """Forget modules imported from the project so the next run re-reads them.
+
+    Dropping the ``sys.modules`` entry is not enough on its own: CPython
+    validates a cached ``.pyc`` against the source's mtime *and size*, and on
+    filesystems with a coarse clock (tmpfs, overlayfs, network shares) a quick
+    edit that happens to keep the length can match both. The import then
+    silently returns yesterday's bytecode, and the reload appears to do
+    nothing. Removing the project's caches keeps that from happening.
+    """
+    import importlib
+    import shutil
+
+    source = source.resolve()
+    for name, module in list(sys.modules.items()):
+        origin = getattr(module, "__file__", None)
+        if not origin:
+            continue
+        try:
+            path = Path(origin).resolve()
+        except (OSError, ValueError):
+            continue
+        if path.is_relative_to(source) and not path.name.startswith("__main__"):
+            del sys.modules[name]
+
+    for cache in source.rglob("__pycache__"):
+        shutil.rmtree(cache, ignore_errors=True)
+    importlib.invalidate_caches()
+
+
+def _entrypoint(config: ProjectConfig) -> Path:
+    """Resolve and validate the configured entry point."""
     entry = config.entrypoint_path
     if not entry.exists():
         raise PyMobileError(
             f"Entry point not found: {entry}",
             hint="Check `entrypoint` in your configuration.",
         )
+    return entry
 
-    _out.info(f"running {entry.name} in desktop preview mode")
-    sys.path.insert(0, str(config.source_path))
+
+def _execute(config: ProjectConfig, entry: Path) -> dict[str, object]:
+    """Execute the entry point and return its namespace.
+
+    The running :class:`~pymobile.core.app.App` is looked up afterwards and
+    exposed as ``__pymobile_app__`` so callers do not have to guess the name
+    the developer gave their application object.
+    """
+    if str(config.source_path) not in sys.path:
+        sys.path.insert(0, str(config.source_path))
     namespace: dict[str, object] = {"__name__": "__main__", "__file__": str(entry)}
     exec(compile(entry.read_text(encoding="utf-8"), str(entry), "exec"), namespace)
-    return 0
+
+    from .core.app import App
+
+    # The app is usually created inside a main() function, so it is found
+    # through the registry rather than by scanning the module namespace.
+    namespace["__pymobile_app__"] = App.current()
+    return namespace
 
 
 def cmd_preview(args: argparse.Namespace) -> int:
@@ -176,18 +371,11 @@ def cmd_preview(args: argparse.Namespace) -> int:
     from .core.ui.preview import render_ascii, render_png
 
     config = _load(args)
-    entry = config.entrypoint_path
-    if not entry.exists():
-        raise PyMobileError(
-            f"Entry point not found: {entry}",
-            hint="Check `entrypoint` in your configuration.",
-        )
+    entry = _entrypoint(config)
 
     bridge = StubBridge(verbose=False)
     set_bridge(bridge)
-    sys.path.insert(0, str(config.source_path))
-    namespace: dict[str, object] = {"__name__": "__main__", "__file__": str(entry)}
-    exec(compile(entry.read_text(encoding="utf-8"), str(entry), "exec"), namespace)
+    _execute(config, entry)
 
     tree = bridge.last_tree
     if tree is None:
@@ -357,7 +545,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="pymobile",
         description="Build Android applications with Python.",
-        epilog="Docs: https://github.com/pymobile/pymobile",
+        epilog="Docs: https://github.com/Maksum867/py-mobile",
         parents=[common],
     )
     parser.add_argument("--version", action="version", version=f"pymobile {__version__}")
@@ -384,10 +572,46 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument(
         "--no-optimize", action="store_true", help="ship sources instead of bytecode"
     )
+    build.add_argument(
+        "--minimal-stdlib",
+        action="store_true",
+        help="drop desktop-only stdlib packages (pydoc, unittest, venv, ...): ~1.7 MB",
+    )
+    build.add_argument(
+        "--no-ssl",
+        action="store_true",
+        help="omit OpenSSL and the CA bundle: ~4 MB smaller, but no HTTPS",
+    )
     build.set_defaults(func=cmd_build)
 
     run = sub.add_parser("run", help="preview the app on this machine", parents=[common])
+    run.add_argument(
+        "--gui",
+        action="store_true",
+        help="open a clickable window instead of printing to the console",
+    )
+    run.add_argument(
+        "--web",
+        action="store_true",
+        help="serve a clickable preview in the browser (works over SSH)",
+    )
+    run.add_argument("--port", type=int, default=8765, help="port for --web (default: 8765)")
+    run.add_argument("--host", default="127.0.0.1", help="interface for --web")
     run.set_defaults(func=cmd_run)
+
+    watch = sub.add_parser(
+        "watch", help="re-render automatically when a source file changes", parents=[common]
+    )
+    watch.add_argument("--png", metavar="PATH", help="write a PNG on every reload")
+    watch.add_argument("--ids", action="store_true", help="annotate widgets with their id")
+    watch.add_argument(
+        "--interval",
+        type=float,
+        default=0.2,
+        metavar="SECONDS",
+        help="how often to poll for changes (default: 0.2)",
+    )
+    watch.set_defaults(func=cmd_watch)
 
     preview = sub.add_parser(
         "preview", help="draw the first screen as a desktop picture", parents=[common]

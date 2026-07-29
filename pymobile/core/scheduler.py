@@ -16,6 +16,7 @@ Example::
 from __future__ import annotations
 
 import threading
+import time
 from collections.abc import Callable
 
 from ..logging import get_logger
@@ -82,21 +83,69 @@ class Scheduler:
         self._arm(handle, delay_ms, run)
         return self._track(handle)
 
-    def set_interval(self, interval_ms: int, callback: Callable[[], None]) -> TimerHandle:
-        """Run ``callback`` every ``interval_ms`` milliseconds until cancelled."""
+    def set_interval(
+        self,
+        interval_ms: int,
+        callback: Callable[[], None],
+        *,
+        drift_correction: bool = True,
+    ) -> TimerHandle:
+        """Run ``callback`` every ``interval_ms`` milliseconds until cancelled.
+
+        Ticks are scheduled against a fixed timeline — the deadline for tick
+        *n* is ``start + n * interval`` — so the time each callback takes does
+        not accumulate. Sleeping until the next deadline instead of "interval
+        milliseconds from now" is the difference between a clock that is a
+        second or two slow after an hour and one that is not.
+
+        Missed deadlines (the device slept, a callback ran long) are skipped
+        rather than fired back to back, which keeps a metronome in phase
+        instead of stuttering to catch up.
+
+        Pass ``drift_correction=False`` for the old behaviour: a fixed pause
+        *between* runs, which is what a poller that must not overlap wants.
+        """
         if interval_ms <= 0:
             raise ValueError("interval_ms must be > 0")
         handle = TimerHandle()
+        interval = interval_ms / 1000.0
 
-        def repeat() -> None:
+        if not drift_correction:
+
+            def repeat() -> None:
+                if handle.cancelled:
+                    return
+                self._fire(callback)
+                if handle.cancelled:
+                    return
+                self._arm(handle, interval_ms, repeat)
+
+            self._arm(handle, interval_ms, repeat)
+            return self._track(handle)
+
+        started = time.monotonic()
+        tick = 0
+
+        def repeat_corrected() -> None:
+            nonlocal tick
             if handle.cancelled:
                 return
             self._fire(callback)
             if handle.cancelled:
                 return
-            self._arm(handle, interval_ms, repeat)
+            tick += 1
+            deadline = started + tick * interval
+            delay = deadline - time.monotonic()
+            if delay < 0:
+                # Fell behind: jump forward to the next deadline still ahead
+                # of us so the phase is preserved and no burst of catch-up
+                # callbacks is fired.
+                missed = int(-delay / interval) + 1
+                tick += missed
+                delay = started + tick * interval - time.monotonic()
+            self._arm_seconds(handle, max(0.0, delay), repeat_corrected)
 
-        self._arm(handle, interval_ms, repeat)
+        self._arm(handle, interval_ms, repeat_corrected)
         return self._track(handle)
 
     def cancel_all(self) -> None:
@@ -109,7 +158,12 @@ class Scheduler:
 
     # -- internals ---------------------------------------------------------
     def _arm(self, handle: TimerHandle, delay_ms: int, target: Callable[[], None]) -> None:
-        timer = threading.Timer(delay_ms / 1000.0, target)
+        self._arm_seconds(handle, delay_ms / 1000.0, target)
+
+    def _arm_seconds(
+        self, handle: TimerHandle, delay: float, target: Callable[[], None]
+    ) -> None:
+        timer = threading.Timer(delay, target)
         timer.daemon = True
         handle._set_timer(timer)
         timer.start()

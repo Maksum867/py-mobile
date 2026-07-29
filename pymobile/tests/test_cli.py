@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
 
 import pytest
 
 from pymobile import __version__
-from pymobile.cli import main
+from pymobile.cli import build_parser, main
 from pymobile.compiler.scaffold import create_project
+from pymobile.core.config import load_config
 
 
 class TestParser:
@@ -296,3 +298,111 @@ class TestPreview:
         out = tmp_path / "shot.png"
         assert main(["preview", "-c", str(tmp_path), "--png", str(out)]) == 0
         assert out.exists() and out.stat().st_size > 0
+
+
+class TestWatch:
+    """`pymobile watch` — the edit-save-see loop."""
+
+    def _app_project(self, root: Path, text: str = "FIRST") -> None:
+        (root / "pymobile.toml").write_text(
+            '[app]\nname = "W"\npackage = "com.example.w"\n', encoding="utf-8"
+        )
+        (root / "main.py").write_text(
+            "from pymobile import App, Column, Label, Screen\n"
+            "class Home(Screen):\n"
+            "    def build(self):\n"
+            f"        return Column(Label('{text}'))\n"
+            "App('W').run(Home())\n",
+            encoding="utf-8",
+        )
+
+    def test_first_pass_renders_before_any_edit(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The initial render must not wait for a change."""
+        from pymobile.cli import _reload
+
+        self._app_project(tmp_path)
+        args = argparse.Namespace(png=None, ids=False, verbose=False)
+        _reload(load_config(tmp_path), tmp_path / "main.py", args)
+        assert "FIRST" in capsys.readouterr().out
+
+    def test_edited_source_is_picked_up(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from pymobile.cli import _reload
+
+        self._app_project(tmp_path)
+        config = load_config(tmp_path)
+        args = argparse.Namespace(png=None, ids=False, verbose=False)
+        _reload(config, tmp_path / "main.py", args)
+        capsys.readouterr()
+
+        self._app_project(tmp_path, text="SECOND")
+        _reload(config, tmp_path / "main.py", args)
+        assert "SECOND" in capsys.readouterr().out
+
+    def test_imported_module_is_reloaded_too(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A stale sys.modules entry would keep showing the old helper."""
+        from pymobile.cli import _reload
+
+        (tmp_path / "pymobile.toml").write_text(
+            '[app]\nname = "W"\npackage = "com.example.w"\n', encoding="utf-8"
+        )
+        (tmp_path / "helper.py").write_text("TEXT = 'OLD'\n", encoding="utf-8")
+        (tmp_path / "main.py").write_text(
+            "from pymobile import App, Column, Label, Screen\n"
+            "import helper\n"
+            "class Home(Screen):\n"
+            "    def build(self):\n"
+            "        return Column(Label(helper.TEXT))\n"
+            "App('W').run(Home())\n",
+            encoding="utf-8",
+        )
+        config = load_config(tmp_path)
+        args = argparse.Namespace(png=None, ids=False, verbose=False)
+        _reload(config, tmp_path / "main.py", args)
+        capsys.readouterr()
+
+        (tmp_path / "helper.py").write_text("TEXT = 'NEW'\n", encoding="utf-8")
+        _reload(config, tmp_path / "main.py", args)
+        assert "NEW" in capsys.readouterr().out
+
+    def test_broken_source_reports_and_survives(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A syntax error must show the error, not kill the watcher."""
+        from pymobile.cli import _reload
+
+        self._app_project(tmp_path)
+        config = load_config(tmp_path)
+        args = argparse.Namespace(png=None, ids=False, verbose=False)
+
+        (tmp_path / "main.py").write_text("def broken(\n", encoding="utf-8")
+        _reload(config, tmp_path / "main.py", args)
+        assert "SyntaxError" in capsys.readouterr().err
+
+        self._app_project(tmp_path, text="RECOVERED")
+        _reload(config, tmp_path / "main.py", args)
+        assert "RECOVERED" in capsys.readouterr().out
+
+    def test_watch_is_registered_with_its_flags(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["watch", "--interval", "0.5", "--ids"])
+        assert args.interval == 0.5
+        assert args.ids is True
+
+
+class TestRunGui:
+    def test_gui_flag_exists(self) -> None:
+        assert build_parser().parse_args(["run", "--gui"]).gui is True
+
+    def test_missing_tkinter_is_explained(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        create_project(tmp_path, "Guiless")
+        monkeypatch.setattr("pymobile.core.ui.gui.tkinter_available", lambda: False)
+        assert main(["-c", str(tmp_path), "run", "--gui"]) == 1
+        assert "Tkinter is not available" in capsys.readouterr().err

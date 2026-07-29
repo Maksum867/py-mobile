@@ -70,4 +70,9 @@ public final class Native {
     public static boolean requestPermission(String permission) {
         return DeviceServices.requestPermission(MainActivity.current(), permission);
     }
+
+    /** The language the device is set to, as a BCP-47 tag such as "uk-UA". */
+    public static String deviceLanguage() {
+        return DeviceServices.deviceLanguage(MainActivity.current());
+    }
 }

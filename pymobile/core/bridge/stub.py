@@ -22,13 +22,22 @@ class StubBridge(Bridge):
 
     name = "stub"
 
-    def __init__(self, *, grant_permissions: bool = True, verbose: bool = True) -> None:
+    def __init__(
+        self,
+        *,
+        grant_permissions: bool = True,
+        verbose: bool = True,
+        language: str = "",
+    ) -> None:
         self.calls: list[BridgeCall] = []
         self.notifications: dict[int, NotificationSpec] = {}
         self.granted: set[str] = set()
         self.grant_permissions = grant_permissions
         self.verbose = verbose
         self.last_tree: dict[str, Any] | None = None
+        #: Language reported by :meth:`device_language`; empty means "ask the
+        #: environment", which is what a desktop preview should do.
+        self.language = language
 
     # -- helpers -----------------------------------------------------------
     def _record(self, name: str, **kwargs: Any) -> None:
@@ -98,3 +107,7 @@ class StubBridge(Bridge):
     def render(self, tree: dict[str, Any]) -> None:
         self.last_tree = tree
         self._record("render", root=tree.get("type"), children=len(tree.get("children", ())))
+
+    # -- locale ------------------------------------------------------------
+    def device_language(self) -> str:
+        return self.language

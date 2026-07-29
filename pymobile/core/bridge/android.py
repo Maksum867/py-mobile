@@ -104,6 +104,16 @@ class AndroidBridge(Bridge):
             results[permission] = granted or bool(self._native.has_permission(permission))
         return results
 
+    # -- locale ------------------------------------------------------------
+    def device_language(self) -> str:
+        """Ask Android for the current locale, e.g. ``uk-UA``."""
+        if self._native is None:
+            return ""
+        getter = getattr(self._native, "device_language", None)
+        if getter is None:  # runtime older than the current framework
+            return ""
+        return str(getter() or "")
+
     # -- events ------------------------------------------------------------
     def next_event(self, timeout_ms: int = -1) -> tuple[str, str, str] | None:
         """Block until the UI thread reports an interaction."""

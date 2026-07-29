@@ -24,9 +24,9 @@ class Home(Screen):
     def __init__(self) -> None:
         super().__init__()
         self.taps = 0
-        self.counter = Label("Taps: 0")
 
     def build(self) -> Widget:
+        self.counter = Label("Taps: 0")
         return Column(
             Label("Hello, Android!"),
             self.counter,
@@ -36,8 +36,7 @@ class Home(Screen):
 
     def on_tap(self) -> None:
         self.taps += 1
-        self.counter.set_text(f"Taps: {self.taps}")
-        self.app.render()
+        self.counter.text = f"Taps: {self.taps}"      # the screen redraws itself
 
 
 App("Demo").run(Home())
@@ -230,7 +229,7 @@ validate → collect → compile → icons → toolchain → runtime
 
 ## UI components
 
-Seven components. All of them accept `id`, `style`, `visible` and `enabled`.
+Eight components. All of them accept `id`, `style`, `visible` and `enabled`.
 
 ### Label
 
@@ -299,30 +298,94 @@ Paths are relative to your project directory.
 Spacer(16)     # 16 dp of empty space
 ```
 
+### Divider
+
+```python
+Divider()                       # hairline between sections
+Divider(inset=16, thickness=2)
+```
+
 ---
 
 ## Layout
 
-Four containers, freely nestable.
+Containers, freely nestable.
 
 ```python
 Column(a, b, c, spacing=12)                # vertical stack
 Row(a, b, spacing=8, align=Align.CENTER)   # horizontal stack
-ScrollView(content)                        # scrollable region
+Grid(a, b, c, d, columns=2, spacing=12)    # equal-width cells
+ScrollView(content, spacing=8)             # scrollable region
 Stack(background, foreground)              # layered, last on top
+SafeArea(content)                          # clears the notch and status bar
 ```
 
+### Grid
+
+The container for cards, galleries and menus. Every cell in a column gets the
+same width, so two stat cards stay aligned even when one holds `5` and the
+other `2 h 45 m` — which is exactly what `Row(weight=1)` cannot guarantee.
+
 ```python
-Column(
-    Label("Heading"),
-    Row(Button("Yes"), Button("No"), spacing=8),
-    ScrollView(Column(*[Label(f"Row {i}") for i in range(50)])),
-    spacing=12,
+Grid(
+    card("Completed", "12"),  card("Focus time", "5 h"),
+    card("Breaks", "4"),      card("Average", "25 m"),
+    columns=2,
+    spacing=12,                       # or row_spacing= / column_spacing=
 )
 ```
 
-Alignment options: `Align.START`, `Align.CENTER`, `Align.END`,
-`Align.SPACE_BETWEEN`.
+Rows fill left to right; the last row may be partially filled.
+
+### Expanded and Flexible
+
+Share out the space left over on the main axis.
+
+```python
+Row(
+    Expanded(Button("Start")),            # half
+    Expanded(Button("Reset"), flex=2),    # twice as wide
+    spacing=8,
+)
+```
+
+`Expanded` makes the child fill its share, `Flexible` lets it stay smaller.
+
+### Divider
+
+```python
+Column(
+    header,
+    Divider(),                                   # hairline
+    Divider(inset=16, thickness=2),              # inset, thicker
+    Divider(vertical=True),                      # inside a Row
+    body,
+)
+```
+
+### SafeArea
+
+```python
+def build(self) -> Widget:
+    return SafeArea(Column(...))                 # all edges
+    return SafeArea(content, top=False)          # header bleeds upwards
+```
+
+Padding comes from the real window insets, so it is right on every device
+instead of a hard-coded guess.
+
+### Alignment
+
+`align` positions children along the container's own axis; `cross_align`
+positions them across it.
+
+```python
+Row(a, b, align=Align.SPACE_BETWEEN, cross_align=Align.CENTER)
+Column(a, b, cross_align=Align.STRETCH)
+```
+
+Options: `Align.START`, `Align.CENTER`, `Align.END`, `Align.SPACE_BETWEEN`,
+and `Align.STRETCH` for `cross_align`.
 
 ---
 
@@ -342,6 +405,36 @@ Style(
     align=Align.CENTER,
 )
 ```
+
+### Spacing between specific neighbours
+
+`spacing` on a container applies the same gap everywhere. When one gap must
+differ, add a `margin` to the individual widget — the two are **added**, not
+replaced:
+
+```python
+Column(
+    header,
+    Label("close to the header"),
+    Label("pushed further down", style=Style(margin=EdgeInsets(top=24))),
+    spacing=8,          # this one sits 8 + 24 dp below its neighbour
+)
+```
+
+### Size constraints
+
+```python
+Style(min_width=120, max_width=200)     # a card that cannot collapse or sprawl
+Style(aspect_ratio=16 / 9)              # keep a shape whatever the width
+Style(min_height=44)                    # a comfortable tap target
+Style(weight=1)                         # share of a Row/Column (see Expanded)
+Style(width=120, height=48)             # a fixed size in dp
+Style(width="match")                    # fill the parent ("wrap" also works)
+Style(elevation=4)                      # a drop shadow (Android 5+)
+```
+
+Contradictory bounds raise immediately — `Style(min_width=200, max_width=120)`
+is a `ValueError`, not a widget that silently clips to nothing on device.
 
 Built-in colours: `PRIMARY`, `ACCENT`, `BACKGROUND`, `SURFACE`, `TEXT`,
 `TEXT_MUTED`, `SUCCESS`, `WARNING`, `ERROR`, `TRANSPARENT`. Custom colours use
@@ -412,35 +505,72 @@ self.find("counter").set_text("5")     # matches Label(..., id="counter")
 
 ## Updating the screen
 
-This is the one concept newcomers stumble on. `build()` runs **once** and its
-result is cached, so a redraw must be requested explicitly.
+Change a widget and the screen redraws itself. There is no `render()` to
+forget.
 
 ```python
 class Home(Screen):
-    def __init__(self):
-        super().__init__()
-        self.taps = 0
-        self.counter = Label("Taps: 0")     # keep a reference
-
     def build(self) -> Widget:
+        self.taps = 0
+        self.counter = Label("Taps: 0")        # id becomes "counter"
         return Column(self.counter, Button("Tap", on_press=self.on_tap))
 
     def on_tap(self) -> None:
         self.taps += 1
-        self.counter.set_text(f"Taps: {self.taps}")   # 1. change a property
-        self.app.render()                              # 2. redraw
+        self.counter.text = f"Taps: {self.taps}"    # that is the whole update
 ```
 
-| Method | When to use | Cost |
-| --- | --- | --- |
-| `self.app.render()` | properties changed, structure is the same | cheap; keeps scroll position and keyboard focus |
-| `self.refresh()` | the tree itself changed (rows added or removed) | rebuilds through `build()` |
+`self.counter.text = ...` and `self.counter.set_text(...)` do the same thing.
+Every stateful property works this way: `text`, `value`, `checked`, `visible`
+and `enabled`.
+
+Redraws are coalesced, so a handler that updates six widgets still produces a
+single frame. Assigning a value that has not changed renders nothing at all,
+and mutating a widget on a screen that is not visible is free.
+
+Group updates explicitly when you build them in a loop:
+
+```python
+with app.batch():
+    for label, value in zip(self.labels, values):
+        label.text = value
+# one render happens here
+```
+
+| Method | When to use |
+| --- | --- |
+| *(nothing)* | a property changed — handled for you |
+| `self.refresh()` | the tree itself changed (rows added or removed) |
+| `app.render()` | you want a frame pushed out right now |
 
 ```python
 def on_data_loaded(self) -> None:
     self.items = fetch_items()
     self.refresh()          # the number of rows changed
 ```
+
+`App("Demo", auto_render=False)` restores the old manual behaviour; in that
+mode the first missed redraw logs a warning rather than leaving you guessing.
+
+---
+
+## Reacting to events
+
+Subscribe from a screen and the handler is removed when the screen goes away:
+
+```python
+class TimerScreen(Screen):
+    def on_mount(self) -> None:
+        self.on("pomodoro:tick", self.on_tick)   # cancelled on unmount
+
+    def on_tick(self, event) -> None:
+        self.clock.text = event.get("remaining")
+```
+
+With `app.on()` the handler of a popped screen stays subscribed: it keeps
+firing, keeps the screen alive, and runs twice as soon as the screen is pushed
+again. `self.on()` avoids that. To bind a handler registered elsewhere, pass
+the screen: `app.on("tick", handler, screen=self)`.
 
 ---
 
@@ -569,6 +699,55 @@ Remember to list `android.permission.INTERNET` in your config.
 
 ---
 
+## Languages
+
+The device language plus a small catalogue, which is usually all a mobile app
+needs. `gettext` and `.mo` files keep working — the standard library is
+packaged in full.
+
+```python
+from pymobile import t, translations, device_language
+
+translations.load_dir("locales")          # locales/en.json, locales/uk.json …
+translations.use(device_language(default="en"))
+
+Label(t("greeting", name="Оксана"))       # "Привіт, Оксана!"
+```
+
+```json
+{
+  "greeting": "Привіт, {name}!",
+  "items": {
+    "one":  "{count} елемент",
+    "few":  "{count} елементи",
+    "many": "{count} елементів"
+  }
+}
+```
+
+```python
+t("items", count=1)     # 1 елемент
+t("items", count=3)     # 3 елементи
+t("items", count=5)     # 5 елементів
+```
+
+Plural forms cover `zero`, `one`, `few`, `many` and `other`, so Slavic rules
+work, not only the English one. Lookup falls back from `pt-br` to `pt` and
+then to the default language, and a missing key renders as the key itself
+(logged once) rather than raising in the middle of a screen.
+
+Switching language redraws whatever is on screen — `translations.use("uk")` is
+enough, because `t()` runs inside `build()` and the screen is rebuilt for you.
+
+`device_language()` reads the real system setting on Android — including
+Android 13 per-app language overrides — and the usual environment variables on
+a desktop. Force one during development with `PYMOBILE_LANGUAGE=uk`.
+
+Already using xgettext? `translations.install_gettext("app", "locale")` reads
+your compiled `.mo` catalogues instead.
+
+---
+
 ## Events
 
 A synchronous event bus decouples UI from application logic.
@@ -620,6 +799,22 @@ does not keep ticking:
 def on_unmount(self) -> None:
     self.ticker.cancel()
 ```
+
+### Intervals do not drift
+
+Ticks are scheduled against a fixed timeline — tick *n* is due at
+`start + n × interval` — so the time your callback spends working is not added
+to the next wait. A one-second timer is still on the second an hour later,
+which matters for clocks, metronomes and games.
+
+```python
+app.set_interval(1000, self.tick)                          # aligned (default)
+app.set_interval(1000, self.poll, drift_correction=False)  # fixed pause between runs
+```
+
+Deadlines missed while the device was asleep are skipped rather than fired as
+a burst, so a metronome stays in phase instead of stuttering to catch up. Use
+`drift_correction=False` for a poller that must not overlap itself.
 
 ---
 
@@ -704,6 +899,8 @@ pymobile build --native -v                 # per-stage timings
 pymobile build --native --icon logo.png    # override the icon
 pymobile build --native --output dist      # different directory
 pymobile build --native --no-optimize      # ship .py for debugging
+pymobile build --native --minimal-stdlib   # drop desktop-only stdlib
+pymobile build --native --no-ssl           # drop OpenSSL (no HTTPS)
 ```
 
 > Without `--native` you get a lightweight structural package used for quick
@@ -712,7 +909,7 @@ pymobile build --native --no-optimize      # ship .py for debugging
 A rebuild with no changes finishes instantly:
 
 ```
-✓ up to date: my-app-1.0.0.apk (21.0 MB)
+✓ up to date: my-app-1.0.0.apk (16.6 MB)
 ```
 
 The cache tracks every input: sources, configuration and icon.
@@ -733,6 +930,30 @@ META-INF/                    signature (v1+v2+v3)
 Builds are reproducible: identical inputs produce a byte-identical APK. The
 file is written to a temporary path and moved into place, so an interrupted
 build never leaves a corrupt artifact.
+
+### Size
+
+A hello-world APK is **16.6 MB**, down from 21.6 MB in 0.2.0. The official
+CPython Android runtime ships every support library twice — `libcrypto.so`
+and `libcrypto_python.so` are byte-identical, and only the `_python` names are
+actually linked — so 5 MB of each APK was the same three libraries repeated.
+That is fixed for every build; no flag needed.
+
+Two opt-in flags trim further:
+
+| Flag | Saves | Cost |
+| --- | --- | --- |
+| `--minimal-stdlib` | ~1.7 MB | no `pydoc`, `unittest`, `venv`, `pdb`, `xmlrpc` on device |
+| `--no-ssl` | ~4.7 MB | no HTTPS at all — `HttpClient` over TLS stops working |
+
+With both, the same app is **11.7 MB**. `--no-ssl` only makes sense for an app
+that talks to nothing, or over plain HTTP on a local network.
+
+```
+21.6 MB   0.2.0
+16.6 MB   0.3.0                              duplicate libraries removed
+11.7 MB   0.3.0 --minimal-stdlib --no-ssl
+```
 
 ---
 
@@ -888,6 +1109,61 @@ from pymobile.core.ui.preview import render_ascii
 print(render_ascii(app.screen.build(), title="Home"))
 ```
 
+### An interactive window
+
+`pymobile run --gui` opens a real window instead of printing once. Buttons run
+their callbacks, switches and text fields feed events back through the same
+path the phone uses, and navigation works — a back button appears as soon as
+the stack is deeper than one screen. Toasts and vibration show up in the
+status strip.
+
+```bash
+pymobile run --gui
+```
+
+It is built on Tkinter, which ships with CPython, so it costs no dependency.
+Trees are patched into the existing widgets when the structure has not
+changed, so typing in a field does not lose focus.
+
+### In a browser
+
+`pymobile run --web` serves the same interactive preview over HTTP, which is
+what you want on a remote machine, in a container, or when Tk is unavailable:
+
+```bash
+pymobile run --web                 # http://127.0.0.1:8765
+pymobile run --web --port 9000
+pymobile run --web --host 0.0.0.0  # open it from your phone on the same Wi-Fi
+```
+
+The page is plain HTML built from the same serialised tree the phone receives,
+so it cannot drift from the real renderer. Buttons, switches and text fields
+post back to the app, and the page polls for updates, so a timer tick appears
+on its own. Widget ids are carried into `data-wid` attributes, so the browser
+inspector tells you exactly which widget a node is.
+
+### Hot reload
+
+`pymobile watch` re-renders every time you save:
+
+```bash
+pymobile watch                  # text picture on every save
+pymobile watch --png ui.png     # write an image instead
+pymobile watch --interval 0.1   # poll faster
+```
+
+Editing an imported helper module counts too, not just `main.py`. A syntax
+error prints the exception and keeps watching, so a half-typed line does not
+end the session.
+
+```text
+• watching /home/me/pomodoro — press Ctrl+C to stop
+✓ rendered in 12 ms
+
+• changed: main.py
+✓ rendered in 11 ms
+```
+
 ---
 
 ## CLI reference
@@ -896,8 +1172,9 @@ print(render_ascii(app.screen.build(), title="Home"))
 | --- | --- |
 | `pymobile init [dir]` | create a project (`-n` name, `-p` package, `-f` force) |
 | `pymobile setup-sdk` | install the Android toolchain (`--with-ndk`, `--path`) |
-| `pymobile build --native` | build a signed, installable APK |
-| `pymobile run` | run the app on your machine |
+| `pymobile build --native` | build a signed, installable APK (`--minimal-stdlib`, `--no-ssl`) |
+| `pymobile run` | run the app on your machine (`--gui` window, `--web` browser) |
+| `pymobile watch` | re-render on every save (`--png`, `--ids`, `--interval`) |
 | `pymobile preview` | draw the first screen as a picture (`--png`, `--ids`) |
 | `pymobile info` | show the resolved configuration (`--json`) |
 | `pymobile doctor` | check environment and project health |
@@ -945,8 +1222,8 @@ class Slider(Widget):
 ## Limitations
 
 - **arm64-v8a only.** Covers roughly 99% of active devices; x86_64 is planned.
-- **APK size is about 21 MB**, dominated by the interpreter and standard
-  library.
+- **APK size is about 16.6 MB** (11.7 MB with `--minimal-stdlib --no-ssl`),
+  dominated by the interpreter and standard library.
 - **Android 5.0 (API 21) minimum.**
 - The renderer covers the components documented here; more are being added.
 
@@ -955,13 +1232,15 @@ class Slider(Widget):
 ## FAQ
 
 **Why doesn't my UI update?**
-Call `self.app.render()` after changing properties, or `self.refresh()` when
-the tree structure changed. See [Updating the screen](#updating-the-screen).
+It should: assigning to a widget property redraws the screen by itself. If the
+*structure* changed — rows added or removed — call `self.refresh()` to rebuild
+through `build()`. See [Updating the screen](#updating-the-screen).
 
 **Why does `pymobile run` show no window?**
-That is expected: on a desktop the stub bridge runs your logic without native
-views, which is what makes apps testable without an emulator. To *see* the
-first screen as a picture, use `pymobile preview` (or `--png` to save an image).
+By default it runs your logic through the stub bridge without native views,
+which is what makes apps testable without an emulator. Use `pymobile run --gui`
+for a real, clickable window, `pymobile preview` for a text picture, or
+`pymobile watch` to re-render on every save.
 See [Desktop preview](#desktop-preview).
 
 **Why doesn't a 404 raise an exception?**

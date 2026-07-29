@@ -359,6 +359,38 @@ static PyObject *py_has_permission(PyObject *self, PyObject *args) {
     return PyBool_FromLong(granted);
 }
 
+static PyObject *py_device_language(PyObject *self, PyObject *args) {
+    (void)self;
+    (void)args;
+    PyObject *result = NULL;
+    int attached = 0;
+    JNIEnv *env = jni_env(&attached);
+    if (env && g_native_class) {
+        jmethodID method = (*env)->GetStaticMethodID(env, g_native_class, "deviceLanguage",
+                                                     "()Ljava/lang/String;");
+        if (method) {
+            jstring value = (jstring)(*env)->CallStaticObjectMethod(env, g_native_class, method);
+            if ((*env)->ExceptionCheck(env)) {
+                (*env)->ExceptionClear(env);
+            } else if (value) {
+                const char *utf = (*env)->GetStringUTFChars(env, value, NULL);
+                if (utf) {
+                    result = PyUnicode_FromString(utf);
+                    (*env)->ReleaseStringUTFChars(env, value, utf);
+                }
+                (*env)->DeleteLocalRef(env, value);
+            }
+        }
+        if (attached) {
+            (*g_vm)->DetachCurrentThread(g_vm);
+        }
+    }
+    if (!result) {
+        result = PyUnicode_FromString("");
+    }
+    return result;
+}
+
 static PyObject *py_request_permission(PyObject *self, PyObject *args) {
     const char *permission;
     (void)self;
@@ -446,6 +478,7 @@ static PyMethodDef module_methods[] = {
     {"cancel_notification", py_cancel_notification, METH_VARARGS, "Cancel a notification."},
     {"has_permission", py_has_permission, METH_VARARGS, "Check a permission."},
     {"request_permission", py_request_permission, METH_VARARGS, "Request a permission."},
+    {"device_language", py_device_language, METH_NOARGS, "The device's language tag."},
     {"next_event", py_next_event, METH_VARARGS, "Block until the next UI event."},
     {NULL, NULL, 0, NULL},
 };

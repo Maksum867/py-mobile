@@ -17,28 +17,43 @@ __all__ = ["Label", "Button", "TextInput", "Image", "Switch", "ProgressBar", "Sp
 
 
 class Label(Widget):
-    """Non-interactive text."""
+    """Non-interactive text.
+
+    ``label.text = "5"`` and ``label.set_text("5")`` are equivalent, and both
+    redraw the screen on their own.
+    """
 
     type_name = "Label"
-    __slots__ = ("text",)
+    __slots__ = ("_text",)
 
     def __init__(self, text: str = "", **kwargs: Any) -> None:
         super().__init__(**kwargs)
-        self.text = text
+        self._text = text
+
+    @property
+    def text(self) -> str:
+        """The displayed text; assigning to it schedules a redraw."""
+        return self._text
+
+    @text.setter
+    def text(self, value: str) -> None:
+        if value != self._text:
+            self._text = value
+            self.invalidate()
 
     def set_text(self, text: str) -> None:
         """Replace the displayed text."""
         self.text = text
 
     def props(self) -> dict[str, Any]:
-        return {**super().props(), "text": self.text}
+        return {**super().props(), "text": self._text}
 
 
 class Button(Widget):
     """A tappable button."""
 
     type_name = "Button"
-    __slots__ = ("text", "on_press")
+    __slots__ = ("_text", "on_press")
 
     def __init__(
         self,
@@ -48,8 +63,19 @@ class Button(Widget):
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
-        self.text = text
+        self._text = text
         self.on_press = on_press
+
+    @property
+    def text(self) -> str:
+        """The button's label; assigning to it schedules a redraw."""
+        return self._text
+
+    @text.setter
+    def text(self, value: str) -> None:
+        if value != self._text:
+            self._text = value
+            self.invalidate()
 
     def set_text(self, text: str) -> None:
         """Replace the button's label, mirroring :meth:`Label.set_text`."""
@@ -63,7 +89,7 @@ class Button(Widget):
     def props(self) -> dict[str, Any]:
         return {
             **super().props(),
-            "text": self.text,
+            "text": self._text,
             "on_press": callback_name(self.on_press),
         }
 
@@ -72,7 +98,7 @@ class TextInput(Widget):
     """Single- or multi-line text field."""
 
     type_name = "TextInput"
-    __slots__ = ("value", "placeholder", "multiline", "password", "max_length", "on_change")
+    __slots__ = ("_value", "placeholder", "multiline", "password", "max_length", "on_change")
 
     def __init__(
         self,
@@ -88,20 +114,31 @@ class TextInput(Widget):
         super().__init__(**kwargs)
         if max_length is not None and max_length <= 0:
             raise ValueError("max_length must be positive")
-        self.value = value
+        self._value = value
         self.placeholder = placeholder
         self.multiline = multiline
         self.password = password
         self.max_length = max_length
         self.on_change = on_change
 
+    @property
+    def value(self) -> str:
+        """The current text; assigning to it schedules a redraw."""
+        return self._value
+
+    @value.setter
+    def value(self, value: str) -> None:
+        self.set_value(value)
+
     def set_value(self, value: str) -> None:
         """Update the text, truncating to ``max_length`` and notifying listeners."""
         if self.max_length is not None:
             value = value[: self.max_length]
-        changed = value != self.value
-        self.value = value
-        if changed and self.on_change is not None:
+        if value == self._value:
+            return
+        self._value = value
+        self.invalidate()
+        if self.on_change is not None:
             self.on_change(value)
 
     def clear(self) -> None:
@@ -111,7 +148,7 @@ class TextInput(Widget):
     def props(self) -> dict[str, Any]:
         return {
             **super().props(),
-            "value": self.value,
+            "value": self._value,
             "placeholder": self.placeholder,
             "multiline": self.multiline,
             "password": self.password,
@@ -145,7 +182,7 @@ class Switch(Widget):
     """A binary on/off toggle."""
 
     type_name = "Switch"
-    __slots__ = ("checked", "on_toggle")
+    __slots__ = ("_checked", "on_toggle")
 
     def __init__(
         self,
@@ -155,7 +192,7 @@ class Switch(Widget):
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
-        self.checked = checked
+        self._checked = checked
         self.on_toggle = on_toggle
 
     def toggle(self) -> bool:
@@ -163,17 +200,27 @@ class Switch(Widget):
         self.set_checked(not self.checked)
         return self.checked
 
+    @property
+    def checked(self) -> bool:
+        """Whether the switch is on; assigning to it schedules a redraw."""
+        return self._checked
+
+    @checked.setter
+    def checked(self, value: bool) -> None:
+        self.set_checked(value)
+
     def set_checked(self, checked: bool) -> None:
         """Set the state, notifying listeners only on a real change."""
-        if checked != self.checked:
-            self.checked = checked
+        if checked != self._checked:
+            self._checked = checked
+            self.invalidate()
             if self.on_toggle is not None:
                 self.on_toggle(checked)
 
     def props(self) -> dict[str, Any]:
         return {
             **super().props(),
-            "checked": self.checked,
+            "checked": self._checked,
             "on_toggle": callback_name(self.on_toggle),
         }
 
@@ -182,7 +229,7 @@ class ProgressBar(Widget):
     """Determinate or indeterminate progress indicator."""
 
     type_name = "ProgressBar"
-    __slots__ = ("value", "maximum", "indeterminate")
+    __slots__ = ("_value", "maximum", "indeterminate")
 
     def __init__(
         self,
@@ -197,22 +244,34 @@ class ProgressBar(Widget):
             raise ValueError("maximum must be positive")
         self.maximum = maximum
         self.indeterminate = indeterminate
-        self.value = 0.0
+        self._value = 0.0
+        self.set_value(value)
+
+    @property
+    def value(self) -> float:
+        """Current progress; assigning to it schedules a redraw."""
+        return self._value
+
+    @value.setter
+    def value(self, value: float) -> None:
         self.set_value(value)
 
     def set_value(self, value: float) -> None:
         """Set progress, clamped to ``0..maximum``."""
-        self.value = max(0.0, min(float(value), self.maximum))
+        clamped = max(0.0, min(float(value), self.maximum))
+        if clamped != self._value:
+            self._value = clamped
+            self.invalidate()
 
     @property
     def fraction(self) -> float:
         """Progress as ``0.0..1.0``."""
-        return self.value / self.maximum
+        return self._value / self.maximum
 
     def props(self) -> dict[str, Any]:
         return {
             **super().props(),
-            "value": self.value,
+            "value": self._value,
             "maximum": self.maximum,
             "indeterminate": self.indeterminate,
         }

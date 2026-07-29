@@ -122,7 +122,7 @@ print(app.bridge.name)   # 'stub' or 'android'
 
 ## 4. UI components
 
-Seven components. Each accepts `id`, `style`, `visible` and `enabled`.
+Eight components. Each accepts `id`, `style`, `visible` and `enabled`.
 
 ### Label — text
 
@@ -186,20 +186,31 @@ Spacer(16)
 ```python
 Column(a, b, c, spacing=12)               # vertical
 Row(a, b, spacing=8, align=Align.CENTER)  # horizontal
+Grid(a, b, c, d, columns=2, spacing=12)   # equal-width cells
 ScrollView(long_content)                  # scrollable
 Stack(background, foreground)             # layered, last on top
+SafeArea(content)                         # clear of the notch/status bar
 ```
 
 They nest freely:
 
 ```python
-Column(
+SafeArea(Column(
     Label("Heading"),
-    Row(Button("Yes"), Button("No"), spacing=8),
+    Divider(),
+    Grid(card_a, card_b, card_c, card_d, columns=2, spacing=12),
+    Row(Expanded(Button("Yes")), Expanded(Button("No")), spacing=8),
     ScrollView(Column(*[Label(f"Row {i}") for i in range(50)])),
     spacing=12,
-)
+))
 ```
+
+`Grid` keeps columns the same width whatever the cell contents — the thing a
+`Row` of `weight=1` children cannot promise. `Expanded(child, flex=2)` claims a
+share of the leftover space, and `Divider()` draws a hairline between sections.
+
+Alignment: `align` runs along the container's axis, `cross_align` across it
+(`START`, `CENTER`, `END`, `SPACE_BETWEEN`, plus `STRETCH` for `cross_align`).
 
 ### Style
 
@@ -210,6 +221,8 @@ Style(
     padding=EdgeInsets.all(16),
     margin=EdgeInsets.symmetric(horizontal=8, vertical=4),
     corner_radius=8, elevation=2,
+    min_width=120, max_width=200,     # constraints
+    aspect_ratio=16 / 9,
 )
 ```
 
@@ -271,43 +284,63 @@ app. The hardware back button is wired up automatically.
 
 ## 7. Updating the interface
 
-This trips up most newcomers. `build()` runs **once** and its result is cached,
-so you must ask for a redraw explicitly.
+Change a widget; the screen redraws itself.
 
 ```python
 class Home(Screen):
     def __init__(self):
         super().__init__()
         self.taps = 0
-        self.counter = Label("Taps: 0")   # keep a reference
 
     def build(self) -> Widget:
+        self.counter = Label("Taps: 0")      # id becomes "counter"
         return Column(self.counter, Button("Tap", on_press=self.on_tap))
 
     def on_tap(self) -> None:
         self.taps += 1
-        self.counter.set_text(f"Taps: {self.taps}")  # 1. change the property
-        self.app.render()                             # 2. redraw
+        self.counter.text = f"Taps: {self.taps}"     # done — no render() call
 ```
 
-- **`self.app.render()`** — same tree, only properties changed. Fast, and it
-  preserves scroll position and keyboard focus. Use this by default.
-- **`self.refresh()`** — rebuilds the tree through `build()`. Needed when the
+`widget.text = "…"` and `widget.set_text("…")` are the same thing. It works for
+`text`, `value`, `checked`, `visible` and `enabled`.
+
+Redraws are coalesced, so a handler that changes six widgets still draws one
+frame, and setting a value that has not changed draws nothing.
+
+- **`self.refresh()`** — rebuild through `build()`. Needed when the
   **structure** changes (an element appears or disappears).
+- **`app.render()`** — force a frame right now. Rarely needed.
+- **`app.batch()`** — group a loop of updates into one frame.
 
 ```python
 def on_load(self) -> None:
     self.items = fetch_items()
     self.refresh()          # the number of rows changed
+
+with self.app.batch():
+    for label, value in zip(self.labels, values):
+        label.text = value
 ```
 
-Find a widget by `id` without keeping a reference:
+Find a widget by `id` without keeping a reference. Widgets assigned to `self`
+in `build()` take the attribute name as their id:
 
 ```python
-Label("0", id="counter")
+self.counter = Label("0")      # id == "counter"
 ...
-self.find("counter").set_text("5")
+self.find("counter").text = "5"
 ```
+
+### Events that clean up after themselves
+
+```python
+class TimerScreen(Screen):
+    def on_mount(self) -> None:
+        self.on("pomodoro:tick", self.on_tick)   # cancelled on unmount
+```
+
+Use `self.on()` rather than `self.app.on()`: the handler of a popped screen
+would otherwise keep firing and keep the screen in memory.
 
 ---
 
@@ -506,7 +539,7 @@ validate → collect → compile → icons → toolchain → runtime
 A second build with no changes finishes instantly:
 
 ```
-✓ up to date: my-app-1.0.0.apk (21.0 MB)
+✓ up to date: my-app-1.0.0.apk (16.6 MB)
 ```
 
 The cache covers every input: sources, config and icon.
@@ -671,8 +704,10 @@ Then add a `case "Slider"` branch to `ViewBuilder.java`.
 | --- | --- |
 | `pymobile init [dir]` | create a project (`-n` name, `-p` package, `-f` force) |
 | `pymobile setup-sdk` | download the Android SDK (`--with-ndk` for C builds) |
-| `pymobile build --native` | build a real, installable APK |
-| `pymobile run` | run the app on your machine |
+| `pymobile build --native` | build a real, installable APK (`--minimal-stdlib`, `--no-ssl`) |
+| `pymobile run` | run the app on your machine (`--gui` for a clickable window) |
+| `pymobile watch` | re-render on every save (`--png`, `--ids`, `--interval`) |
+| `pymobile preview` | draw the first screen as a picture (`--png`, `--ids`) |
 | `pymobile info` | show the configuration (`--json`) |
 | `pymobile clean` | remove build artifacts |
 | `pymobile doctor` | check the environment and the project |
@@ -685,7 +720,7 @@ and after the sub-command: `pymobile -v build` equals `pymobile build -v`.
 ## 18. FAQ
 
 **Why doesn't the UI update?**
-Call `self.app.render()` after changing properties, or `self.refresh()` if the
+Assigning to a widget property redraws by itself; call `self.refresh()` if the
 tree structure changed. See [section 7](#7-updating-the-interface).
 
 **Why does `pymobile run` draw nothing?**

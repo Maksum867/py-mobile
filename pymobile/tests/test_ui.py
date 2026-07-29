@@ -5,15 +5,21 @@ from __future__ import annotations
 import pytest
 
 from pymobile import (
+    Align,
     App,
     Button,
     Color,
     Column,
+    Divider,
     EdgeInsets,
+    Expanded,
+    Flexible,
+    Grid,
     Image,
     Label,
     ProgressBar,
     Row,
+    SafeArea,
     Screen,
     ScrollView,
     Spacer,
@@ -142,6 +148,203 @@ class TestContainers:
     def test_negative_spacing_rejected(self) -> None:
         with pytest.raises(ValueError, match="spacing"):
             Column(spacing=-1)
+
+
+class TestGrid:
+    def test_children_are_laid_out_in_rows(self) -> None:
+        grid = Grid(*[Label(str(i)) for i in range(5)], columns=2)
+        assert grid.rows == 3  # last row is half full
+        assert grid.props()["columns"] == 2
+
+    def test_spacing_applies_to_both_axes(self) -> None:
+        props = Grid(Label("a"), spacing=12).props()
+        assert props["row_spacing"] == 12
+        assert props["column_spacing"] == 12
+
+    def test_axis_spacing_can_differ(self) -> None:
+        props = Grid(Label("a"), spacing=12, column_spacing=4).props()
+        assert props["row_spacing"] == 12
+        assert props["column_spacing"] == 4
+
+    def test_rejects_bad_geometry(self) -> None:
+        with pytest.raises(ValueError, match="columns"):
+            Grid(columns=0)
+        with pytest.raises(ValueError, match="spacing"):
+            Grid(spacing=-1)
+        with pytest.raises(ValueError, match="row_spacing"):
+            Grid(row_spacing=-1)
+
+    def test_empty_grid_has_no_rows(self) -> None:
+        assert Grid(columns=3).rows == 0
+
+    def test_preview_aligns_columns(self) -> None:
+        """The whole point of Grid: cells of different widths still line up."""
+        from pymobile.core.ui.preview import render_ascii
+
+        grid = Grid(
+            Label("Completed"), Label("Focus"),
+            Label("4"), Label("2 h 45 m"),
+            columns=2,
+        )
+        lines = render_ascii(grid).splitlines()
+        assert lines[0].index("Focus") == lines[1].index("2 h 45 m")
+
+
+class TestScrollView:
+    def test_spacing_is_supported_like_a_column(self) -> None:
+        assert ScrollView(Label("a"), spacing=12).props()["spacing"] == 12
+
+    def test_spacing_defaults_to_zero(self) -> None:
+        assert ScrollView(Label("a")).props()["spacing"] == 0
+
+    def test_negative_spacing_rejected(self) -> None:
+        with pytest.raises(ValueError, match="spacing"):
+            ScrollView(spacing=-1)
+
+    def test_horizontal_preview_places_children_side_by_side(self) -> None:
+        """A horizontal ScrollView used to be drawn as a vertical stack."""
+        from pymobile.core.ui.preview import render_ascii
+
+        scroller = ScrollView(Label("one"), Label("two"), horizontal=True)
+        assert render_ascii(scroller).strip() == "one  two"
+
+    def test_vertical_preview_stacks(self) -> None:
+        from pymobile.core.ui.preview import render_ascii
+
+        lines = render_ascii(ScrollView(Label("one"), Label("two"))).splitlines()
+        assert lines == ["one", "two"]
+
+
+class TestStyleReachesTheLayout:
+    """Style fields that the renderer used to ignore."""
+
+    def test_margin_serialises(self) -> None:
+        style = Style(margin=EdgeInsets(1, 2, 3, 4))
+        assert style.to_dict()["margin"] == [1, 2, 3, 4]
+
+    def test_size_serialises_as_a_number(self) -> None:
+        assert Style(width=120, height=48).to_dict() == {"width": 120, "height": 48}
+
+    def test_size_accepts_the_documented_names(self) -> None:
+        assert Style(width="match").to_dict()["width"] == "match"
+
+    def test_elevation_serialises(self) -> None:
+        assert Style(elevation=4).to_dict()["elevation"] == 4
+
+
+class TestFlex:
+    def test_expanded_is_tight_and_flexible_is_loose(self) -> None:
+        assert Expanded(Label("a")).props()["fit"] == "tight"
+        assert Flexible(Label("a")).props()["fit"] == "loose"
+
+    def test_flex_share_serialises(self) -> None:
+        assert Expanded(Label("a"), flex=3).props()["flex"] == 3
+
+    def test_child_is_accessible(self) -> None:
+        label = Label("a")
+        assert Expanded(label).child is label
+
+    def test_single_child_only(self) -> None:
+        wrapper = Expanded(Label("a"))
+        with pytest.raises(ValueError, match="single child"):
+            wrapper.add(Label("b"))
+
+    def test_rejects_bad_flex(self) -> None:
+        with pytest.raises(ValueError, match="flex"):
+            Expanded(Label("a"), flex=0)
+
+    def test_row_of_expanded_children_serialises(self) -> None:
+        node = Row(Expanded(Label("l")), Expanded(Label("r"), flex=2)).to_dict()
+        assert [child["props"]["flex"] for child in node["children"]] == [1, 2]
+
+
+class TestDivider:
+    def test_defaults_are_horizontal_hairline(self) -> None:
+        props = Divider().props()
+        assert props["thickness"] == 1
+        assert props["vertical"] is False
+
+    def test_vertical_and_inset(self) -> None:
+        props = Divider(vertical=True, inset=16, thickness=2).props()
+        assert props == {
+            "thickness": 2,
+            "color": Divider().color,
+            "inset": 16,
+            "vertical": True,
+        }
+
+    def test_colour_is_validated(self) -> None:
+        with pytest.raises(ValueError, match="invalid color"):
+            Divider(color="grey")
+
+    def test_rejects_bad_geometry(self) -> None:
+        with pytest.raises(ValueError, match="thickness"):
+            Divider(thickness=0)
+        with pytest.raises(ValueError, match="inset"):
+            Divider(inset=-1)
+
+    def test_preview_draws_a_line(self) -> None:
+        from pymobile.core.ui.preview import render_ascii
+
+        assert set(render_ascii(Divider()).strip()) == {"─"}
+
+
+class TestSafeArea:
+    def test_all_edges_on_by_default(self) -> None:
+        props = SafeArea(Label("a")).props()
+        assert all(props[edge] for edge in ("top", "bottom", "left", "right"))
+        assert props["minimum"] == 0
+
+    def test_edges_can_be_disabled(self) -> None:
+        assert SafeArea(Label("a"), top=False).props()["top"] is False
+
+    def test_minimum_padding_is_validated(self) -> None:
+        with pytest.raises(ValueError, match="minimum"):
+            SafeArea(minimum=-1)
+
+    def test_wraps_content(self) -> None:
+        child = Column(Label("a"))
+        assert SafeArea(child).children[0] is child
+
+
+class TestCrossAlign:
+    def test_unset_by_default(self) -> None:
+        assert "cross_align" not in Row(Label("a")).props()
+
+    def test_serialised_when_set(self) -> None:
+        props = Row(Label("a"), cross_align=Align.CENTER).props()
+        assert props["cross_align"] == "center"
+
+    def test_stretch_is_allowed(self) -> None:
+        assert Column(cross_align=Align.STRETCH).props()["cross_align"] == "stretch"
+
+    def test_invalid_value_rejected(self) -> None:
+        with pytest.raises(ValueError, match="cross_align"):
+            Row(cross_align="middle")
+
+
+class TestConstraints:
+    def test_min_and_max_serialise(self) -> None:
+        style = Style(min_width=120, max_width=200)
+        assert style.to_dict() == {"min_width": 120, "max_width": 200}
+
+    def test_aspect_ratio_serialises(self) -> None:
+        ratio = Style(aspect_ratio=16 / 9).to_dict()["aspect_ratio"]
+        assert ratio == pytest.approx(1.777, abs=1e-3)
+
+    def test_contradictory_bounds_rejected(self) -> None:
+        with pytest.raises(ValueError, match="min_width"):
+            Style(min_width=200, max_width=120)
+        with pytest.raises(ValueError, match="min_height"):
+            Style(min_height=200, max_height=120)
+
+    def test_negative_bounds_rejected(self) -> None:
+        with pytest.raises(ValueError, match="min_width"):
+            Style(min_width=-1)
+
+    def test_bad_aspect_ratio_rejected(self) -> None:
+        with pytest.raises(ValueError, match="aspect_ratio"):
+            Style(aspect_ratio=0)
 
 
 class TestStyle:
@@ -279,6 +482,272 @@ class TestNavigator:
         assert isinstance(nav.stack, tuple)
 
 
+class _Named(Screen):
+    title = "Named"
+
+    def build(self) -> Widget:
+        self.counter = Label("0")
+        self.start = Button("Start")
+        return Column(self.counter, Label("anonymous"), self.start)
+
+
+class TestWidgetIds:
+    """Ids follow the code, not a global counter."""
+
+    def test_attributes_name_their_widgets(self) -> None:
+        screen = _Named()
+        screen.root  # builds the tree
+        assert screen.counter.id == "counter"
+        assert screen.start.id == "start"
+
+    def test_explicit_id_always_wins(self) -> None:
+        class Explicit(Screen):
+            def build(self) -> Widget:
+                self.counter = Label("0", id="my-counter")
+                return Column(self.counter)
+
+        screen = Explicit()
+        screen.root
+        assert screen.counter.id == "my-counter"
+
+    def test_anonymous_widgets_are_numbered_per_screen(self) -> None:
+        """Adding a widget to one screen must not renumber another."""
+        first = _Named()
+        first.root
+        second = _Named()
+        second.root
+        anonymous = [w.id for w in second.root.walk() if w.id.startswith("label-")]
+        assert anonymous == ["label-2"]
+
+    def test_counters_are_per_type(self) -> None:
+        class Many(Screen):
+            def build(self) -> Widget:
+                return Column(Label("a"), Button("b"), Label("c"))
+
+        ids = [widget.id for widget in Many().root.walk()]
+        assert ids == ["column-1", "label-1", "button-1", "label-2"]
+
+    def test_ids_stay_stable_when_a_widget_is_added_above(self) -> None:
+        class Before(Screen):
+            def build(self) -> Widget:
+                self.total = Label("42")
+                return Column(self.total)
+
+        class After(Screen):
+            def build(self) -> Widget:
+                self.total = Label("42")
+                return Column(Label("new heading"), self.total)
+
+        before, after = Before(), After()
+        before.root, after.root
+        assert before.total.id == after.total.id == "total"
+
+    def test_find_uses_the_readable_id(self) -> None:
+        screen = _Named()
+        assert screen.find("counter") is screen.counter
+
+    def test_widgets_outside_the_tree_keep_their_id(self) -> None:
+        class Detached(Screen):
+            def build(self) -> Widget:
+                self.unused = Label("not mounted")
+                return Column(Label("shown"))
+
+        screen = Detached()
+        screen.root
+        assert screen.unused.id.startswith("label-")
+
+
+class _Counter(Screen):
+    """A screen that keeps a handle on the widget it mutates."""
+
+    title = "Counter"
+
+    def build(self) -> Widget:
+        self.label = Label("0")
+        self.button = Button("Tap")
+        self.field = TextInput()
+        self.switch = Switch()
+        self.bar = ProgressBar()
+        return Column(self.label, self.button, self.field, self.switch, self.bar)
+
+
+class TestAutoRender:
+    """Assigning to a widget must be enough; render() is not the user's job."""
+
+    def _app(self, bridge) -> tuple[App, _Counter]:  # type: ignore[no-untyped-def]
+        app = App("Demo", bridge=bridge)
+        screen = _Counter()
+        app.run(screen)
+        bridge.reset()
+        return app, screen
+
+    def test_assignment_renders(self, bridge) -> None:  # type: ignore[no-untyped-def]
+        _, screen = self._app(bridge)
+        screen.label.text = "5"
+        assert len(bridge.calls_named("render")) == 1
+        assert bridge.last_tree["children"][0]["props"]["text"] == "5"
+
+    def test_setter_method_renders(self, bridge) -> None:  # type: ignore[no-untyped-def]
+        _, screen = self._app(bridge)
+        screen.label.set_text("7")
+        assert len(bridge.calls_named("render")) == 1
+
+    def test_unchanged_value_does_not_render(self, bridge) -> None:  # type: ignore[no-untyped-def]
+        _, screen = self._app(bridge)
+        screen.label.text = "0"
+        assert bridge.calls_named("render") == []
+
+    def test_every_stateful_widget_is_reactive(self, bridge) -> None:  # type: ignore[no-untyped-def]
+        _, screen = self._app(bridge)
+        screen.button.text = "Pause"
+        screen.field.value = "abc"
+        screen.switch.checked = True
+        screen.bar.value = 40
+        screen.label.visible = False
+        screen.button.enabled = False
+        assert len(bridge.calls_named("render")) == 6
+
+    def test_structural_changes_render(self, bridge) -> None:  # type: ignore[no-untyped-def]
+        _, screen = self._app(bridge)
+        column = screen.root
+        assert isinstance(column, Column)
+        column.add(Label("added"))
+        assert len(bridge.calls_named("render")) == 1
+
+    def test_batch_coalesces_into_one_frame(self, bridge) -> None:  # type: ignore[no-untyped-def]
+        app, screen = self._app(bridge)
+        with app.batch():
+            screen.label.text = "a"
+            screen.button.text = "b"
+            screen.bar.value = 10
+        assert len(bridge.calls_named("render")) == 1
+
+    def test_nested_batches_flush_once(self, bridge) -> None:  # type: ignore[no-untyped-def]
+        app, screen = self._app(bridge)
+        with app.batch():
+            screen.label.text = "a"
+            with app.batch():
+                screen.button.text = "b"
+        assert len(bridge.calls_named("render")) == 1
+
+    def test_batch_without_changes_renders_nothing(self, bridge) -> None:  # type: ignore[no-untyped-def]
+        app, _ = self._app(bridge)
+        with app.batch():
+            pass
+        assert bridge.calls_named("render") == []
+
+    def test_hidden_screen_does_not_render(self, bridge) -> None:  # type: ignore[no-untyped-def]
+        app, screen = self._app(bridge)
+        app.push(_Home())
+        bridge.reset()
+        screen.label.text = "background"
+        assert bridge.calls_named("render") == []
+
+    def test_detached_widget_is_safe_to_mutate(self) -> None:
+        Label("free").text = "still free"  # must not raise
+
+    def test_auto_render_can_be_switched_off(self, bridge) -> None:  # type: ignore[no-untyped-def]
+        app = App("Demo", bridge=bridge, auto_render=False)
+        screen = _Counter()
+        app.run(screen)
+        bridge.reset()
+        screen.label.text = "5"
+        assert bridge.calls_named("render") == []
+        app.render()
+        assert len(bridge.calls_named("render")) == 1
+
+    def test_manual_mode_warns_once(self, bridge, capsys) -> None:  # type: ignore[no-untyped-def]
+        """Silence is the trap; warn, but do not nag on every keystroke.
+
+        The framework logger deliberately does not propagate to the root, so
+        the warning is read back from stderr rather than through caplog.
+        """
+        app = App("Demo", bridge=bridge, auto_render=False)
+        screen = _Counter()
+        app.run(screen)
+        capsys.readouterr()
+        screen.label.text = "a"
+        screen.label.text = "b"
+        assert capsys.readouterr().err.count("auto_render is off") == 1
+
+
+class _Ticker(Screen):
+    title = "Ticker"
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.ticks = 0
+
+    def build(self) -> Widget:
+        return Column(Label("tick"))
+
+    def on_mount(self) -> None:
+        self.on("pomodoro:tick", self._tick)
+
+    def _tick(self, _event) -> None:  # type: ignore[no-untyped-def]
+        self.ticks += 1
+
+
+class TestScreenSubscriptions:
+    def test_handler_receives_events(self, bridge) -> None:  # type: ignore[no-untyped-def]
+        app = App("Demo", bridge=bridge)
+        screen = _Ticker()
+        app.run(screen)
+        app.events.emit("pomodoro:tick")
+        assert screen.ticks == 1
+
+    def test_unmount_cancels_the_subscription(self, bridge) -> None:  # type: ignore[no-untyped-def]
+        """The bug this fixes: a popped screen kept reacting to events."""
+        app = App("Demo", bridge=bridge)
+        app.run(_Home())
+        screen = app.push(_Ticker())
+        app.pop()
+        app.events.emit("pomodoro:tick")
+        assert screen.ticks == 0
+        assert "pomodoro:tick" not in app.events
+
+    def test_pushing_twice_does_not_double_up(self, bridge) -> None:  # type: ignore[no-untyped-def]
+        app = App("Demo", bridge=bridge)
+        app.run(_Home())
+        first = app.push(_Ticker())
+        app.pop()
+        second = app.push(_Ticker())
+        app.events.emit("pomodoro:tick")
+        assert (first.ticks, second.ticks) == (0, 1)
+        assert len(app.events) == 1
+
+    def test_replace_and_reset_also_cancel(self, bridge) -> None:  # type: ignore[no-untyped-def]
+        app = App("Demo", bridge=bridge)
+        app.run(_Home())
+        replaced = app.push(_Ticker())
+        app.navigator.replace(_Home())
+        app.navigator.reset(_Home())
+        app.events.emit("pomodoro:tick")
+        assert replaced.ticks == 0
+
+    def test_app_on_can_be_bound_to_a_screen(self, bridge) -> None:  # type: ignore[no-untyped-def]
+        app = App("Demo", bridge=bridge)
+        app.run(_Home())
+        screen = app.push(_Home())
+        seen: list[str] = []
+        app.on("ping", lambda e: seen.append(e.name), screen=screen)
+        app.pop()
+        app.events.emit("ping")
+        assert seen == []
+
+    def test_subscription_can_still_be_cancelled_by_hand(self, bridge) -> None:  # type: ignore[no-untyped-def]
+        app = App("Demo", bridge=bridge)
+        screen = _Ticker()
+        app.run(screen)
+        screen._subscriptions[0].cancel()
+        app.events.emit("pomodoro:tick")
+        assert screen.ticks == 0
+
+    def test_subscribing_before_mount_is_an_error(self) -> None:
+        with pytest.raises(PyMobileError, match="running app"):
+            _Ticker().on("x", lambda _e: None)
+
+
 class TestRefresh:
     def test_refresh_rebuilds_and_renders(self, bridge) -> None:  # type: ignore[no-untyped-def]
         app = App("Demo", bridge=bridge)
@@ -288,3 +757,38 @@ class TestRefresh:
         screen.refresh()
         assert screen.root is not first
         assert len(bridge.calls_named("render")) >= 2
+
+
+class TestOneFramePerInteraction:
+    """Batching lives inside handle_ui_event, not in each front end."""
+
+    def test_a_tap_that_changes_three_widgets_renders_once(self, bridge) -> None:  # type: ignore[no-untyped-def]
+        class Triple(Screen):
+            def build(self) -> Widget:
+                self.a = Label("a")
+                self.b = Label("b")
+                self.c = Label("c")
+                self.button = Button("go", on_press=self.go)
+                return Column(self.a, self.b, self.c, self.button)
+
+            def go(self) -> None:
+                self.a.text = "1"
+                self.b.text = "2"
+                self.c.text = "3"
+
+        app = App("Demo", bridge=bridge)
+        screen = Triple()
+        app.run(screen)
+        bridge.reset()
+        app.handle_ui_event(screen.button.id, "press", "")
+        assert len(bridge.calls_named("render")) == 1
+
+    def test_every_front_end_uses_the_same_entry_point(self) -> None:
+        """gui.py and web.py must not reach past the batching wrapper."""
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1]
+        for name in ("core/ui/gui.py", "core/ui/web.py"):
+            source = (root / name).read_text(encoding="utf-8")
+            assert "app.handle_ui_event(" in source, name
+            assert "_handle_ui_event(" not in source, name

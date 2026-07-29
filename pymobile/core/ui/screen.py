@@ -8,11 +8,12 @@ keeps navigation logic out of the app object.
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from ...errors import PyMobileError
 from ...logging import get_logger
-from .widget import Widget
+from ..events import Event, Subscription
+from .widget import Widget, widget_scope
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from ..app import App
@@ -20,6 +21,10 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 __all__ = ["Screen", "Navigator"]
 
 _log = get_logger("ui.screen")
+
+#: Navigation preserves the concrete screen type, so `app.push(Details())`
+#: is still a Details for the type checker and for editor completion.
+ScreenT = TypeVar("ScreenT", bound="Screen")
 
 
 class Screen:
@@ -38,6 +43,8 @@ class Screen:
         self.app: App | None = None
         self._root: Widget | None = None
         self._mounted = False
+        self._warned_manual_render = False
+        self._subscriptions: list[Subscription] = []
 
     # -- construction ------------------------------------------------------
     def build(self) -> Widget:
@@ -48,8 +55,57 @@ class Screen:
     def root(self) -> Widget:
         """The built widget tree, constructed on first access."""
         if self._root is None:
-            self._root = self.build()
+            with widget_scope(self):
+                root = self.build()
+            # The screen link lives on the root only; Widget.screen walks up
+            # to find it, so every widget in the tree can reach us.
+            root._screen = self
+            self._root = root
+            self._name_widgets()
         return self._root
+
+    def _name_widgets(self) -> None:
+        """Give widgets stored on ``self`` an id derived from the attribute.
+
+        ``self.counter = Label("0")`` becomes ``counter`` instead of
+        ``label-7``. Ids that shift whenever a widget is added above make
+        logs, toasts and ``find()`` calls unreadable, and they are what the
+        native side uses to patch views in place.
+
+        Only attributes assigned during ``build()`` are considered, and an
+        explicit ``id=`` always wins.
+        """
+        assert self._root is not None
+        owned = {id(widget): widget for widget in self._root.walk()}
+        for name, value in vars(self).items():
+            if name.startswith("_") or not isinstance(value, Widget):
+                continue
+            if id(value) not in owned or value._explicit_id:
+                continue
+            value.id = name
+
+    def invalidate(self) -> None:
+        """Ask the application to redraw this screen.
+
+        Called automatically whenever a widget in the tree changes, so
+        application code rarely needs it. Redraws are coalesced by the app: a
+        loop that updates ten labels still results in a single render.
+        """
+        app = self.app
+        if app is None or app.navigator.current is not self:
+            return
+        if app.auto_render:
+            app.schedule_render()
+            return
+        # auto_render was switched off deliberately, so the redraw is the
+        # application's job — but a silent no-op is exactly the trap this
+        # release removes, so say so once per screen.
+        if not self._warned_manual_render:
+            self._warned_manual_render = True
+            _log.warning(
+                "%s changed while auto_render is off; call app.render() to show it",
+                type(self).__name__,
+            )
 
     @property
     def mounted(self) -> bool:
@@ -57,7 +113,14 @@ class Screen:
         return self._mounted
 
     def refresh(self) -> None:
-        """Rebuild the tree and re-render if this screen is on top."""
+        """Rebuild the tree from ``build()`` and re-render immediately.
+
+        Use it when the *structure* changed (a list grew, a section appeared).
+        Changing the text or state of an existing widget needs no call at all:
+        the widget schedules its own redraw.
+        """
+        if self._root is not None:
+            self._root._screen = None
         self._root = None
         if self.app is not None and self.app.navigator.current is self:
             self.app.render()
@@ -69,6 +132,39 @@ class Screen:
     def to_dict(self) -> dict[str, Any]:
         """Serialise the screen (title + widget tree)."""
         return {"screen": self.title, **self.root.to_dict()}
+
+    # -- events ------------------------------------------------------------
+    def on(self, event: str, handler: Callable[[Event], None]) -> Subscription:
+        """Subscribe to an application event for as long as this screen lives.
+
+        The subscription is cancelled automatically in :meth:`on_unmount`,
+        which is the difference that matters::
+
+            class TimerScreen(Screen):
+                def on_mount(self):
+                    self.on("pomodoro:tick", self.on_tick)
+
+        With ``app.on()`` the handler of a popped screen stays registered, so
+        pushing the screen a second time runs the callback twice and keeps the
+        old instance alive. Here that cannot happen.
+
+        The returned :class:`~pymobile.core.events.Subscription` can still be
+        cancelled by hand for a one-shot listener.
+        """
+        if self.app is None:
+            raise PyMobileError(
+                f"{type(self).__name__}.on() needs a running app",
+                hint="Subscribe from on_mount() or later, not from __init__().",
+            )
+        subscription = self.app.events.on(event, handler)
+        self._subscriptions.append(subscription)
+        return subscription
+
+    def _cancel_subscriptions(self) -> None:
+        """Drop every subscription made through :meth:`on`."""
+        for subscription in self._subscriptions:
+            subscription.cancel()
+        self._subscriptions.clear()
 
     # -- lifecycle ---------------------------------------------------------
     def on_mount(self) -> None:
@@ -114,7 +210,7 @@ class Navigator:
         """Number of screens on the stack."""
         return len(self._stack)
 
-    def push(self, screen: Screen) -> Screen:
+    def push(self, screen: ScreenT) -> ScreenT:
         """Show ``screen`` on top of the stack."""
         if screen in self._stack:
             raise PyMobileError(
@@ -142,6 +238,8 @@ class Navigator:
         screen.on_hide()
         screen._mounted = False
         screen.on_unmount()
+        # Cancel after on_unmount so a hook can still emit a farewell event.
+        screen._cancel_subscriptions()
         screen.app = None
         current = self.current
         if current is not None:
@@ -150,22 +248,24 @@ class Navigator:
         self._notify()
         return screen
 
-    def replace(self, screen: Screen) -> Screen:
+    def replace(self, screen: ScreenT) -> ScreenT:
         """Swap the top screen for ``screen``."""
         if self._stack:
             top = self._stack.pop()
             top.on_hide()
             top._mounted = False
             top.on_unmount()
+            top._cancel_subscriptions()
             top.app = None
         return self.push(screen)
 
-    def reset(self, screen: Screen) -> Screen:
+    def reset(self, screen: ScreenT) -> ScreenT:
         """Clear the stack and start again from ``screen``."""
         while self._stack:
             top = self._stack.pop()
             top._mounted = False
             top.on_unmount()
+            top._cancel_subscriptions()
             top.app = None
         return self.push(screen)
 

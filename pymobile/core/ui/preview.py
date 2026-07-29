@@ -20,6 +20,7 @@ from typing import Any
 __all__ = ["render_ascii", "render_png", "ascii_picture"]
 
 _BAR_WIDTH = 16
+_DIVIDER_WIDTH = 24
 
 
 # ---------------------------------------------------------------------------
@@ -94,11 +95,21 @@ def _node_lines(node: dict[str, Any], *, show_ids: bool = False) -> list[str]:
     node_type = node.get("type", "")
     children = node.get("children", ())
 
-    if node_type == "Row":
+    if node_type == "Row" or (
+        node_type == "ScrollView" and node.get("props", {}).get("horizontal")
+    ):
         rows = _join_horizontal(
             [_node_lines(child, show_ids=show_ids) for child in children]
         )
-    elif node_type in ("Column", "ScrollView", "Stack", "Container"):
+    elif node_type == "Grid":
+        rows = _grid_lines(node, show_ids=show_ids)
+    elif node_type in ("Expanded", "Flexible"):
+        # A flex wrapper draws exactly as its child; the space it claims is a
+        # device-side concept with no meaning in a text picture.
+        rows = _join_vertical(
+            [_node_lines(child, show_ids=show_ids) for child in children]
+        )
+    elif node_type in ("Column", "ScrollView", "Stack", "Container", "SafeArea"):
         rows = _join_vertical(
             [_node_lines(child, show_ids=show_ids) for child in children]
         )
@@ -115,6 +126,35 @@ def _join_vertical(blocks: list[list[str]]) -> list[str]:
     out: list[str] = []
     for block in blocks:
         out.extend(block)
+    return out
+
+
+def _grid_lines(node: dict[str, Any], *, show_ids: bool = False) -> list[str]:
+    """Draw a Grid as real rows of equal-width columns.
+
+    Column widths are computed across the whole grid rather than per row, so
+    the text picture shows the same alignment the device does — that is the
+    entire reason ``Grid`` exists instead of nested ``Row``s.
+    """
+    children = list(node.get("children", ()))
+    columns = max(1, int(node.get("props", {}).get("columns", 2)))
+    cells = [_node_lines(child, show_ids=show_ids) for child in children]
+
+    widths = [0] * columns
+    for index, cell in enumerate(cells):
+        column = index % columns
+        widths[column] = max(widths[column], max((len(line) for line in cell), default=0))
+
+    out: list[str] = []
+    for start in range(0, len(cells), columns):
+        band = cells[start : start + columns]
+        height = max((len(cell) for cell in band), default=0)
+        for line_index in range(height):
+            parts = []
+            for column, cell in enumerate(band):
+                text = cell[line_index] if line_index < len(cell) else ""
+                parts.append(text.ljust(widths[column]))
+            out.append("  ".join(parts).rstrip())
     return out
 
 
@@ -170,5 +210,8 @@ def _leaf_lines(node: dict[str, Any]) -> list[str]:
 
     if node_type == "Spacer":
         return [" "]
+
+    if node_type == "Divider":
+        return ["│" if props.get("vertical") else "─" * _DIVIDER_WIDTH]
 
     return [f"<{node_type}>"]

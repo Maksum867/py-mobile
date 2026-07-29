@@ -40,6 +40,10 @@ DEBUG_KEY_ALIAS = "pymobile"
 DEBUG_PASSWORD = "android"
 
 #: Parts of the standard library that are never needed on a phone.
+#:
+#: ``config-*`` is matched by prefix rather than by name: the directory is
+#: really ``config-3.14-aarch64-linux-android``, so the old exact match never
+#: fired and 262 KB of build headers shipped in every APK.
 STDLIB_EXCLUDES = (
     "test",
     "tests",
@@ -49,10 +53,39 @@ STDLIB_EXCLUDES = (
     "lib2to3",
     "ensurepip",
     "distutils",
-    "config-3.14",
     "__pycache__",
     "site-packages",
 )
+
+#: Prefixes of stdlib directories that are never needed on a phone.
+STDLIB_EXCLUDE_PREFIXES = ("config-",)
+
+#: Dropped by ``--minimal-stdlib``: development and desktop-only machinery
+#: that an application is very unlikely to import on a phone. Roughly 1.7 MB.
+MINIMAL_STDLIB_EXCLUDES = (
+    "pydoc_data",
+    "unittest",
+    "_pyrepl",
+    "xmlrpc",
+    "wsgiref",
+    "curses",
+    "venv",
+    "turtle.py",
+    "doctest.py",
+    "pdb.py",
+    "profile.py",
+    "cProfile.py",
+    "pstats.py",
+    "pydoc.py",
+    "this.py",
+    "antigravity.py",
+)
+
+#: Dropped by ``--no-ssl`` alongside the OpenSSL shared libraries.
+SSL_STDLIB_EXCLUDES = ("ssl.py",)
+
+#: Extension modules dropped by ``--no-ssl``.
+SSL_DYNLOAD_PREFIXES = ("_ssl.", "_hashlib.")
 
 
 @dataclass(slots=True)
@@ -159,10 +192,33 @@ class NativeBackend:
         self._copy_runtime_libraries(libdir, output_dir)
 
     def _copy_runtime_libraries(self, libdir: Path, output_dir: Path) -> None:
-        """Ship the interpreter and its shared dependencies next to the bridge."""
+        """Ship the interpreter and its shared dependencies next to the bridge.
+
+        The official runtime carries each support library twice — libcrypto.so
+        and libcrypto_python.so are byte-identical, and so are the ssl and
+        sqlite3 pairs. Only the ``_python`` copies are named in the extension
+        modules' DT_NEEDED entries, so the plain ones are dead weight: about
+        5 MB of a 21 MB APK. They are skipped unless something actually links
+        against them.
+
+        With ``--no-ssl`` the TLS libraries are left out altogether, which
+        saves a further ~4 MB for an app that makes no HTTPS requests.
+        """
+        wanted = ["libpython3.14", "libsqlite3"]
+        if not self.config.no_ssl:
+            wanted += ["libssl", "libcrypto"]
+
         for library in sorted(libdir.glob("*.so")):
-            if library.name.startswith(("libpython3.14", "libssl", "libcrypto", "libsqlite3")):
-                shutil.copy2(library, output_dir / library.name)
+            name = library.name
+            if not name.startswith(tuple(wanted)):
+                continue
+            # Prefer the _python variant; drop the duplicate when both exist.
+            if not name.startswith("libpython3.14"):
+                stem = name[: -len(".so")]
+                if not stem.endswith("_python") and (libdir / f"{stem}_python.so").exists():
+                    _log.debug("skipping duplicate runtime library %s", name)
+                    continue
+            shutil.copy2(library, output_dir / name)
 
     def _compile_jni_with_ndk(self, workdir: Path, output_dir: Path, libdir: Path) -> Path:
         """Build the JNI bridge from source with the NDK."""
@@ -325,6 +381,22 @@ class NativeBackend:
         return base
 
     # -- 5. assets ---------------------------------------------------------
+    def _is_excluded(self, relative: Path) -> bool:
+        """Whether a stdlib path is dropped by the current build options."""
+        parts = relative.parts
+        if any(part in STDLIB_EXCLUDES for part in parts):
+            return True
+        if any(part.startswith(STDLIB_EXCLUDE_PREFIXES) for part in parts):
+            return True
+        if self.config.minimal_stdlib and any(part in MINIMAL_STDLIB_EXCLUDES for part in parts):
+            return True
+        if self.config.no_ssl:
+            if any(part in SSL_STDLIB_EXCLUDES for part in parts):
+                return True
+            if parts[0] == "lib-dynload" and relative.name.startswith(SSL_DYNLOAD_PREFIXES):
+                return True
+        return False
+
     def collect_assets(self, sources: list[tuple[str, Path]]) -> dict[str, Path]:
         """Map archive paths to files for the stdlib and the application."""
         assets: dict[str, Path] = {}
@@ -334,7 +406,7 @@ class NativeBackend:
             if not path.is_file():
                 continue
             relative = path.relative_to(stdlib)
-            if any(part in STDLIB_EXCLUDES for part in relative.parts):
+            if self._is_excluded(relative):
                 continue
             if path.suffix in (".pyc", ".pyo", ".a", ".exe"):
                 continue
@@ -342,14 +414,17 @@ class NativeBackend:
 
         # Android has no OpenSSL cert bundle at the path CPython expects, so
         # HTTPS fails with CERTIFICATE_VERIFY_FAILED unless we ship one.
-        bundle = _find_ca_bundle()
-        if bundle is not None:
-            assets["assets/python/etc/ssl/cert.pem"] = bundle
-        else:  # pragma: no cover - only on hosts without any CA store
-            self.warnings.append(
-                "no CA bundle found, so HTTPS will fail on device — "
-                "fix it with: pip install certifi"
-            )
+        if self.config.no_ssl:
+            _log.debug("--no-ssl: skipping the CA bundle")
+        else:
+            bundle = _find_ca_bundle()
+            if bundle is not None:
+                assets["assets/python/etc/ssl/cert.pem"] = bundle
+            else:  # pragma: no cover - only on hosts without any CA store
+                self.warnings.append(
+                    "no CA bundle found, so HTTPS will fail on device — "
+                    "fix it with: pip install certifi"
+                )
 
         for name, path in sources:
             assets[f"assets/app/{name}"] = path

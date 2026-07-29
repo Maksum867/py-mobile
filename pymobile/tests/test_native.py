@@ -56,6 +56,25 @@ requires_prebuilt_so = pytest.mark.skipif(
 )
 
 
+def _method_body(source: str, signature: str) -> str:
+    """Return one Java method body, matched by brace balance.
+
+    Slicing until the next comment breaks whenever a method is moved, so the
+    body is delimited properly instead.
+    """
+    start = source.index(signature)
+    opening = source.index("{", start)
+    depth = 0
+    for index in range(opening, len(source)):
+        if source[index] == "{":
+            depth += 1
+        elif source[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start : index + 1]
+    raise AssertionError(f"unbalanced braces after {signature!r}")
+
+
 class TestToolchainDiscovery:
     def test_missing_sdk_reports_hint(self, tmp_path: Path) -> None:
         with pytest.raises(ToolchainError) as info:
@@ -146,6 +165,125 @@ class TestAssetSelection:
 
         for unwanted in ("test", "idlelib", "tkinter", "ensurepip"):
             assert unwanted in STDLIB_EXCLUDES
+
+
+class TestApkSize:
+    """Everything that decides how large the APK gets."""
+
+    def _backend(self, tmp_path: Path, **flags: object) -> object:
+        from pymobile.compiler.backends.native import NativeBackend
+
+        runtime = tmp_path / "runtime"
+        (runtime / "lib" / "python3.14").mkdir(parents=True, exist_ok=True)
+        config = ProjectConfig(root=tmp_path, package="com.example.a", **flags)  # type: ignore[arg-type]
+        return NativeBackend(
+            config,
+            Toolchain(tmp_path, tmp_path, tmp_path / "j.jar", tmp_path / "jdk"),
+            runtime,
+        )
+
+    # -- duplicate native libraries ---------------------------------------
+    def _fake_libs(self, tmp_path: Path) -> Path:
+        """A lib dir shaped like the official CPython Android release."""
+        libdir = tmp_path / "runtime" / "lib"
+        libdir.mkdir(parents=True, exist_ok=True)
+        for name in (
+            "libpython3.14.so",
+            "libcrypto.so",
+            "libcrypto_python.so",
+            "libssl.so",
+            "libssl_python.so",
+            "libsqlite3.so",
+            "libsqlite3_python.so",
+        ):
+            (libdir / name).write_bytes(b"\x7fELF" + name.encode())
+        return libdir
+
+    def test_duplicate_support_libraries_are_dropped(self, tmp_path: Path) -> None:
+        """libcrypto.so and libcrypto_python.so are byte-identical copies.
+
+        Only the _python names appear in the extension modules' DT_NEEDED
+        entries, so shipping both wasted ~5 MB of uncompressed, page-aligned
+        payload in every APK.
+        """
+        backend = self._backend(tmp_path)
+        libdir = self._fake_libs(tmp_path)
+        out = tmp_path / "out"
+        out.mkdir()
+        backend._copy_runtime_libraries(libdir, out)  # type: ignore[attr-defined]
+
+        shipped = {path.name for path in out.glob("*.so")}
+        assert shipped == {
+            "libpython3.14.so",
+            "libcrypto_python.so",
+            "libssl_python.so",
+            "libsqlite3_python.so",
+        }
+
+    def test_unpaired_library_is_still_shipped(self, tmp_path: Path) -> None:
+        """A runtime without the _python variant must keep the plain one."""
+        backend = self._backend(tmp_path)
+        libdir = tmp_path / "runtime" / "lib"
+        libdir.mkdir(parents=True, exist_ok=True)
+        (libdir / "libpython3.14.so").write_bytes(b"\x7fELF")
+        (libdir / "libsqlite3.so").write_bytes(b"\x7fELF")
+        out = tmp_path / "out"
+        out.mkdir()
+        backend._copy_runtime_libraries(libdir, out)  # type: ignore[attr-defined]
+        assert (out / "libsqlite3.so").exists()
+
+    def test_no_ssl_leaves_openssl_out(self, tmp_path: Path) -> None:
+        backend = self._backend(tmp_path, no_ssl=True)
+        libdir = self._fake_libs(tmp_path)
+        out = tmp_path / "out"
+        out.mkdir()
+        backend._copy_runtime_libraries(libdir, out)  # type: ignore[attr-defined]
+
+        shipped = {path.name for path in out.glob("*.so")}
+        assert shipped == {"libpython3.14.so", "libsqlite3_python.so"}
+
+    # -- stdlib pruning ----------------------------------------------------
+    def test_build_config_headers_are_excluded(self, tmp_path: Path) -> None:
+        """config-3.14 never matched config-3.14-aarch64-linux-android."""
+        backend = self._backend(tmp_path)
+        assert backend._is_excluded(  # type: ignore[attr-defined]
+            Path("config-3.14-aarch64-linux-android/Makefile")
+        )
+
+    def test_minimal_stdlib_drops_desktop_packages(self, tmp_path: Path) -> None:
+        default = self._backend(tmp_path)
+        minimal = self._backend(tmp_path, minimal_stdlib=True)
+        for name in ("pydoc_data/topics.py", "unittest/case.py", "venv/__init__.py"):
+            assert not default._is_excluded(Path(name))  # type: ignore[attr-defined]
+            assert minimal._is_excluded(Path(name))  # type: ignore[attr-defined]
+
+    def test_minimal_stdlib_keeps_what_apps_use(self, tmp_path: Path) -> None:
+        minimal = self._backend(tmp_path, minimal_stdlib=True)
+        for name in ("json/__init__.py", "http/client.py", "urllib/request.py", "re/__init__.py"):
+            assert not minimal._is_excluded(Path(name))  # type: ignore[attr-defined]
+
+    def test_no_ssl_drops_the_ssl_module_and_extensions(self, tmp_path: Path) -> None:
+        backend = self._backend(tmp_path, no_ssl=True)
+        assert backend._is_excluded(Path("ssl.py"))  # type: ignore[attr-defined]
+        assert backend._is_excluded(  # type: ignore[attr-defined]
+            Path("lib-dynload/_ssl.cpython-314-aarch64-linux-android.so")
+        )
+        assert not backend._is_excluded(Path("json/__init__.py"))  # type: ignore[attr-defined]
+
+    def test_no_ssl_skips_the_ca_bundle(self, tmp_path: Path) -> None:
+        backend = self._backend(tmp_path, no_ssl=True)
+        assets = backend.collect_assets([])  # type: ignore[attr-defined]
+        assert "assets/python/etc/ssl/cert.pem" not in assets
+
+    def test_ssl_is_shipped_by_default(self, tmp_path: Path) -> None:
+        backend = self._backend(tmp_path)
+        assert not backend._is_excluded(Path("ssl.py"))  # type: ignore[attr-defined]
+        assert "assets/python/etc/ssl/cert.pem" in backend.collect_assets([])  # type: ignore[attr-defined]
+
+    def test_flags_are_off_by_default(self) -> None:
+        config = ProjectConfig(package="com.example.a")
+        assert config.minimal_stdlib is False
+        assert config.no_ssl is False
 
 
 @requires_toolchain
@@ -706,8 +844,15 @@ class TestRendererContract:
         assert "layout.addView(child, params)" in source
 
     def test_spacer_gets_an_explicit_size_from_its_parent(self) -> None:
+        """The parent container, not the Spacer, assigns the size.
+
+        The sizing lives in childParams(), which is also where flex shares and
+        cross-axis alignment are resolved for every child of a Row/Column.
+        """
         source = self._source("ViewBuilder.java")
-        assert '"Spacer".equals(childNode.optString("type"))' in source
+        params = _method_body(source, "private LinearLayout.LayoutParams childParams")
+        assert '"Spacer".equals(type)' in params
+        assert 'childProps.optInt("size", 8)' in params
 
     def test_every_widget_type_is_handled(self) -> None:
         """The Python side must not emit a type the renderer ignores."""
@@ -723,11 +868,88 @@ class TestRendererContract:
                 )
 
     def test_prebuilt_dex_matches_the_current_java(self) -> None:
-        """The shipped dex must contain the latest renderer symbols."""
+        """The shipped dex must contain the latest renderer symbols.
+
+        The dex is what actually runs on a phone; if it lags behind
+        ViewBuilder.java the new widgets render as blank views with no error.
+        """
         from pymobile.resources import resource_path
 
         payload = resource_path("android", "prebuilt", "arm64-v8a", "classes.dex").read_bytes()
-        assert b"buildChild" in payload
+        for symbol in (
+            b"buildChild",
+            b"buildGrid",
+            b"buildSafeArea",
+            b"buildFlex",
+            b"buildDivider",
+            b"childParams",
+            b"applyConstraints",
+        ):
+            assert symbol in payload, f"{symbol.decode()} missing from the prebuilt dex"
+
+    def test_layout_primitives_are_rendered_natively(self) -> None:
+        """Grid/SafeArea/Expanded/Divider need real branches, not a fallback."""
+        source = self._source("ViewBuilder.java")
+        for type_name in ("Grid", "SafeArea", "Expanded", "Flexible", "Divider"):
+            assert f'case "{type_name}"' in source
+
+    def test_grid_columns_share_width_by_weight(self) -> None:
+        """Equal columns are what Row(weight=1) could not guarantee."""
+        source = self._source("ViewBuilder.java")
+        grid = _method_body(source, "private View buildGrid")
+        assert "new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)" in grid
+
+    def test_safe_area_uses_real_window_insets(self) -> None:
+        source = self._source("ViewBuilder.java")
+        assert "setOnApplyWindowInsetsListener" in source
+        assert "getSystemWindowInsetTop" in source
+
+    def test_constraints_are_applied(self) -> None:
+        source = self._source("ViewBuilder.java")
+        for marker in ("max_width", "max_height", "aspect_ratio", "setMinimumWidth"):
+            assert marker in source
+
+    def test_margin_is_applied_where_the_params_exist(self) -> None:
+        """Regression: Style(margin=...) was silently dropped.
+
+        applyStyle() runs while the view is still detached, so
+        getLayoutParams() returns null and writing margins there did nothing.
+        They belong on the params built by childParams().
+        """
+        source = self._source("ViewBuilder.java")
+        assert "private void applyMargin(" in source
+        assert "applyBoxStyle(params, style)" in source
+
+        # ...and the old, ineffective path must not come back.
+        assert "getLayoutParams()" not in _method_body(source, "private void applyStyle(")
+
+    def test_margin_adds_to_spacing_instead_of_replacing_it(self) -> None:
+        """A container's spacing and a widget's margin must both survive."""
+        source = self._source("ViewBuilder.java")
+        margin = _method_body(source, "private void applyMargin(")
+        for field in ("leftMargin", "topMargin", "rightMargin", "bottomMargin"):
+            assert f"params.{field} +=" in margin
+
+    def test_style_width_and_height_reach_the_layout(self) -> None:
+        """Style(width=..., height=...) had no effect on device at all."""
+        source = self._source("ViewBuilder.java")
+        assert 'dimension(style, "width")' in source
+        assert 'dimension(style, "height")' in source
+        assert "MATCH_PARENT" in source[source.index("private int dimension(") :]
+
+    def test_elevation_is_applied(self) -> None:
+        source = self._source("ViewBuilder.java")
+        assert "setElevation" in source
+
+    def test_scrollview_children_use_the_shared_sizing_rules(self) -> None:
+        """A scrolled child gets the same margins and flex as a Column child."""
+        source = self._source("ViewBuilder.java")
+        scroll = _method_body(source, "private View buildScroll")
+        assert "childParams(childNode, orientation" in scroll
+
+    def test_grid_cells_keep_their_margin(self) -> None:
+        source = self._source("ViewBuilder.java")
+        assert "applyMargin(params" in _method_body(source, "private View buildGrid")
 
 
 class TestDeviceFixes:
@@ -1031,3 +1253,36 @@ class TestPermissionDialogTiming:
         block = source[source.index("static boolean requestPermissionBlocking") :]
         block = block[: block.index("return permissionGranted")]
         assert block.index("resumedLatch.await") < block.index("requestPermissions(")
+
+
+class TestNoSslWarning:
+    """--no-ssl silently breaks HTTPS unless the build says so."""
+
+    def _project(self, tmp_path: Path, source: str) -> ProjectConfig:
+        (tmp_path / "main.py").write_text(source, encoding="utf-8")
+        return ProjectConfig(root=tmp_path, package="com.example.a", no_ssl=True)
+
+    def test_warns_when_the_app_uses_http(self, tmp_path: Path) -> None:
+        from pymobile.compiler.pipeline import BuildPipeline
+
+        config = self._project(tmp_path, "from pymobile import HttpClient\nHttpClient()\n")
+        pipeline = BuildPipeline(config)
+        pipeline._validate()
+        assert any("--no-ssl" in warning for warning in pipeline.warnings)
+
+    def test_silent_when_the_app_never_goes_online(self, tmp_path: Path) -> None:
+        from pymobile.compiler.pipeline import BuildPipeline
+
+        config = self._project(tmp_path, "print('offline')\n")
+        pipeline = BuildPipeline(config)
+        pipeline._validate()
+        assert not any("--no-ssl" in warning for warning in pipeline.warnings)
+
+    def test_no_warning_without_the_flag(self, tmp_path: Path) -> None:
+        from pymobile.compiler.pipeline import BuildPipeline
+
+        (tmp_path / "main.py").write_text("from pymobile import HttpClient\n", encoding="utf-8")
+        config = ProjectConfig(root=tmp_path, package="com.example.a")
+        pipeline = BuildPipeline(config)
+        pipeline._validate()
+        assert not any("--no-ssl" in warning for warning in pipeline.warnings)

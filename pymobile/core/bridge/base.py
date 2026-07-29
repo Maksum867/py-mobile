@@ -94,3 +94,12 @@ class Bridge(ABC):
     @abstractmethod
     def render(self, tree: dict[str, Any]) -> None:
         """Hand a serialised widget tree to the native view layer."""
+
+    # -- locale ------------------------------------------------------------
+    def device_language(self) -> str:
+        """The language tag the device is configured for, e.g. ``uk-UA``.
+
+        Not abstract: a bridge that cannot answer returns an empty string and
+        the framework falls back to the environment.
+        """
+        return ""

@@ -18,7 +18,7 @@ Build it with ``pymobile build``.
 
 from __future__ import annotations
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 __author__ = "MAKSYM KHLYSTUN"
 __license__ = "MIT"
 
@@ -26,6 +26,7 @@ from .core.api import Notifications, Permission, PermissionManager, Vibration
 from .core.app import App
 from .core.config import ProjectConfig, load_config
 from .core.events import Event, EventBus
+from .core.i18n import device_language, t, translations
 from .core.net import HttpClient, Response
 from .core.platform import Platform, current_platform, is_android, is_desktop
 from .core.scheduler import Scheduler, TimerHandle
@@ -35,12 +36,16 @@ from .core.ui import (
     Color,
     Column,
     Container,
+    Divider,
     EdgeInsets,
+    Expanded,
+    Grid,
     Image,
     Label,
     Navigator,
     ProgressBar,
     Row,
+    SafeArea,
     Screen,
     ScrollView,
     Spacer,
@@ -82,6 +87,10 @@ __all__ = [
     # networking
     "HttpClient",
     "Response",
+    # i18n
+    "device_language",
+    "t",
+    "translations",
     # ui
     "Widget",
     "Container",
@@ -102,6 +111,10 @@ __all__ = [
     "Color",
     "Align",
     "EdgeInsets",
+    "Divider",
+    "Expanded",
+    "Grid",
+    "SafeArea",
     # errors
     "PyMobileError",
     "ConfigError",

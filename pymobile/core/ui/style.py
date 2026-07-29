@@ -41,12 +41,32 @@ class Color:
 
 
 class Align:
-    """Alignment constants shared by layouts and text."""
+    """Alignment constants shared by layouts and text.
+
+    ``START``/``CENTER``/``END``/``SPACE_BETWEEN`` position children along a
+    container's main axis. The cross axis (how a Row's children line up
+    vertically, or how wide a Column's children are) uses the same names plus
+    :attr:`STRETCH`, and is set through ``cross_align``.
+    """
 
     START = "start"
     CENTER = "center"
     END = "end"
     SPACE_BETWEEN = "space_between"
+    #: Cross-axis only: fill the container across the axis.
+    STRETCH = "stretch"
+
+    #: Values accepted by ``cross_align``.
+    CROSS = (START, CENTER, END, STRETCH)
+
+    @classmethod
+    def validate_cross(cls, value: str) -> str:
+        """Return a valid ``cross_align`` value, or raise :class:`ValueError`."""
+        if value not in cls.CROSS:
+            raise ValueError(
+                f"invalid cross_align {value!r}; expected one of {', '.join(cls.CROSS)}"
+            )
+        return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,7 +98,13 @@ class EdgeInsets:
 
 @dataclass(frozen=True, slots=True)
 class Style:
-    """Visual attributes of a widget; ``None`` means "inherit the default"."""
+    """Visual attributes of a widget; ``None`` means "inherit the default".
+
+    Besides the fixed ``width``/``height`` there is a set of constraints —
+    ``min_width``, ``max_width``, ``min_height``, ``max_height`` and
+    ``aspect_ratio`` — for the common "at least this big, never bigger than
+    that" card, and for images that must keep a 16:9 shape.
+    """
 
     background: str | None = None
     color: str | None = None
@@ -89,6 +115,11 @@ class Style:
     margin: EdgeInsets | None = None
     width: int | str | None = None
     height: int | str | None = None
+    min_width: int | None = None
+    max_width: int | None = None
+    min_height: int | None = None
+    max_height: int | None = None
+    aspect_ratio: float | None = None
     align: str | None = None
     corner_radius: int | None = None
     elevation: int | None = None
@@ -100,6 +131,26 @@ class Style:
                 Color.validate(value)
         if self.font_size is not None and self.font_size <= 0:
             raise ValueError("font_size must be positive")
+        for name in ("min_width", "max_width", "min_height", "max_height"):
+            value = getattr(self, name)
+            if value is not None and value < 0:
+                raise ValueError(f"{name} must not be negative")
+        # A contradictory pair silently clips the widget to nothing on device,
+        # which is far harder to debug than an exception here.
+        if (
+            self.min_width is not None
+            and self.max_width is not None
+            and self.min_width > self.max_width
+        ):
+            raise ValueError("min_width must not exceed max_width")
+        if (
+            self.min_height is not None
+            and self.max_height is not None
+            and self.min_height > self.max_height
+        ):
+            raise ValueError("min_height must not exceed max_height")
+        if self.aspect_ratio is not None and self.aspect_ratio <= 0:
+            raise ValueError("aspect_ratio must be positive")
 
     def merge(self, **overrides: Any) -> Style:
         """Return a copy with some attributes replaced."""

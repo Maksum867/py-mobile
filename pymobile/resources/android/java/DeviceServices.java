@@ -178,4 +178,40 @@ final class DeviceServices {
         Toast.makeText(activity, message,
                 longer ? Toast.LENGTH_LONG : Toast.LENGTH_SHORT).show();
     }
+
+    /**
+     * The language the device is set to, as a BCP-47 tag such as "uk-UA".
+     *
+     * Read from the configuration rather than Locale.getDefault() so that a
+     * per-app language override (Android 13's per-app languages) is honoured.
+     * Returns an empty string when it cannot be determined, which tells the
+     * Python side to fall back to its own detection.
+     */
+    static String deviceLanguage(Context context) {
+        java.util.Locale locale = null;
+        if (context != null) {
+            android.content.res.Configuration config =
+                    context.getResources().getConfiguration();
+            if (Build.VERSION.SDK_INT >= 24) {
+                android.os.LocaleList locales = config.getLocales();
+                if (!locales.isEmpty()) {
+                    locale = locales.get(0);
+                }
+            } else {
+                locale = config.locale;
+            }
+        }
+        if (locale == null) {
+            locale = java.util.Locale.getDefault();
+        }
+        if (locale == null) {
+            return "";
+        }
+        String language = locale.getLanguage();
+        if (language == null || language.isEmpty()) {
+            return "";
+        }
+        String country = locale.getCountry();
+        return (country == null || country.isEmpty()) ? language : language + "-" + country;
+    }
 }

@@ -4,19 +4,68 @@ A widget is a declarative description of a piece of UI, not a native view.
 Trees are serialised with :meth:`Widget.to_dict` and handed to the bridge,
 which owns the native rendering. Keeping widgets pure data makes the UI layer
 trivially testable and lets the native renderer evolve independently.
+
+Mutating a widget that is on screen schedules a re-render by itself: every
+setter funnels through :meth:`Widget.invalidate`, which walks up to the screen
+and asks the application to redraw. Forgetting ``app.render()`` is therefore no
+longer a class of bug — see :mod:`pymobile.core.app` for how the redraws are
+coalesced.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from itertools import count
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .style import Style
 
-__all__ = ["Widget", "Container"]
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from .screen import Screen
 
+__all__ = ["Widget", "Container", "auto_id", "reset_id_counter", "widget_scope"]
+
+#: Fallback counter, used when no screen scope is active.
 _ids = count(1)
+
+#: Per-screen counters, so ids do not shift when an unrelated screen changes.
+#: A ContextVar keeps concurrent builds (threads, tests) from sharing state.
+_scope: ContextVar[dict[str, count[int]] | None] = ContextVar("pymobile_widget_scope", default=None)
+
+
+def reset_id_counter() -> None:
+    """Restart the anonymous-widget counter (used by tests)."""
+    global _ids
+    _ids = count(1)
+
+
+def auto_id(prefix: str) -> str:
+    """Return a unique id of the form ``prefix-N``.
+
+    Inside a :func:`widget_scope` the number is local to that screen and
+    restarts per widget type, so adding a Label at the top of one screen no
+    longer renumbers every widget in the application.
+    """
+    counters = _scope.get()
+    if counters is None:
+        return f"{prefix}-{next(_ids)}"
+    counter = counters.get(prefix)
+    if counter is None:
+        counter = count(1)
+        counters[prefix] = counter
+    return f"{prefix}-{next(counter)}"
+
+
+@contextmanager
+def widget_scope(owner: object = None) -> Iterator[None]:
+    """Number widgets built inside the block per screen instead of globally."""
+    token = _scope.set({})
+    try:
+        yield
+    finally:
+        _scope.reset(token)
 
 
 class Widget:
@@ -25,7 +74,16 @@ class Widget:
     #: Type name used in the serialised tree; defaults to the class name.
     type_name: str = "Widget"
 
-    __slots__ = ("id", "style", "visible", "enabled", "_parent", "_props")
+    __slots__ = (
+        "id",
+        "style",
+        "_visible",
+        "_enabled",
+        "_parent",
+        "_props",
+        "_screen",
+        "_explicit_id",
+    )
 
     def __init__(
         self,
@@ -36,11 +94,13 @@ class Widget:
         enabled: bool = True,
         **props: Any,
     ) -> None:
-        self.id = id or f"{type(self).__name__.lower()}-{next(_ids)}"
+        self._explicit_id = id is not None
+        self.id = id or auto_id(type(self).__name__.lower())
         self.style = style or Style()
-        self.visible = visible
-        self.enabled = enabled
+        self._visible = visible
+        self._enabled = enabled
         self._parent: Widget | None = None
+        self._screen: Screen | None = None
         self._props: dict[str, Any] = props
 
     # -- tree --------------------------------------------------------------
@@ -64,7 +124,53 @@ class Widget:
         """Find a descendant (or self) by id."""
         return next((widget for widget in self.walk() if widget.id == widget_id), None)
 
+    # -- reactivity --------------------------------------------------------
+    @property
+    def screen(self) -> Screen | None:
+        """The screen this widget belongs to, if it is attached to one.
+
+        The link is stored on the root widget only, so this walks up the
+        parent chain — a handful of pointer hops on trees of realistic depth.
+        """
+        node: Widget = self
+        while node._parent is not None:
+            node = node._parent
+        return node._screen
+
+    def invalidate(self) -> None:
+        """Mark this widget as changed and schedule a redraw.
+
+        Safe to call at any time: while the widget is detached, during
+        ``build()``, or before the app is running. In those cases there is
+        nothing on screen yet and the call does nothing.
+        """
+        screen = self.screen
+        if screen is not None:
+            screen.invalidate()
+
     # -- properties --------------------------------------------------------
+    @property
+    def visible(self) -> bool:
+        """Whether the widget is drawn; hidden widgets keep their place free."""
+        return self._visible
+
+    @visible.setter
+    def visible(self, value: bool) -> None:
+        if value != self._visible:
+            self._visible = value
+            self.invalidate()
+
+    @property
+    def enabled(self) -> bool:
+        """Whether the widget reacts to input."""
+        return self._enabled
+
+    @enabled.setter
+    def enabled(self, value: bool) -> None:
+        if value != self._enabled:
+            self._enabled = value
+            self.invalidate()
+
     def props(self) -> dict[str, Any]:
         """Serialisable properties of this widget; subclasses extend this."""
         return dict(self._props)
@@ -74,8 +180,8 @@ class Widget:
         node: dict[str, Any] = {
             "type": self.type_name,
             "id": self.id,
-            "visible": self.visible,
-            "enabled": self.enabled,
+            "visible": self._visible,
+            "enabled": self._enabled,
             "props": self.props(),
         }
         style = self.style.to_dict()
@@ -115,6 +221,7 @@ class Container(Widget):
             raise ValueError(f"widget {child.id!r} already has a parent")
         child._parent = self
         self._children.append(child)
+        self.invalidate()
         return child
 
     def extend(self, children: Sequence[Widget]) -> None:
@@ -127,12 +234,16 @@ class Container(Widget):
         if child in self._children:
             self._children.remove(child)
             child._parent = None
+            self.invalidate()
 
     def clear(self) -> None:
         """Detach every child."""
+        if not self._children:
+            return
         for child in self._children:
             child._parent = None
         self._children.clear()
+        self.invalidate()
 
     def __len__(self) -> int:
         return len(self._children)

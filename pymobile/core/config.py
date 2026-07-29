@@ -53,6 +53,10 @@ class ProjectConfig:
     output_dir: str = "build"
     optimize: bool = True
     strip_debug: bool = True
+    #: Drop desktop-only stdlib packages (pydoc, unittest, venv, ...) — ~1.7 MB.
+    minimal_stdlib: bool = False
+    #: Leave OpenSSL, ssl.py and the CA bundle out — ~4 MB, no HTTPS.
+    no_ssl: bool = False
     exclude: list[str] = field(
         default_factory=lambda: [
             "**/__pycache__/**",

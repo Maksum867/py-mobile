@@ -10,6 +10,7 @@ from ...logging import get_logger
 from ..platform import is_android
 from .android import AndroidBridge
 from .base import Bridge, BridgeCall, NotificationSpec
+from .gui import GuiBridge, WebBridge
 from .jni import JNIBridge
 from .stub import StubBridge
 
@@ -20,6 +21,8 @@ __all__ = [
     "NotificationSpec",
     "JNIBridge",
     "StubBridge",
+    "GuiBridge",
+    "WebBridge",
     "get_bridge",
     "set_bridge",
     "reset_bridge",
