@@ -360,10 +360,18 @@ class TestPipeline:
             assert "assets/app/broken.py" in archive.namelist()
 
     def test_warns_about_missing_internet(self, tmp_path: Path) -> None:
-        (tmp_path / "main.py").write_text("x = 1", encoding="utf-8")
+        (tmp_path / "main.py").write_text(
+            "from pymobile import HttpClient\nclient = HttpClient()\n", encoding="utf-8"
+        )
         config = ProjectConfig(root=tmp_path, permissions=[])
         result = build_apk(config)
         assert any("INTERNET" in warning for warning in result.warnings)
+
+    def test_no_internet_warning_without_http_usage(self, tmp_path: Path) -> None:
+        (tmp_path / "main.py").write_text("x = 1", encoding="utf-8")
+        config = ProjectConfig(root=tmp_path, permissions=[])
+        result = build_apk(config)
+        assert not any("INTERNET" in warning for warning in result.warnings)
 
     def test_warns_about_notifications_on_new_sdk(self, tmp_path: Path) -> None:
         (tmp_path / "main.py").write_text("x = 1", encoding="utf-8")

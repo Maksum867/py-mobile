@@ -170,6 +170,40 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_preview(args: argparse.Namespace) -> int:
+    """Render the app's first screen as a picture on this machine."""
+    from .core.bridge import StubBridge, set_bridge
+    from .core.ui.preview import render_ascii, render_png
+
+    config = _load(args)
+    entry = config.entrypoint_path
+    if not entry.exists():
+        raise PyMobileError(
+            f"Entry point not found: {entry}",
+            hint="Check `entrypoint` in your configuration.",
+        )
+
+    bridge = StubBridge(verbose=False)
+    set_bridge(bridge)
+    sys.path.insert(0, str(config.source_path))
+    namespace: dict[str, object] = {"__name__": "__main__", "__file__": str(entry)}
+    exec(compile(entry.read_text(encoding="utf-8"), str(entry), "exec"), namespace)
+
+    tree = bridge.last_tree
+    if tree is None:
+        raise PyMobileError(
+            "The app rendered nothing.",
+            hint="Make sure the entry point calls App(...).run(SomeScreen()).",
+        )
+
+    if args.png:
+        path = render_png(tree, args.png)
+        _out.ok(f"wrote preview to {path}")
+    else:
+        print(render_ascii(tree, show_ids=args.ids, title=config.name))
+    return 0
+
+
 def cmd_info(args: argparse.Namespace) -> int:
     """Print the resolved configuration."""
     config = _load(args)
@@ -354,6 +388,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     run = sub.add_parser("run", help="preview the app on this machine", parents=[common])
     run.set_defaults(func=cmd_run)
+
+    preview = sub.add_parser(
+        "preview", help="draw the first screen as a desktop picture", parents=[common]
+    )
+    preview.add_argument("--png", metavar="PATH", help="write a PNG instead of text")
+    preview.add_argument(
+        "--ids", action="store_true", help="annotate widgets with their id"
+    )
+    preview.set_defaults(func=cmd_preview)
 
     info = sub.add_parser("info", help="show the resolved configuration", parents=[common])
     info.add_argument("--json", action="store_true", help="machine-readable output")

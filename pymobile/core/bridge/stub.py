@@ -28,6 +28,7 @@ class StubBridge(Bridge):
         self.granted: set[str] = set()
         self.grant_permissions = grant_permissions
         self.verbose = verbose
+        self.last_tree: dict[str, Any] | None = None
 
     # -- helpers -----------------------------------------------------------
     def _record(self, name: str, **kwargs: Any) -> None:
@@ -44,6 +45,7 @@ class StubBridge(Bridge):
         self.calls.clear()
         self.notifications.clear()
         self.granted.clear()
+        self.last_tree = None
 
     def is_available(self) -> bool:
         return True
@@ -94,4 +96,5 @@ class StubBridge(Bridge):
         self._record("toast", message=message, long=long)
 
     def render(self, tree: dict[str, Any]) -> None:
+        self.last_tree = tree
         self._record("render", root=tree.get("type"), children=len(tree.get("children", ())))

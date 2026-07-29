@@ -19,6 +19,7 @@ from .bridge import Bridge, get_bridge
 from .events import EventBus, Subscription
 from .net.http import HttpClient
 from .platform import current_platform
+from .scheduler import Scheduler, TimerHandle
 from .ui.screen import Navigator, Screen
 
 __all__ = ["App"]
@@ -51,6 +52,7 @@ class App:
         self.vibration = Vibration(self.bridge)
         self.permissions = PermissionManager(self.bridge)
         self.http = HttpClient(base_url=base_url)
+        self._scheduler = Scheduler()
         self._log_level = log_level
         self._running = False
 
@@ -132,7 +134,12 @@ class App:
         self.events.emit(f"ui:{kind}", source=widget_id, value=value)
 
     def stop(self) -> None:
-        """Shut the app down and release subscriptions."""
+        """Shut the app down and release subscriptions.
+
+        Pending timers are always cancelled, even when ``run`` was never
+        called, so a partially initialised app cannot leak background work.
+        """
+        self._scheduler.cancel_all()
         if not self._running:
             return
         self._running = False
@@ -158,6 +165,20 @@ class App:
     def pop(self) -> Screen | None:
         """Go back one screen; ``None`` when already at the root."""
         return self.navigator.pop()
+
+    # -- timers ------------------------------------------------------------
+    def set_interval(self, interval_ms: int, callback: Callable[[], None]) -> TimerHandle:
+        """Run ``callback`` every ``interval_ms`` until the handle is cancelled.
+
+        The callback fires on a background thread on every platform, so a
+        clock or poller needs no ``threading`` boilerplate. All timers are
+        cancelled automatically by :meth:`stop`.
+        """
+        return self._scheduler.set_interval(interval_ms, callback)
+
+    def set_timeout(self, delay_ms: int, callback: Callable[[], None]) -> TimerHandle:
+        """Run ``callback`` once after ``delay_ms`` milliseconds."""
+        return self._scheduler.set_timeout(delay_ms, callback)
 
     def toast(self, message: str, *, long: bool = False) -> None:
         """Show a short platform message."""

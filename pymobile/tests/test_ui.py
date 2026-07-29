@@ -49,6 +49,12 @@ class TestWidgets:
         button.press()
         assert calls == []
 
+    def test_button_set_text_updates_label(self) -> None:
+        button = Button("Start")
+        button.set_text("Pause")
+        assert button.text == "Pause"
+        assert button.props()["text"] == "Pause"
+
     def test_text_input_notifies_on_change(self) -> None:
         seen: list[str] = []
         field = TextInput(on_change=seen.append)

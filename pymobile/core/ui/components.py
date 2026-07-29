@@ -51,6 +51,10 @@ class Button(Widget):
         self.text = text
         self.on_press = on_press
 
+    def set_text(self, text: str) -> None:
+        """Replace the button's label, mirroring :meth:`Label.set_text`."""
+        self.text = text
+
     def press(self) -> None:
         """Simulate a tap; ignored while the button is disabled."""
         if self.enabled and self.on_press is not None:

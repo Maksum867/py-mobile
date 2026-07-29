@@ -35,6 +35,27 @@ requires_toolchain = pytest.mark.skipif(
 )
 
 
+def _prebuilt_so_present() -> bool:
+    """Whether the packaged prebuilt JNI bridge exists.
+
+    ``*.so`` is git-ignored, so a fresh source checkout lacks the artifact —
+    it only ships inside built wheels. Tests that depend on it are skipped
+    rather than failing in that case.
+    """
+    try:
+        from pymobile.resources import resource_path
+
+        return resource_path("android", "prebuilt", "arm64-v8a", "libpymobile.so").exists()
+    except Exception:
+        return False
+
+
+requires_prebuilt_so = pytest.mark.skipif(
+    not _prebuilt_so_present(),
+    reason="prebuilt libpymobile.so is absent from a source checkout (*.so is git-ignored)",
+)
+
+
 class TestToolchainDiscovery:
     def test_missing_sdk_reports_hint(self, tmp_path: Path) -> None:
         with pytest.raises(ToolchainError) as info:
@@ -444,6 +465,7 @@ class TestJdkArchives:
 class TestPrebuiltArtifacts:
     """The packaged prebuilts let users build APKs without the NDK or a JDK."""
 
+    @requires_prebuilt_so
     def test_prebuilts_are_packaged(self) -> None:
         from pymobile.resources import resource_path
 
@@ -459,6 +481,7 @@ class TestPrebuiltArtifacts:
         for symbol in (b"MainActivity", b"ViewBuilder", b"Native", b"DeviceServices"):
             assert symbol in payload
 
+    @requires_prebuilt_so
     def test_prebuilts_carry_no_project_identity(self) -> None:
         """They must be reusable across apps, so no package id may be baked in."""
         from pymobile.resources import resource_path
@@ -467,6 +490,7 @@ class TestPrebuiltArtifacts:
             payload = resource_path("android", "prebuilt", "arm64-v8a", name).read_bytes()
             assert b"com.example" not in payload
 
+    @requires_prebuilt_so
     def test_jni_falls_back_without_ndk(self, tmp_path: Path) -> None:
         from pymobile.compiler.backends.native import NativeBackend
 
@@ -606,6 +630,7 @@ class TestBuildRobustness:
         assert dex.exists()
         assert any("prebuilt dex" in warning for warning in backend.warnings)
 
+    @requires_prebuilt_so
     def test_jni_falls_back_when_clang_fails(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -640,7 +665,8 @@ class TestBuildRobustness:
 
     def test_dex_is_passed_a_single_jar(self, tmp_path: Path) -> None:
         """d8 must receive one archive, not hundreds of .class paths."""
-        source = Path("pymobile/compiler/backends/native.py").read_text(encoding="utf-8")
+        native = Path(__file__).resolve().parents[1] / "compiler" / "backends" / "native.py"
+        source = native.read_text(encoding="utf-8")
         assert '"jar", "cf", archive' in source
         assert "*sorted(classes.rglob" not in source
 
@@ -863,7 +889,8 @@ class TestCaBundleDiscovery:
         assert _export_windows_trust_store(tmp_path) is None
 
     def test_warning_tells_the_user_what_to_do(self) -> None:
-        source = Path("pymobile/compiler/backends/native.py").read_text(encoding="utf-8")
+        native = Path(__file__).resolve().parents[1] / "compiler" / "backends" / "native.py"
+        source = native.read_text(encoding="utf-8")
         assert "pip install certifi" in source
 
 

@@ -262,6 +262,37 @@ class TestHintsMatchTheEnvironment:
 
     def test_icons_hint_uses_a_real_package_name(self) -> None:
         """`pymobile[icons]` was wrong: the distribution is py-mobile."""
-        source = Path("pymobile/cli.py").read_text(encoding="utf-8")
+        source = (Path(__file__).resolve().parents[1] / "cli.py").read_text(encoding="utf-8")
         assert "pymobile[icons]" not in source
         assert "pip install Pillow" in source
+
+
+class TestPreview:
+    def _app_project(self, root: Path) -> None:
+        (root / "pymobile.toml").write_text(
+            '[app]\nname = "T"\npackage = "com.example.t"\n', encoding="utf-8"
+        )
+        (root / "main.py").write_text(
+            "from pymobile import App, Column, Label, Screen\n"
+            "class Home(Screen):\n"
+            "    def build(self):\n"
+            "        return Column(Label('PREVIEW_OK'))\n"
+            "App('T').run(Home())\n",
+            encoding="utf-8",
+        )
+
+    def test_preview_draws_the_first_screen(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        self._app_project(tmp_path)
+        assert main(["preview", "-c", str(tmp_path)]) == 0
+        assert "PREVIEW_OK" in capsys.readouterr().out
+
+    def test_preview_png_writes_file(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        pytest.importorskip("PIL")
+        self._app_project(tmp_path)
+        out = tmp_path / "shot.png"
+        assert main(["preview", "-c", str(tmp_path), "--png", str(out)]) == 0
+        assert out.exists() and out.stat().st_size > 0

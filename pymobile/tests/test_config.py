@@ -153,3 +153,16 @@ class TestLoading:
         with pytest.raises(ConfigError) as info:
             load_config(tmp_path)
         assert info.value.hint is not None
+
+
+def test_version_matches_pyproject() -> None:
+    """Guard against the package version drifting from pyproject.toml."""
+    import tomllib
+
+    import pymobile
+
+    pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
+    if not pyproject.exists():
+        pytest.skip("pyproject.toml absent (installed wheel)")
+    data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    assert pymobile.__version__ == data["project"]["version"]

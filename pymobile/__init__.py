@@ -18,8 +18,8 @@ Build it with ``pymobile build``.
 
 from __future__ import annotations
 
-__version__ = "0.1.0"
-__author__ = "PyMobile Contributors"
+__version__ = "0.2.0"
+__author__ = "MAKSYM KHLYSTUN"
 __license__ = "MIT"
 
 from .core.api import Notifications, Permission, PermissionManager, Vibration
@@ -28,6 +28,7 @@ from .core.config import ProjectConfig, load_config
 from .core.events import Event, EventBus
 from .core.net import HttpClient, Response
 from .core.platform import Platform, current_platform, is_android, is_desktop
+from .core.scheduler import Scheduler, TimerHandle
 from .core.ui import (
     Align,
     Button,
@@ -66,6 +67,8 @@ __all__ = [
     "load_config",
     "Event",
     "EventBus",
+    "Scheduler",
+    "TimerHandle",
     # platform
     "Platform",
     "current_platform",

@@ -70,6 +70,7 @@ device. No Java, no Gradle, no Android Studio.
 - [Permissions](#permissions)
 - [HTTP requests](#http-requests)
 - [Events](#events)
+- [Timers](#timers)
 - [Configuration reference](#configuration-reference)
 - [Building an APK](#building-an-apk)
 - [Application icon](#application-icon)
@@ -77,6 +78,7 @@ device. No Java, no Gradle, no Android Studio.
 - [Debugging](#debugging)
 - [Testing your app](#testing-your-app)
 - [Error handling](#error-handling)
+- [Desktop preview](#desktop-preview)
 - [CLI reference](#cli-reference)
 - [Extending the framework](#extending-the-framework)
 - [Limitations](#limitations)
@@ -591,6 +593,36 @@ running.
 
 ---
 
+## Timers
+
+Schedule work without importing `threading`. Callbacks fire on a background
+thread on every platform, so the UI never blocks, and the same code runs on
+desktop and device.
+
+```python
+# every second — drive a clock, poll a sensor, tick a game
+ticker = app.set_interval(1000, self.on_tick)
+
+# once, after a delay — dismiss a splash, auto-save
+app.set_timeout(250, splash.dismiss)
+
+# stop early
+ticker.cancel()
+```
+
+Every call returns a `TimerHandle` with `.cancel()` and `.cancelled`. An
+exception inside a callback is logged and does **not** stop a repeating
+timer. All timers are cancelled automatically when the app stops, but you
+should still cancel a repeating timer in `on_unmount()` so a popped screen
+does not keep ticking:
+
+```python
+def on_unmount(self) -> None:
+    self.ticker.cancel()
+```
+
+---
+
 ## Configuration reference
 
 Everything lives in `pymobile.toml` (or a `[tool.pymobile]` table inside
@@ -821,6 +853,43 @@ The CLI prints only the message and hint. Add `-v` for a full traceback.
 
 ---
 
+## Desktop preview
+
+`pymobile preview` renders the first screen into a picture right on your
+laptop — no emulator, no phone. It runs your entry point with the stub
+bridge and draws the resulting widget tree:
+
+```bash
+pymobile preview            # text picture in the terminal
+pymobile preview --ids      # annotate each widget with its id
+pymobile preview --png ui.png   # save a raster image (needs Pillow)
+```
+
+The text picture shows the real layout — `Row` children sit side by side,
+`ProgressBar` is drawn as a filled bar, `Switch` shows its state:
+
+```text
+┌──────────────────────────────┐
+│ Pomodoro Focus               │
+├──────────────────────────────┤
+🎯 Focus
+25:00
+[░░░░░░░░░░░░░░░░] 0%
+(Start)  (Reset)
+Vibrate when done  [●] on
+└──────────────────────────────┘
+```
+
+The same renderer is importable, so tests and notebooks can snapshot a
+screen too:
+
+```python
+from pymobile.core.ui.preview import render_ascii
+print(render_ascii(app.screen.build(), title="Home"))
+```
+
+---
+
 ## CLI reference
 
 | Command | Description |
@@ -829,6 +898,7 @@ The CLI prints only the message and hint. Add `-v` for a full traceback.
 | `pymobile setup-sdk` | install the Android toolchain (`--with-ndk`, `--path`) |
 | `pymobile build --native` | build a signed, installable APK |
 | `pymobile run` | run the app on your machine |
+| `pymobile preview` | draw the first screen as a picture (`--png`, `--ids`) |
 | `pymobile info` | show the resolved configuration (`--json`) |
 | `pymobile doctor` | check environment and project health |
 | `pymobile clean` | remove build artifacts |
@@ -889,8 +959,10 @@ Call `self.app.render()` after changing properties, or `self.refresh()` when
 the tree structure changed. See [Updating the screen](#updating-the-screen).
 
 **Why does `pymobile run` show no window?**
-That is expected. On a desktop the stub bridge logs the widget tree instead of
-drawing it — it verifies logic, not appearance.
+That is expected: on a desktop the stub bridge runs your logic without native
+views, which is what makes apps testable without an emulator. To *see* the
+first screen as a picture, use `pymobile preview` (or `--png` to save an image).
+See [Desktop preview](#desktop-preview).
 
 **Why doesn't a 404 raise an exception?**
 Because it is a valid HTTP response. Use `response.ok` or

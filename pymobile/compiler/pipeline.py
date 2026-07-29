@@ -122,9 +122,10 @@ class BuildPipeline:
         """Re-check the configuration and warn about likely mistakes."""
         self.config.validate()
         permissions = {str(p) for p in self.config.permissions}
-        if "android.permission.INTERNET" not in permissions:
+        if "android.permission.INTERNET" not in permissions and self._uses_http():
             self.warnings.append(
-                "INTERNET permission is not declared; HTTP requests will fail on device."
+                "Your code uses HttpClient but android.permission.INTERNET is not "
+                "declared; HTTP requests will fail on device."
             )
         if self.config.target_sdk >= 33 and "android.permission.POST_NOTIFICATIONS" not in (
             permissions
@@ -132,6 +133,26 @@ class BuildPipeline:
             self.warnings.append(
                 "targetSdk >= 33 without POST_NOTIFICATIONS: notifications stay hidden."
             )
+
+    def _uses_http(self) -> bool:
+        """Best-effort scan of the app sources for HTTP client usage.
+
+        Keeps the missing-INTERNET warning from firing on apps that never
+        touch the network. Only ``.py`` files are inspected and any read
+        error simply suppresses the warning rather than failing the build.
+        """
+        markers = ("HttpClient", "app.http", ".http.")
+        source = self.config.source_path
+        if not source.is_dir():
+            return False
+        for path in source.rglob("*.py"):
+            try:
+                text = path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            if any(marker in text for marker in markers):
+                return True
+        return False
 
     def _check_requested_permissions(self, sources: SourceSet) -> None:
         """Warn about permissions used in code but missing from the config.
