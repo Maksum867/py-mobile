@@ -133,6 +133,10 @@ class BuildPipeline:
             self.warnings.append(
                 "targetSdk >= 33 without POST_NOTIFICATIONS: notifications stay hidden."
             )
+        if self.config.no_ssl and self._uses_http():
+            self.warnings.append(
+                "Built with --no-ssl but code uses HttpClient; HTTPS requests will fail."
+            )
 
     def _uses_http(self) -> bool:
         """Best-effort scan of the app sources for HTTP client usage.
@@ -206,9 +210,7 @@ class BuildPipeline:
             shutil.copyfile(absolute, target)
             entries.append((relative.as_posix(), target))
 
-        # A native build runs CPython 3.14 on the device, while this process may
-        # be any other version. .pyc files are version-locked, so ship sources.
-        if not self.config.optimize or self.native:
+        if not self.config.optimize:
             return entries
 
         quiet = 2
@@ -298,6 +300,7 @@ class BuildPipeline:
                     entries=0,
                     duration=duration,
                     cached=True,
+                    native=self.native,
                     timings=list(self._timings),
                     warnings=list(self.warnings),
                 )
@@ -387,7 +390,8 @@ class BuildPipeline:
         config_digest = hashlib.blake2b(
             repr(sorted(self.config.to_dict().items())).encode("utf-8"), digest_size=8
         ).hexdigest()
-        return f"{fingerprint_files(paths)}:{config_digest}"
+        mode = "native" if self.native else "structural"
+        return f"{fingerprint_files(paths)}:{config_digest}:{mode}"
 
 
 def build_apk(

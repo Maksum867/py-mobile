@@ -442,9 +442,11 @@ class NativeBackend:
                 continue
             relative = path.relative_to(package_root)
             parts = relative.parts
-            if any(part in ("__pycache__", "tests") for part in parts):
+            if any(part in ("__pycache__", "tests", "compiler", "resources") for part in parts):
                 continue
-            if path.suffix in (".pyc", ".pyo"):
+            if path.suffix in (".pyc", ".pyo", ".ps1"):
+                continue
+            if path.name in ("cli.py", "__main__.py", "rebuild-dex.ps1"):
                 continue
             assets[f"assets/app/pymobile/{relative.as_posix()}"] = path
         return assets

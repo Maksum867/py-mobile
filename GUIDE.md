@@ -256,7 +256,7 @@ class Settings(Screen):
             Button("Back", on_press=lambda: self.app.pop()),
         )
 
-    def on_mount(self):   ...   # once, when pushed onto the stack
+    def on_mount(self):   ...   # once, after build(), when pushed onto the stack
     def on_show(self):    ...   # every time it becomes visible
     def on_hide(self):    ...   # when another screen covers it
     def on_unmount(self): ...   # once, when popped
@@ -265,7 +265,7 @@ class Settings(Screen):
 ### Navigation is a stack
 
 ```python
-app.push(Settings())   # forward: on_hide(current) → on_mount → on_show
+app.push(Settings())   # forward: on_hide(current) → build() → on_mount → on_show
 app.pop()              # back:    on_hide → on_unmount → on_show(previous)
 
 app.navigator.replace(Other())  # swap the top screen

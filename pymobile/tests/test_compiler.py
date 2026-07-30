@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import tempfile
 import zipfile
 from pathlib import Path
 from xml.etree import ElementTree as ET
@@ -279,6 +280,15 @@ class TestPipeline:
         assert "assets/app/main.pyc" in names
         assert "assets/app/main.py" not in names
 
+    def test_native_optimize_compiles_bytecode(self, project: ProjectConfig) -> None:
+        project.optimize = True
+        pipeline = BuildPipeline(project, native=True)
+        with tempfile.TemporaryDirectory() as tmp:
+            workdir = Path(tmp)
+            entries = pipeline._compile_sources(pipeline._collect(), workdir)
+            assert any(path.suffix == ".pyc" for _, path in entries)
+            assert not any(path.suffix == ".py" for _, path in entries)
+
     def test_no_optimize_ships_sources(self, project: ProjectConfig) -> None:
         project.optimize = False
         result = build_apk(project)
@@ -293,6 +303,26 @@ class TestPipeline:
     def test_cache_can_be_disabled(self, project: ProjectConfig) -> None:
         build_apk(project)
         assert not build_apk(project, use_cache=False).cached
+
+    def test_cache_distinguishes_structural_and_native(self, project: ProjectConfig) -> None:
+        build_apk(project, native=False)
+        pipeline = BuildPipeline(project, native=True)
+        cache = BuildCache(project.output_path)
+        assert cache.is_fresh(pipeline._fingerprint(pipeline._collect())) is None
+
+    def test_cached_native_build_retains_native_flag(self, project: ProjectConfig) -> None:
+        pipeline = BuildPipeline(project, native=True)
+        sources = pipeline._collect()
+        cache = BuildCache(project.output_path)
+        dummy_apk = project.output_path / project.apk_name
+        project.output_path.mkdir(parents=True, exist_ok=True)
+        dummy_apk.write_bytes(b"dummy_native")
+        cache.save(pipeline._fingerprint(sources), dummy_apk)
+
+        result = build_apk(project, native=True)
+        assert result.cached is True
+        assert result.native is True
+        assert "installable" in result.summary()
 
     def test_fingerprint_is_stable_across_processes(self, project: ProjectConfig) -> None:
         """Regression: PYTHONHASHSEED randomisation must not defeat the cache."""

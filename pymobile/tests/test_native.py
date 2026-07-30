@@ -159,6 +159,12 @@ class TestAssetSelection:
         assert any("core/ui/widget.py" in n for n in names)
         assert not any("__pycache__" in n for n in names)
         assert not any("/tests/" in n for n in names)
+        assert not any("/compiler/" in n for n in names)
+        assert not any("/resources/" in n for n in names)
+        assert not any("sdk_installer.py" in n for n in names)
+        assert not any("toolchain.py" in n for n in names)
+        assert not any(n.endswith(".java") or n.endswith(".c") for n in names)
+        assert not any(n.endswith("cli.py") for n in names)
 
     def test_stdlib_excludes_are_applied(self) -> None:
         from pymobile.compiler.backends.native import STDLIB_EXCLUDES

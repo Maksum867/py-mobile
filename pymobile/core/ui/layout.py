@@ -56,6 +56,7 @@ class _Linear(Container):
     ) -> None:
         if spacing < 0:
             raise ValueError("spacing must not be negative")
+        Align.validate_main(align)
         if cross_align is not None:
             Align.validate_cross(cross_align)
         self.spacing = spacing

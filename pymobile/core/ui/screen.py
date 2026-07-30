@@ -32,7 +32,8 @@ class Screen:
 
     Subclasses override :meth:`build` to return the widget tree. Lifecycle
     hooks (:meth:`on_mount`, :meth:`on_show`, :meth:`on_hide`,
-    :meth:`on_unmount`) are optional.
+    :meth:`on_unmount`) are optional; :meth:`on_mount` runs after
+    :meth:`build` has completed.
     """
 
     #: Title shown in the action bar; defaults to the class name.
@@ -168,7 +169,11 @@ class Screen:
 
     # -- lifecycle ---------------------------------------------------------
     def on_mount(self) -> None:
-        """Called once when the screen is pushed onto the navigator."""
+        """Called once when the screen is pushed onto the navigator.
+
+        Guaranteed to run after :meth:`build`, so widgets assigned to
+        ``self`` are available.
+        """
 
     def on_show(self) -> None:
         """Called every time the screen becomes visible."""
@@ -221,6 +226,7 @@ class Navigator:
         if previous is not None:
             previous.on_hide()
         screen.app = self._app
+        _ = screen.root
         self._stack.append(screen)
         if not screen._mounted:
             screen._mounted = True

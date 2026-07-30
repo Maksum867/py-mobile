@@ -307,6 +307,15 @@ class TestSafeArea:
         assert SafeArea(child).children[0] is child
 
 
+class TestAlign:
+    def test_valid_align_allowed(self) -> None:
+        assert Row(Label("a"), align=Align.SPACE_BETWEEN).props()["align"] == "space_between"
+
+    def test_invalid_value_rejected(self) -> None:
+        with pytest.raises(ValueError, match="align"):
+            Row(align="middle")
+
+
 class TestCrossAlign:
     def test_unset_by_default(self) -> None:
         assert "cross_align" not in Row(Label("a")).props()
@@ -428,7 +437,24 @@ class TestScreen:
         assert screen.find(screen.root.children[0].id) is not None
 
 
+class _MountScreen(Screen):
+    title = "MountScreen"
+
+    def build(self) -> Widget:
+        self.label = Label("built")
+        return Column(self.label)
+
+    def on_mount(self) -> None:
+        self.label.text = "mounted"
+
+
 class TestNavigator:
+    def test_build_precedes_on_mount(self) -> None:
+        nav = Navigator()
+        screen = _MountScreen()
+        nav.push(screen)
+        assert screen.label.text == "mounted"
+
     def test_push_and_pop(self) -> None:
         nav = Navigator()
         home, details = _Home(), _Details()

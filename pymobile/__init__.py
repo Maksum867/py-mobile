@@ -18,7 +18,7 @@ Build it with ``pymobile build``.
 
 from __future__ import annotations
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 __author__ = "MAKSYM KHLYSTUN"
 __license__ = "MIT"
 
@@ -39,6 +39,7 @@ from .core.ui import (
     Divider,
     EdgeInsets,
     Expanded,
+    Flexible,
     Grid,
     Image,
     Label,
@@ -113,6 +114,7 @@ __all__ = [
     "EdgeInsets",
     "Divider",
     "Expanded",
+    "Flexible",
     "Grid",
     "SafeArea",
     # errors

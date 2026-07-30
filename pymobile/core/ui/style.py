@@ -56,8 +56,19 @@ class Align:
     #: Cross-axis only: fill the container across the axis.
     STRETCH = "stretch"
 
+    #: Values accepted by ``align``.
+    MAIN = (START, CENTER, END, SPACE_BETWEEN)
     #: Values accepted by ``cross_align``.
     CROSS = (START, CENTER, END, STRETCH)
+
+    @classmethod
+    def validate_main(cls, value: str) -> str:
+        """Return a valid ``align`` value, or raise :class:`ValueError`."""
+        if value not in cls.MAIN:
+            raise ValueError(
+                f"invalid align {value!r}; expected one of {', '.join(cls.MAIN)}"
+            )
+        return value
 
     @classmethod
     def validate_cross(cls, value: str) -> str:
@@ -151,6 +162,12 @@ class Style:
             raise ValueError("min_height must not exceed max_height")
         if self.aspect_ratio is not None and self.aspect_ratio <= 0:
             raise ValueError("aspect_ratio must be positive")
+        if (
+            self.align is not None
+            and self.align not in Align.MAIN
+            and self.align not in Align.CROSS
+        ):
+            raise ValueError(f"invalid align {self.align!r}")
 
     def merge(self, **overrides: Any) -> Style:
         """Return a copy with some attributes replaced."""
