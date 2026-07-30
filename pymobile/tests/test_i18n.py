@@ -139,6 +139,48 @@ class TestPlurals:
         assert translations.get("n", count=7) == "7"
 
 
+class TestNestedKeys:
+    """Dotted keys reach nested dictionaries; plain dicts are never pluralised."""
+
+    def test_dotted_key_descends_into_nested_dict(self) -> None:
+        translations = Translations()
+        translations.load(
+            {"menu": {"save": "Save", "open": "Open"}},
+            language="en",
+        )
+        assert translations.get("menu.save") == "Save"
+        assert translations.get("menu.open") == "Open"
+
+    def test_nested_dict_without_count_is_not_pluralised(self) -> None:
+        """A dict with arbitrary keys is a namespace, not a plural form."""
+        translations = Translations()
+        translations.load(
+            {"labels": {"title": "Hello", "hint": "Tap to start"}},
+            language="en",
+        )
+        # Without count= the dict must be returned as-is (not str()'d into
+        # Python repr and not fed through the plural selector).
+        assert isinstance(translations.get("labels"), dict)
+        assert translations.get("labels") == {"title": "Hello", "hint": "Tap to start"}
+
+    def test_literal_key_with_dot_wins_over_nested_descent(self) -> None:
+        translations = Translations()
+        translations.load(
+            {"a.b": "literal", "a": {"b": "nested"}},
+            language="en",
+        )
+        assert translations.get("a.b") == "literal"
+
+    def test_plural_form_still_works_when_count_passed(self) -> None:
+        translations = Translations()
+        translations.load(
+            {"items": {"one": "1 item", "other": "{count} items"}},
+            language="en",
+        )
+        assert translations.get("items", count=1) == "1 item"
+        assert translations.get("items", count=5) == "5 items"
+
+
 class TestFiles:
     def test_load_file_infers_the_language(self, tmp_path: Path) -> None:
         path = tmp_path / "uk.json"

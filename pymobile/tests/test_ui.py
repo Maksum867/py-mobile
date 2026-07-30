@@ -582,6 +582,25 @@ class TestWidgetIds:
         screen.root
         assert screen.unused.id.startswith("label-")
 
+    def test_duplicate_explicit_ids_raise(self) -> None:
+        class Dup(Screen):
+            def build(self) -> Widget:
+                return Column(Label("a", id="dup"), Label("b", id="dup"))
+
+        with pytest.raises(PyMobileError, match="duplicate widget id"):
+            Dup().root
+
+    def test_duplicate_named_attribute_ids_raise(self) -> None:
+        """Two attributes with the same explicit id clash is detected too."""
+        class Dup(Screen):
+            def build(self) -> Widget:
+                self.btn = Button("go")
+                self.other = Label("no", id="btn")
+                return Column(self.btn, self.other)
+
+        with pytest.raises(PyMobileError, match="duplicate widget id"):
+            Dup().root
+
 
 class _Counter(Screen):
     """A screen that keeps a handle on the widget it mutates."""

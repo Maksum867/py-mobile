@@ -99,6 +99,55 @@ class TestCollector:
         result = collect_sources(tmp_path, tmp_path / "main.py", exclude=["tests/**"])
         assert result.count == 1
 
+    def test_exclude_matches_root_level_test_files(self, tmp_path: Path) -> None:
+        """``test_*.py`` must catch test_app.py sitting directly in source_dir."""
+        (tmp_path / "main.py").write_text("x = 1", encoding="utf-8")
+        (tmp_path / "test_app.py").write_text("def test(): pass", encoding="utf-8")
+        (tmp_path / "helper.py").write_text("y = 2", encoding="utf-8")
+        nested = tmp_path / "pkg"
+        nested.mkdir()
+        (nested / "test_foo.py").write_text("z = 3", encoding="utf-8")
+        result = collect_sources(tmp_path, tmp_path / "main.py", exclude=["test_*.py"])
+        names = {path.name for path in result.files}
+        assert "test_app.py" not in names
+        assert "test_foo.py" not in names
+        assert {"main.py", "helper.py"} <= names
+
+    def test_exclude_matches_pyc_and_pycache_everywhere(self, tmp_path: Path) -> None:
+        (tmp_path / "main.py").write_text("x = 1", encoding="utf-8")
+        (tmp_path / "top.pyc").write_bytes(b"\x00")
+        (tmp_path / "__pycache__").mkdir()
+        (tmp_path / "__pycache__" / "main.pyc").write_bytes(b"\x00")
+        sub = tmp_path / "pkg"
+        sub.mkdir()
+        (sub / "__pycache__").mkdir()
+        (sub / "__pycache__" / "x.pyc").write_bytes(b"\x00")
+        result = collect_sources(
+            tmp_path,
+            tmp_path / "main.py",
+            exclude=["**/__pycache__/**", "**/*.pyc"],
+        )
+        assert {p.name for p in result.files} == {"main.py"}
+
+    def test_default_excludes_skip_root_test_files(self, tmp_path: Path) -> None:
+        """The project defaults exclude ``test_*.py`` everywhere, root included."""
+        from pymobile.core.config import ProjectConfig
+
+        cfg = ProjectConfig(root=tmp_path)
+        (tmp_path / "main.py").write_text("x = 1", encoding="utf-8")
+        (tmp_path / "test_app.py").write_text("x = 1", encoding="utf-8")
+        (tmp_path / "main.pyc").write_bytes(b"\x00")
+        (tmp_path / "build").mkdir()
+        (tmp_path / "build" / "out.apk").write_bytes(b"\x00")
+        result = collect_sources(
+            tmp_path, tmp_path / "main.py", exclude=cfg.exclude
+        )
+        names = {p.name for p in result.files}
+        assert "test_app.py" not in names
+        assert "main.pyc" not in names
+        assert "out.apk" not in names
+        assert names == {"main.py"}
+
     def test_assets_included(self, tmp_path: Path) -> None:
         (tmp_path / "main.py").write_text("x = 1", encoding="utf-8")
         (tmp_path / "data.json").write_text("{}", encoding="utf-8")

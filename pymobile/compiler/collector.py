@@ -47,12 +47,71 @@ class SourceSet:
             yield path.relative_to(self.root)
 
 
+def _match_pattern(text: str, pattern: str) -> bool:
+    """Match ``text`` against a single gitignore-style glob pattern."""
+    # ``dir/**`` — match anything *inside* the directory (we never collect
+    # directory entries themselves, only files, so matching the literal
+    # directory name is unnecessary and would incorrectly match a file
+    # called ``dir``).
+    if pattern.endswith("/**"):
+        head = pattern[:-3]
+        return text.startswith(head + "/")
+    # A trailing slash means "directory only" and never matches a file path
+    # the collector produces, so treat it like ``dir/**`` for safety.
+    if pattern.endswith("/"):
+        head = pattern[:-1]
+        return text.startswith(head + "/")
+    return fnmatch.fnmatch(text, pattern)
+
+
 def _is_excluded(relative: Path, patterns: Sequence[str]) -> bool:
-    """Whether a relative path matches any exclude glob."""
+    """Whether a relative path matches any exclude glob.
+
+    Semantics mirror gitignore so project-level patterns behave the way
+    users expect:
+
+    * a pattern that contains no ``/`` is matched against the file name
+      and against every path suffix, so ``test_*.py`` catches ``test_app.py``
+      at the root *and* ``pkg/test_foo.py``;
+    * a pattern beginning with ``**/`` is unanchored in the same way, so
+      ``**/__pycache__/**`` and ``**/*.pyc`` also match root-level files;
+    * any other pattern containing ``/`` is anchored at the source root,
+      so ``build/**`` matches only the top-level ``build/`` directory;
+    * a leading ``/`` is accepted for readability and stripped before
+      matching (``/tests/**`` ≡ ``tests/**``).
+    """
     text = relative.as_posix()
-    for pattern in patterns:
-        if fnmatch.fnmatch(text, pattern) or fnmatch.fnmatch(f"/{text}", f"/{pattern}"):
+    basename = relative.name
+    parts = relative.parts
+    for raw in patterns:
+        pattern = raw.strip()
+        if not pattern:
+            continue
+        if pattern.startswith("/"):
+            pattern = pattern[1:]
+        # ``**/`` at the front means "match anywhere"; keep the original so
+        # the anchored check on the full path still works (e.g. ``__pycache__/x.py``
+        # at the root must still match ``**/__pycache__/**``), and also try
+        # the trimmed form when walking suffixes.
+        anywhere = pattern.startswith("**/")
+        if anywhere:
+            trimmed = pattern[3:]
+        else:
+            trimmed = pattern
+        anchored = (not anywhere) and ("/" in pattern)
+        # Full-path anchored match.
+        if _match_pattern(text, pattern):
             return True
+        if anchored:
+            continue
+        # Unanchored — try the file name first (catches test_app.py at root),
+        # then every trailing suffix of the path (catches nested matches).
+        if _match_pattern(basename, trimmed):
+            return True
+        for index in range(1, len(parts)):
+            suffix = "/".join(parts[index:])
+            if _match_pattern(suffix, trimmed):
+                return True
     return False
 
 

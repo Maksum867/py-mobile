@@ -46,6 +46,23 @@ _log = get_logger("i18n")
 #: Languages where "one" covers 1 only and everything else is plural.
 _DEFAULT_PLURAL_KEYS = ("one", "other")
 
+#: Keys that identify a mapping as a plural-form table rather than a nested
+#: namespace. Any mapping whose keys are **all** drawn from this set is treated
+#: as a plural form; everything else is a sub-tree you reach with dotted keys.
+_PLURAL_KEYS = frozenset({"zero", "one", "two", "few", "many", "other"})
+
+
+class _Missing:
+    """Sentinel for dotted lookup; ``None`` is a legitimate catalogue value."""
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return "<MISSING>"
+
+
+_MISSING = _Missing()
+
 
 def normalise_language(tag: str) -> str:
     """Reduce a locale tag to a lowercase ``language`` or ``language-region``.
@@ -205,11 +222,31 @@ class Translations:
         return seen
 
     def lookup(self, key: str, *, language: str | None = None) -> Any:
-        """Return the raw entry for ``key``, or ``None`` when it is unknown."""
+        """Return the raw entry for ``key``, or ``None`` when it is unknown.
+
+        Dotted keys descend into nested namespaces, so ``"menu.save"`` resolves
+        the ``save`` entry inside the ``menu`` object. The match is exact —
+        a key that contains a literal dot is still tried first, so a catalogue
+        with ``{"a.b": "x"}`` wins over ``{"a": {"b": "y"}}`` when both exist.
+        """
         for tag in self._chain(normalise_language(language or self._language)):
             catalogue = self._catalogues.get(tag)
-            if catalogue is not None and key in catalogue:
+            if catalogue is None:
+                continue
+            if key in catalogue:
                 return catalogue[key]
+            # Dotted descent into nested mappings — one segment at a time, so
+            # intermediate non-mapping values fall through cleanly.
+            if "." in key:
+                node: Any = catalogue
+                for segment in key.split("."):
+                    if isinstance(node, Mapping) and segment in node:
+                        node = node[segment]
+                    else:
+                        node = _MISSING
+                        break
+                if node is not _MISSING:
+                    return node
         return None
 
     def has(self, key: str, *, language: str | None = None) -> bool:
@@ -225,13 +262,19 @@ class Translations:
         language: str | None = None,
         default: str | None = None,
         **params: Any,
-    ) -> str:
+    ) -> Any:
         """Translate ``key``, interpolating ``params``.
 
         A missing key returns ``default`` if given, otherwise the key itself —
         a screen with one untranslated string must still render. Each missing
         key is logged once, so a gap is visible during development without
         flooding the log from inside a render loop.
+
+        When the resolved entry is a nested mapping and ``count`` was given,
+        plural rules are applied as usual. Without ``count``, the mapping is
+        returned unchanged so callers can walk nested namespaces directly —
+        a dictionary with arbitrary string keys is never mistaken for a
+        plural form table.
         """
         entry = self.lookup(key, language=language)
         if entry is None:
@@ -240,8 +283,22 @@ class Translations:
                 _log.warning("missing translation for %r in %r", key, self._language)
             entry = key if default is None else default
 
-        if isinstance(entry, Mapping):
+        if isinstance(entry, Mapping) and self._is_plural(entry):
             entry = self._plural(entry, count)
+
+        if isinstance(entry, Mapping):
+            # Nested namespace reached without a count — hand the sub-tree
+            # back to the caller. ``str()`` on a dict produces Python repr,
+            # which is never what a UI wants, so warn once instead of
+            # silently dropping a translation.
+            if key not in self._missing:
+                self._missing.add(key)
+                _log.warning(
+                    "translation key %r resolves to a nested object; "
+                    "pass count= for plural forms or use a dotted sub-key",
+                    key,
+                )
+            return entry
 
         text = str(entry)
         if count is not None:
@@ -254,6 +311,18 @@ class Translations:
             # A malformed placeholder must not take the screen down.
             _log.warning("could not interpolate %r with %r", key, sorted(params))
             return text
+
+    @staticmethod
+    def _is_plural(forms: Mapping[str, Any]) -> bool:
+        """Decide whether ``forms`` is a plural table rather than a namespace.
+
+        A mapping is a plural form when *every* key is one of the CLDR plural
+        keywords; ``{"title": "Save", "hint": "..."}`` therefore passes through
+        untouched even though no ``count`` was supplied.
+        """
+        if not forms:
+            return False
+        return bool(_PLURAL_KEYS.issuperset(forms))
 
     def _plural(self, forms: Mapping[str, Any], count: int | None) -> Any:
         """Pick a plural form.
@@ -323,6 +392,8 @@ class Translations:
 translations = Translations()
 
 
-def t(key: str, /, *, count: int | None = None, default: str | None = None, **params: Any) -> str:
+def t(
+    key: str, /, *, count: int | None = None, default: str | None = None, **params: Any
+) -> Any:
     """Translate ``key`` using the global :data:`translations` catalogue."""
     return translations.get(key, count=count, default=default, **params)
