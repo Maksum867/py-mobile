@@ -6,6 +6,7 @@ resolution, error messages, asset selection — is tested unconditionally.
 """
 
 from __future__ import annotations
+from pymobile.compiler.toolchain import ToolchainError
 
 import os
 import zipfile
@@ -13,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import sys
 
 from pymobile.compiler.runtime import ABI_TRIPLETS, runtime_cache_dir
 from pymobile.compiler.toolchain import Toolchain, ToolchainError, find_toolchain
@@ -81,6 +83,8 @@ class TestToolchainDiscovery:
             find_toolchain(tmp_path / "no-such-sdk")
         assert info.value.hint
 
+    import sys
+
     def test_tool_paths_derive_from_build_tools(self, tmp_path: Path) -> None:
         toolchain = Toolchain(
             sdk=tmp_path,
@@ -88,9 +92,12 @@ class TestToolchainDiscovery:
             platform_jar=tmp_path / "android.jar",
             java_home=tmp_path / "jdk",
         )
-        assert toolchain.aapt2.name == "aapt2"
+        expected_aapt2 = "aapt2.exe" if sys.platform == "win32" else "aapt2"
+        expected_javac = "javac.exe" if sys.platform == "win32" else "javac"
+
+        assert toolchain.aapt2.name == expected_aapt2
         assert toolchain.d8.parent == toolchain.build_tools
-        assert toolchain.javac.parts[-2:] == ("bin", "javac")
+        assert toolchain.javac.parts[-2:] == ("bin", expected_javac)
 
     def test_verify_lists_every_missing_tool(self, tmp_path: Path) -> None:
         toolchain = Toolchain(
@@ -513,13 +520,19 @@ class TestWindowsToolPaths:
     """Tool resolution must adapt to Windows filename conventions."""
 
     def _toolchain(self, tmp_path: Path) -> Toolchain:
+        bt = tmp_path / "bt"
+        bt.mkdir(exist_ok=True)
+        jdk = tmp_path / "jdk" / "bin"
+        jdk.mkdir(parents=True, exist_ok=True)
+
+        (tmp_path / "android.jar").write_text("", encoding="utf-8")
+
         return Toolchain(
             sdk=tmp_path,
-            build_tools=tmp_path / "bt",
+            build_tools=bt,
             platform_jar=tmp_path / "android.jar",
             java_home=tmp_path / "jdk",
         )
-
     def test_posix_uses_bare_names(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -668,17 +681,23 @@ class TestToolchainRequirements:
     """The NDK and javac must be optional, everything else mandatory."""
 
     def _toolchain(self, tmp_path: Path) -> Toolchain:
-        build_tools = tmp_path / "bt"
-        build_tools.mkdir(exist_ok=True)
-        jdk_bin = tmp_path / "jdk" / "bin"
-        jdk_bin.mkdir(parents=True, exist_ok=True)
-        for name in ("aapt2", "zipalign", "apksigner"):
-            (build_tools / name).write_text("", encoding="utf-8")
-        (jdk_bin / "keytool").write_text("", encoding="utf-8")
+        bt = tmp_path / "bt"
+        bt.mkdir(exist_ok=True)
+        jdk = tmp_path / "jdk" / "bin"
+        jdk.mkdir(parents=True, exist_ok=True)
+
+        ext = ".exe" if sys.platform == "win32" else ""
+        bat = ".bat" if sys.platform == "win32" else ""
+
+        (bt / f"aapt2{ext}").write_text("", encoding="utf-8")
+        (bt / f"zipalign{ext}").write_text("", encoding="utf-8")
+        (bt / f"apksigner{bat if sys.platform == 'win32' else ext}").write_text("", encoding="utf-8")
+        (jdk / f"keytool{ext}").write_text("", encoding="utf-8")
         (tmp_path / "android.jar").write_text("", encoding="utf-8")
+
         return Toolchain(
             sdk=tmp_path,
-            build_tools=build_tools,
+            build_tools=bt,
             platform_jar=tmp_path / "android.jar",
             java_home=tmp_path / "jdk",
         )
@@ -697,9 +716,17 @@ class TestToolchainRequirements:
     def test_missing_keytool_is_fatal(self, tmp_path: Path) -> None:
         """Signing always needs a JRE, so keytool is never optional."""
         toolchain = self._toolchain(tmp_path)
-        (tmp_path / "jdk" / "bin" / "keytool").unlink()
-        with pytest.raises(ToolchainError, match="keytool"):
+
+        keytool = tmp_path / "jdk" / "bin" / "keytool"
+        if sys.platform == "win32" and not keytool.exists():
+            keytool = tmp_path / "jdk" / "bin" / "keytool.exe"
+
+        keytool.unlink()
+
+        with pytest.raises(ToolchainError) as exc_info:
             toolchain.verify()
+
+        assert "keytool" in str(exc_info.value)
 
 
 class TestSdkPackages:
@@ -723,16 +750,39 @@ class TestBuildRobustness:
     every app, the prebuilt one is now used by default.
     """
 
+    import sys
+    from typing import Any
+
     def _backend(self, tmp_path: Path, *, javac_exists: bool = True) -> Any:
         from pymobile.compiler.backends.native import NativeBackend
 
         jdk_bin = tmp_path / "jdk" / "bin"
         jdk_bin.mkdir(parents=True, exist_ok=True)
+
+
+        exts = ["", ".exe"] if sys.platform == "win32" else [""]
+
         if javac_exists:
-            (jdk_bin / "javac").write_text("", encoding="utf-8")
+            for ext in exts:
+                (jdk_bin / f"javac{ext}").write_text("", encoding="utf-8")
+
+        for ext in exts:
+            (jdk_bin / f"keytool{ext}").write_text("", encoding="utf-8")
+
+
+        bt = tmp_path / "bt"
+        bt.mkdir(exist_ok=True)
+        bt_exts = ["", ".exe", ".bat"] if sys.platform == "win32" else [""]
+        for ext in bt_exts:
+            (bt / f"aapt2{ext}").write_text("", encoding="utf-8")
+            (bt / f"zipalign{ext}").write_text("", encoding="utf-8")
+            (bt / f"apksigner{ext}").write_text("", encoding="utf-8")
+
+        (tmp_path / "j.jar").write_text("", encoding="utf-8")
+
         toolchain = Toolchain(
             sdk=tmp_path,
-            build_tools=tmp_path / "bt",
+            build_tools=bt,
             platform_jar=tmp_path / "j.jar",
             java_home=tmp_path / "jdk",
         )
@@ -770,26 +820,57 @@ class TestBuildRobustness:
 
     @requires_prebuilt_so
     def test_jni_falls_back_when_clang_fails(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+            self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("PYMOBILE_BUILD_JNI", "1")
 
-        def fail(*args: object, **kwargs: object) -> None:
+        # Створюємо фейковий prebuilt .so у гештальті репозиторію
+        # (якщо NativeBackend шукає його у своєму пакеті)
+        def mock_run(*args: object, **kwargs: object) -> None:
             raise PyMobileError("clang exploded")
 
-        monkeypatch.setattr("pymobile.compiler.backends.native._run", fail)
+        monkeypatch.setattr("pymobile.compiler.backends.native._run", mock_run)
+
         ndk = tmp_path / "ndk"
-        clang_dir = ndk / "toolchains" / "llvm" / "prebuilt" / "linux-x86_64" / "bin"
-        clang_dir.mkdir(parents=True)
-        (clang_dir / "aarch64-linux-android21-clang").write_text("", encoding="utf-8")
+        hosts = ["linux-x86_64", "windows-x86_64", "windows"]
+        clang_names = [
+            "aarch64-linux-android21-clang",
+            "aarch64-linux-android21-clang.exe",
+            "aarch64-linux-android21-clang.cmd",
+            "clang",
+            "clang.exe",
+        ]
+
+        for host in hosts:
+            clang_dir = ndk / "toolchains" / "llvm" / "prebuilt" / host / "bin"
+            clang_dir.mkdir(parents=True, exist_ok=True)
+            for name in clang_names:
+                (clang_dir / name).write_text("", encoding="utf-8")
+
+        jdk_bin = tmp_path / "jdk" / "bin"
+        jdk_bin.mkdir(parents=True, exist_ok=True)
+        bt = tmp_path / "bt"
+        bt.mkdir(parents=True, exist_ok=True)
+
+        ext = ".exe" if sys.platform == "win32" else ""
+        bat = ".bat" if sys.platform == "win32" else ""
+
+        (jdk_bin / f"keytool{ext}").write_text("", encoding="utf-8")
+        (bt / f"aapt2{ext}").write_text("", encoding="utf-8")
+        (bt / f"zipalign{ext}").write_text("", encoding="utf-8")
+        (bt / f"apksigner{bat if sys.platform == 'win32' else ext}").write_text("", encoding="utf-8")
+        (tmp_path / "j.jar").write_text("", encoding="utf-8")
 
         from pymobile.compiler.backends.native import NativeBackend
 
         runtime = tmp_path / "runtime"
-        (runtime / "lib").mkdir(parents=True)
+        (runtime / "lib").mkdir(parents=True, exist_ok=True)
+        # Гарантуємо наявність пребілт бібліотеки під час фолбеку
+        (runtime / "lib" / "libpymobile.so").write_text("", encoding="utf-8")
+
         toolchain = Toolchain(
             sdk=tmp_path,
-            build_tools=tmp_path / "bt",
+            build_tools=bt,
             platform_jar=tmp_path / "j.jar",
             java_home=tmp_path / "jdk",
             ndk=ndk,
@@ -797,9 +878,13 @@ class TestBuildRobustness:
         backend = NativeBackend(
             ProjectConfig(root=tmp_path, package="com.example.a"), toolchain, runtime
         )
+
         output = backend.compile_jni(tmp_path / "work")
+
         assert (output / "libpymobile.so").exists()
-        assert any("prebuilt JNI bridge" in warning for warning in backend.warnings)
+        assert any("prebuilt JNI bridge" in warning for warning in backend.warnings), (
+            f"Expected warning about prebuilt JNI bridge, got: {backend.warnings}"
+        )
 
     def test_dex_is_passed_a_single_jar(self, tmp_path: Path) -> None:
         """d8 must receive one archive, not hundreds of .class paths."""

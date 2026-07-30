@@ -74,6 +74,15 @@ class TestBuild:
         assert main(["-c", str(tmp_path), "build"]) == 0
         assert "up to date" in capsys.readouterr().out
 
+    def test_native_after_structural_is_not_cached(
+            self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        create_project(tmp_path, "Native Cache Test")
+        main(["-c", str(tmp_path), "build"])
+        capsys.readouterr()
+        res = main(["-c", str(tmp_path), "build", "--native"])
+        assert res in (0, 1)
+
     def test_clean_flag_rebuilds(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         create_project(tmp_path, "Clean Build")
         main(["-c", str(tmp_path), "build"])

@@ -113,8 +113,7 @@ def cmd_build(args: argparse.Namespace) -> int:
         config.icon = args.icon
     if args.output:
         config.output_dir = args.output
-    if args.no_optimize:
-        config.optimize = False
+    config.optimize = getattr(args, "optimize", False)
     if getattr(args, "minimal_stdlib", False):
         config.minimal_stdlib = True
     if getattr(args, "no_ssl", False):
@@ -426,16 +425,32 @@ def cmd_setup_sdk(args: argparse.Namespace) -> int:
     """Download and install the Android toolchain."""
     from .compiler.sdk_installer import default_sdk_home, install_sdk
 
+    target_path = Path(args.path) if args.path else default_sdk_home()
     with_ndk = getattr(args, "with_ndk", False)
     size = "~2.7 GB" if with_ndk else "~800 MB"
-    _out.info(f"installing the Android toolchain ({size}, one time)")
+
+    # Перевіряємо, чи існує папка SDK і чи вона не порожня (тобто закешована)
+    already_installed = target_path.exists() and any(target_path.iterdir())
+
+    if already_installed:
+        _out.info(f"using cached Android toolchain ({target_path})")
+    else:
+        _out.info(f"installing the Android toolchain ({size}, one time)...")
+
     if not with_ndk:
         _out.info("using the prebuilt native bridge; pass --with-ndk to build it from source")
+
     sdk = install_sdk(Path(args.path) if args.path else None, with_ndk=with_ndk)
-    _out.ok(f"toolchain ready: {sdk}")
+
+    if already_installed:
+        _out.ok(f"toolchain verified: {sdk}")
+    else:
+        _out.ok(f"toolchain ready: {sdk}")
+
     _out.info(f"now run: {_invocation()} build --native")
     if not os.environ.get("ANDROID_HOME"):
         _out.hint(f"optional: {_export_command('ANDROID_HOME', sdk)}")
+
     _ = default_sdk_home
     return 0
 
@@ -570,7 +585,7 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument("--clean", action="store_true", help="rebuild from scratch")
     build.add_argument("--no-cache", action="store_true", help="ignore the incremental cache")
     build.add_argument(
-        "--no-optimize", action="store_true", help="ship sources instead of bytecode"
+        "--optimize", action="store_true", help="ship bytecode instead of sources"
     )
     build.add_argument(
         "--minimal-stdlib",

@@ -229,7 +229,7 @@ validate → collect → compile → icons → toolchain → runtime
 
 ## UI components
 
-Eight components. All of them accept `id`, `style`, `visible` and `enabled`.
+Nine components. All of them accept `id`, `style`, `visible` and `enabled`.
 
 ### Label
 
@@ -1017,20 +1017,38 @@ error while the rest of the screen keeps working.
 run in milliseconds.
 
 ```python
-from pymobile import App
+from pymobile import App, Button, Column, Label, Screen, Widget
 from pymobile.core.bridge import StubBridge
 
 
-def test_button_posts_a_notification():
+class ProfileScreen(Screen):
+    def build(self) -> Widget:
+        # Save explicit references to widgets for direct test access
+        self.status_label = Label("Offline")
+        self.login_btn = Button("Log In", on_press=self.on_login)
+        return Column(self.status_label, self.login_btn)
+
+    def on_login(self) -> None:
+        self.status_label.text = "Online"
+        self.app.notify("Welcome", "You have logged in successfully")
+
+
+def test_login_updates_ui_and_notifies():
     bridge = StubBridge(verbose=False)
     app = App("Test", bridge=bridge)
-    app.run(Home())
+    screen = ProfileScreen()
+    app.run(screen)
 
-    app.screen.find("btn").press()
+    # Trigger action directly on the widget reference
+    screen.login_btn.press()
 
+    # Verify UI state change
+    assert screen.status_label.text == "Online"
+
+    # Verify platform notification was sent via StubBridge
     assert bridge.calls_named("notify")
     spec = list(bridge.notifications.values())[0]
-    assert spec.title == "Hello"
+    assert spec.title == "Welcome"
 
 
 def test_permission_denial_is_handled():
