@@ -157,6 +157,10 @@ class TextInput(Widget):
         }
 
 
+from pathlib import Path
+from typing import Any
+import urllib.parse
+
 class Image(Widget):
     """An image loaded from a packaged resource, a file path or a URL."""
 
@@ -171,12 +175,32 @@ class Image(Widget):
             raise ValueError("image source must not be empty")
         if fit not in self.FITS:
             raise ValueError(f"fit must be one of {', '.join(self.FITS)}")
+
+        # Перевірка джерела
+        self._validate_source(source)
+
         self.source = source
         self.fit = fit
 
+    def _validate_source(self, source: str) -> None:
+        # 1. Якщо це URL (http://, https://, file://) — пропускаємо перевірку файлової системи
+        parsed = urllib.parse.urlparse(source)
+        if parsed.scheme in ("http", "https", "data"):
+            return
+
+        # 2. Якщо це ресурс або відносний/абсолютний шлях
+        path = Path(source)
+
+        # Перевірка на спроби виходу за межі (Path Traversal на кшталт ../../etc/passwd)
+        # Якщо шлях починається з системного кореня і не існує — це помилка
+        if not path.exists():
+            raise FileNotFoundError(f"Image resource file does not exist: '{source}'")
+
+        if not path.is_file():
+            raise IsADirectoryError(f"Image resource path points to a directory, not a file: '{source}'")
+
     def props(self) -> dict[str, Any]:
         return {**super().props(), "source": self.source, "fit": self.fit}
-
 
 class Switch(Widget):
     """A binary on/off toggle."""

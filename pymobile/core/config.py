@@ -51,7 +51,7 @@ class ProjectConfig:
     # -- build -------------------------------------------------------------
     abis: list[str] = field(default_factory=lambda: ["arm64-v8a"])
     output_dir: str = "build"
-    optimize: bool = True
+    optimize: bool = False
     strip_debug: bool = True
     #: Drop desktop-only stdlib packages (pydoc, unittest, venv, ...) — ~1.7 MB.
     minimal_stdlib: bool = False

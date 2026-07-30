@@ -122,7 +122,7 @@ print(app.bridge.name)   # 'stub' or 'android'
 
 ## 4. UI components
 
-Eight components. Each accepts `id`, `style`, `visible` and `enabled`.
+Nine components. Each accepts `id`, `style`, `visible` and `enabled`.
 
 ### Label — text
 
