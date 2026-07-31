@@ -14,6 +14,7 @@ from __future__ import annotations
 import compileall
 import hashlib
 import shutil
+import sys
 import tempfile
 import time
 from collections.abc import Callable
@@ -137,6 +138,16 @@ class BuildPipeline:
             self.warnings.append(
                 "Built with --no-ssl but code uses HttpClient; HTTPS requests will fail."
             )
+        if self.config.optimize:
+            embedded = self.config.python_version
+            dev = f"{sys.version_info.major}.{sys.version_info.minor}"
+            if not embedded.startswith(dev):
+                self.warnings.append(
+                    f"optimize=true compiles bytecode with Python {dev}, but the "
+                    f"device runs embedded Python {embedded}; compiled modules may "
+                    "fail to import on device. Set optimize=false (ships sources) "
+                    "or build with the matching Python version."
+                )
 
     def _uses_http(self) -> bool:
         """Best-effort scan of the app sources for HTTP client usage.
@@ -167,15 +178,22 @@ class BuildPipeline:
         import re
 
         declared = {str(p).rsplit(".", 1)[-1] for p in self.config.permissions}
-        pattern = re.compile(r"Permission\.([A-Z_]+)\b")
+        # Both spellings the framework accepts: Permission.CAMERA and the
+        # fully qualified "android.permission.CAMERA" string literal.
+        patterns = (
+            re.compile(r"Permission\.([A-Z_]+)\b"),
+            re.compile(r"[\"']android\.permission\.([A-Z_]+)[\"']"),
+        )
         used: set[str] = set()
         for path in sources.files:
             if path.suffix != ".py":
                 continue
             try:
-                used.update(pattern.findall(path.read_text(encoding="utf-8")))
+                text = path.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError):
                 continue
+            for pattern in patterns:
+                used.update(pattern.findall(text))
 
         missing = sorted(used - declared)
         if missing:
@@ -223,9 +241,17 @@ class BuildPipeline:
             force=True,
         )
 
+        # The entry point is always shipped as source: the on-device launcher
+        # executes it by name and the prebuilt launcher dex still hard-codes
+        # "main.py", so a bare .pyc would fail to start with no visible error.
+        entry_name = sources.entrypoint.relative_to(sources.root).as_posix()
+
         compiled: list[tuple[str, Path]] = []
         for name, path in entries:
             if path.suffix != ".py":
+                compiled.append((name, path))
+                continue
+            if name == entry_name:
                 compiled.append((name, path))
                 continue
             bytecode = path.with_suffix(".pyc")
@@ -256,11 +282,14 @@ class BuildPipeline:
         resources = {
             f"res/mipmap-{density}/icon.png": path for density, path in icons.files.items()
         }
+        # The entry point is always packaged as source (see _compile_sources),
+        # so the recorded value is simply its relative path.
+        relative = sources.entrypoint.relative_to(sources.root).as_posix()
         metadata = (
             f"name={self.config.name}\n"
             f"package={self.config.package}\n"
             f"version={self.config.version}\n"
-            f"entrypoint={sources.entrypoint.relative_to(sources.root).as_posix()}\n"
+            f"entrypoint={relative}\n"
             f"optimize={int(self.config.optimize)}\n"
         )
         packager = ApkPackager(compress=True)
@@ -347,7 +376,10 @@ class BuildPipeline:
         # used, which saves users a 2 GB download.
         toolchain.verify(require_ndk=False)
 
-        runtime = self._stage("runtime", lambda: ensure_runtime(self.config.abis[0]))
+        runtime = self._stage(
+            "runtime",
+            lambda: ensure_runtime(self.config.abis[0], version=self.config.python_version),
+        )
         backend = NativeBackend(self.config, toolchain, runtime)
 
         native_dir = self._stage("jni", lambda: backend.compile_jni(workdir))

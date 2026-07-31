@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import threading
+import time
+from typing import Any
+
 import pytest
 
 from pymobile.core.api.notifications import IMPORTANCE_HIGH, Notifications
 from pymobile.core.api.permissions import Permission, PermissionManager, normalize
 from pymobile.core.api.vibration import PRESETS, Vibration
 from pymobile.core.bridge import StubBridge
-from pymobile.errors import PermissionError_
+from pymobile.errors import BridgeError, PermissionError_
 
 
 class TestNotifications:
@@ -139,3 +143,111 @@ class TestPermissions:
             [Permission.VIBRATE, "CAMERA", "android.permission.VIBRATE"]
         )
         assert entries == ["android.permission.CAMERA", "android.permission.VIBRATE"]
+
+
+class _JniFakeVersion:
+    SDK_INT = 30
+
+
+class _JniFakeActivity:
+    """Records the dialog call; the real answer is faked by the bridge state."""
+
+    def __init__(self) -> None:
+        self.called = False
+
+    def requestPermissions(self, permissions: list[str], request_code: int) -> None:
+        self.called = True
+
+    def shouldShowRequestPermissionRationale(self, permission: str) -> bool:
+        return False
+
+
+class TestJniBridgePermissions:
+    """The pyjnius fallback must wait for the dialog, not report an instant denial."""
+
+    @staticmethod
+    def _bridge(monkeypatch: pytest.MonkeyPatch, state: dict[str, bool]) -> Any:
+        import pymobile.core.bridge.jni as jni_module
+        from pymobile.core.bridge.jni import JNIBridge
+
+        monkeypatch.setattr(jni_module, "_PERMISSION_POLL", 0.01)
+
+        class Fake(JNIBridge):
+            def __init__(self) -> None:
+                super().__init__()
+                self.state = dict(state)
+                self.rationale: dict[str, bool] = {}
+                self.activity = _JniFakeActivity()
+
+            def _autoclass(self, path: str) -> Any:
+                if path == "android.os.Build$VERSION":
+                    return _JniFakeVersion
+                if path == "org.kivy.android.PythonActivity":
+                    return type("PythonActivity", (), {"mActivity": self.activity})
+                raise AssertionError(path)
+
+            def has_permission(self, permission: str) -> bool:
+                return self.state.get(permission, False)
+
+            def _show_rationale(self, permission: str) -> bool:
+                return self.rationale.get(permission, False)
+
+        return Fake()
+
+    def test_granted_permissions_return_without_dialog(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        bridge = self._bridge(monkeypatch, state={"android.permission.CAMERA": True})
+        assert bridge.request_permissions(["android.permission.CAMERA"]) == {
+            "android.permission.CAMERA": True
+        }
+        assert not bridge.activity.called
+
+    def test_waits_for_grant(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        bridge = self._bridge(monkeypatch, state={"android.permission.CAMERA": False})
+
+        def grant() -> None:
+            time.sleep(0.2)
+            bridge.state["android.permission.CAMERA"] = True
+
+        threading.Thread(target=grant, daemon=True).start()
+        started = time.monotonic()
+        assert bridge.request_permissions(["android.permission.CAMERA"]) == {
+            "android.permission.CAMERA": True
+        }
+        assert time.monotonic() - started < 5
+
+    def test_waits_for_denial(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        bridge = self._bridge(monkeypatch, state={"android.permission.CAMERA": False})
+
+        def deny() -> None:
+            time.sleep(0.2)
+            bridge.rationale["android.permission.CAMERA"] = True
+
+        threading.Thread(target=deny, daemon=True).start()
+        started = time.monotonic()
+        assert bridge.request_permissions(["android.permission.CAMERA"]) == {
+            "android.permission.CAMERA": False
+        }
+        assert time.monotonic() - started < 5
+
+    def test_times_out_when_unanswered(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import pymobile.core.bridge.jni as jni_module
+
+        monkeypatch.setattr(jni_module, "_PERMISSION_TIMEOUT", 0.3)
+        bridge = self._bridge(monkeypatch, state={"android.permission.CAMERA": False})
+        started = time.monotonic()
+        assert bridge.request_permissions(["android.permission.CAMERA"]) == {
+            "android.permission.CAMERA": False
+        }
+        assert time.monotonic() - started < 5
+
+
+class TestJniBridgeRender:
+    """The pyjnius fallback cannot draw the UI and must say so loudly."""
+
+    def test_render_fails_loudly(self) -> None:
+        from pymobile.core.bridge.jni import JNIBridge
+
+        with pytest.raises(BridgeError, match="cannot render"):
+            JNIBridge().render({"type": "Label"})

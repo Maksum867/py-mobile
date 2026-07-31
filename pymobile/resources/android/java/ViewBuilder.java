@@ -34,6 +34,13 @@ import org.json.JSONObject;
  */
 final class ViewBuilder {
 
+    /**
+     * Tag of the invisible weight-1 views inserted between the children of an
+     * Align.SPACE_BETWEEN Row/Column. The in-place update path recognises the
+     * tag and skips these views when matching the tree's children.
+     */
+    private static final String SPACER_TAG = "pymobile:space-between";
+
     /** Density scale, used to convert the framework's dp values to pixels. */
     private final float density;
     private final Context context;
@@ -145,10 +152,18 @@ final class ViewBuilder {
         String crossAlign = props.optString("cross_align", "");
         layout.setGravity(gravityFor(orientation, align, crossAlign));
 
+        // Align.SPACE_BETWEEN: LinearLayout has no such gravity, so equal
+        // weight-1 spacer views are inserted between the children; they share
+        // the leftover space and are tagged so patching can skip them.
+        boolean spaceBetween = "space_between".equals(align);
+
         int spacing = dp(props.optInt("spacing", 0));
         JSONArray children = node.optJSONArray("children");
         if (children != null) {
             for (int i = 0; i < children.length(); i++) {
+                if (spaceBetween && i > 0) {
+                    layout.addView(buildSpaceBetweenSpacer(orientation));
+                }
                 JSONObject childNode = children.getJSONObject(i);
                 View child = buildChild(childNode);
                 LinearLayout.LayoutParams params =
@@ -164,6 +179,22 @@ final class ViewBuilder {
             }
         }
         return layout;
+    }
+
+    /** An invisible view that absorbs the free space for Align.SPACE_BETWEEN. */
+    private View buildSpaceBetweenSpacer(int orientation) {
+        View spacer = new View(context);
+        spacer.setTag(SPACER_TAG);
+        LinearLayout.LayoutParams params;
+        if (orientation == LinearLayout.VERTICAL) {
+            params = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f);
+        } else {
+            params = new LinearLayout.LayoutParams(
+                    0, ViewGroup.LayoutParams.MATCH_PARENT, 1f);
+        }
+        spacer.setLayoutParams(params);
+        return spacer;
     }
 
     /**
@@ -597,6 +628,15 @@ final class ViewBuilder {
             input.setInputType(InputType.TYPE_CLASS_TEXT);
             input.setSingleLine(true);
         }
+        // max_length must be enforced natively while typing: the Python state
+        // is already truncated, so without a filter the field would show more
+        // text than the application believes exists until focus is lost.
+        Object rawMaxLength = props.opt("max_length");
+        if (rawMaxLength instanceof Number && ((Number) rawMaxLength).intValue() > 0) {
+            input.setFilters(new android.text.InputFilter[]{
+                    new android.text.InputFilter.LengthFilter(
+                            ((Number) rawMaxLength).intValue())});
+        }
         input.addTextChangedListener(new TextWatcher() {
             @Override
             public void beforeTextChanged(CharSequence s, int a, int b, int c) {
@@ -644,9 +684,20 @@ final class ViewBuilder {
     private View buildImage(JSONObject props) {
         ImageView image = new ImageView(context);
         String source = props.optString("source", "");
-        image.setScaleType("cover".equals(props.optString("fit", "contain"))
-                ? ImageView.ScaleType.CENTER_CROP
-                : ImageView.ScaleType.FIT_CENTER);
+        // fit: contain | cover | fill | none — each maps to a distinct
+        // ScaleType; previously fill and none silently fell back to FIT_CENTER.
+        String fit = props.optString("fit", "contain");
+        ImageView.ScaleType scaleType;
+        if ("cover".equals(fit)) {
+            scaleType = ImageView.ScaleType.CENTER_CROP;
+        } else if ("fill".equals(fit)) {
+            scaleType = ImageView.ScaleType.FIT_XY;
+        } else if ("none".equals(fit)) {
+            scaleType = ImageView.ScaleType.CENTER;
+        } else {
+            scaleType = ImageView.ScaleType.FIT_CENTER;
+        }
+        image.setScaleType(scaleType);
         try {
             java.io.File file = new java.io.File(source);
             if (!file.isAbsolute()) {
@@ -721,17 +772,51 @@ final class ViewBuilder {
                 target = (ViewGroup) group.getChildAt(0);
             }
             int count = children == null ? 0 : children.length();
-            if (target.getChildCount() != count) {
+            // A SPACE_BETWEEN container carries extra tagged spacer views; they
+            // are skipped so the tree's children still line up 1:1 with the
+            // real widgets (otherwise every render would force a rebuild and
+            // lose scroll position and keyboard focus).
+            int realChildren = 0;
+            for (int i = 0; i < target.getChildCount(); i++) {
+                if (!SPACER_TAG.equals(target.getChildAt(i).getTag())) {
+                    realChildren++;
+                }
+            }
+            if (realChildren != count) {
                 return false;
             }
-            for (int i = 0; i < count; i++) {
-                if (!updateNode(target.getChildAt(i), children.getJSONObject(i))) {
+            int childIndex = 0;
+            for (int i = 0; i < target.getChildCount() && childIndex < count; i++) {
+                View child = target.getChildAt(i);
+                if (SPACER_TAG.equals(child.getTag())) {
+                    continue;
+                }
+                if (!updateNode(child, children.getJSONObject(childIndex))) {
                     return false;
                 }
+                childIndex++;
             }
             return true;
         }
 
+        if (view instanceof Switch) {
+            // Switch extends CompoundButton extends Button, so this branch
+            // must come before the Button one — otherwise a Python-side
+            // `switch.checked = ...` never reaches the native view.
+            Switch toggle = (Switch) view;
+            boolean checked = props.optBoolean("checked", false);
+            if (toggle.isChecked() != checked) {
+                // setChecked() fires the OnCheckedChangeListener, which would
+                // echo the change back to Python as a user toggle; suppress
+                // the listener for the duration of the sync.
+                CompoundButton.OnCheckedChangeListener listener =
+                        toggle.getOnCheckedChangeListener();
+                toggle.setOnCheckedChangeListener(null);
+                toggle.setChecked(checked);
+                toggle.setOnCheckedChangeListener(listener);
+            }
+            return true;
+        }
         if (view instanceof Button) {
             ((Button) view).setText(props.optString("text", ""));
             return true;
@@ -739,14 +824,6 @@ final class ViewBuilder {
         if (view instanceof View && "Divider".equals(type)) {
             view.setBackgroundColor(parseColor(props.optString("color", "#1F000000"),
                     Color.parseColor("#1F000000")));
-            return true;
-        }
-        if (view instanceof Switch) {
-            Switch toggle = (Switch) view;
-            boolean checked = props.optBoolean("checked", false);
-            if (toggle.isChecked() != checked) {
-                toggle.setChecked(checked);
-            }
             return true;
         }
         if (view instanceof EditText) {

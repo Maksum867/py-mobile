@@ -7,6 +7,7 @@ resolved once and cached, because ``autoclass`` lookups are not free.
 
 from __future__ import annotations
 
+import time
 from functools import cached_property
 from typing import Any, ClassVar
 
@@ -22,6 +23,12 @@ _log = get_logger("bridge.jni")
 IMPORTANCE_DEFAULT = 3
 # android.os.VibrationEffect.DEFAULT_AMPLITUDE
 DEFAULT_AMPLITUDE = -1
+
+#: How long to wait for the user to answer a permission dialog before giving
+#: up. Matches the timeout used by the native bridge (MainActivity).
+_PERMISSION_TIMEOUT = 120.0
+#: Polling interval while waiting for the permission dialog to close.
+_PERMISSION_POLL = 0.2
 
 
 class JNIBridge(Bridge):
@@ -162,10 +169,63 @@ class JNIBridge(Bridge):
     def request_permissions(  # pragma: no cover - device-only path
         self, permissions: list[str]
     ) -> dict[str, bool]:
+        """Show the system dialog and block until the user answers.
+
+        ``requestPermissions`` is asynchronous: the outcome is delivered to the
+        activity's ``onRequestPermissionsResult`` once the dialog closes.
+        Re-reading the permission right after the call would therefore always
+        report "denied" (the race fixed for the native bridge already). The
+        dialog is modal and commits every result at once, so we wait until any
+        pending permission changes state — or ``_PERMISSION_TIMEOUT`` seconds
+        pass, matching the native bridge — and then read the final answers.
+        """
         build_version = self._autoclass("android.os.Build$VERSION")
-        if build_version.SDK_INT >= 23:
-            self._activity.requestPermissions(permissions, 0)
-        return {name: self.has_permission(name) for name in permissions}
+        if build_version.SDK_INT < 23:
+            return {name: True for name in permissions}
+
+        pending = [name for name in permissions if not self.has_permission(name)]
+        results = {name: True for name in permissions if name not in pending}
+        if not pending:
+            return results
+
+        # A grant flips has_permission(); a denial cannot be read from it, but
+        # Android then reports shouldShowRequestPermissionRationale()==True.
+        # Either signal means the modal dialog was answered, so we stop
+        # polling and read the final answers.
+        request_permissions = getattr(self._activity, "requestPermissions", None)
+        if request_permissions is None:
+            # A Service-backed context (the _activity fallback) cannot show a
+            # dialog; report the current state instead of crashing.
+            return {name: self.has_permission(name) for name in permissions}
+
+        granted_before = {name: self.has_permission(name) for name in pending}
+        rationale_before = {name: self._show_rationale(name) for name in pending}
+        request_permissions(pending, 0)
+        deadline = time.monotonic() + _PERMISSION_TIMEOUT
+        while time.monotonic() < deadline:
+            answered = any(
+                self.has_permission(name) != granted_before[name]
+                or self._show_rationale(name) != rationale_before[name]
+                for name in pending
+            )
+            if answered:
+                break
+            time.sleep(_PERMISSION_POLL)
+
+        results.update({name: self.has_permission(name) for name in pending})
+        return results
+
+    def _show_rationale(self, permission: str) -> bool:  # pragma: no cover - device-only
+        """Whether the user previously denied ``permission`` (API 23+).
+
+        ``shouldShowRequestPermissionRationale`` lives on Activity, so a
+        Service-backed context simply reports False and the caller falls back
+        to polling on the granted flag alone.
+        """
+        try:
+            return bool(self._activity.shouldShowRequestPermissionRationale(permission))
+        except Exception:  # pragma: no cover - missing method / Service context
+            return False
 
     # -- ui ----------------------------------------------------------------
     def toast(self, message: str, long: bool = False) -> None:  # pragma: no cover
@@ -176,10 +236,16 @@ class JNIBridge(Bridge):
     def render(self, tree: dict[str, Any]) -> None:  # pragma: no cover - device-only path
         """Send the widget tree to the native renderer.
 
-        The native side is layered on top of this call; until it ships the tree
-        is logged so the app still boots on device.
+        This bridge is only chosen for apps embedded in a python-for-android
+        bootstrap, which does not carry the PyMobile Java renderer, so there
+        is nothing to draw into. Failing loudly beats shipping an app that
+        boots to a blank screen with only a debug-log line to hint why.
         """
-        _log.debug("render tree: %s", tree.get("type"))
+        raise BridgeError(
+            "The JNI (pyjnius) bridge cannot render the UI",
+            hint="Build the APK with `pymobile build --native` so the compiled "
+            "renderer is included in the package.",
+        )
 
     def _run_on_ui(self, action: Any) -> None:  # pragma: no cover - device-only path
         from jnius import PythonJavaClass, java_method  # type: ignore[import-not-found]

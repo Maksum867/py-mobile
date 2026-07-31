@@ -1,0 +1,24 @@
+# Test
+
+An Android application built with [PyMobile](https://github.com/Maksum867/py-mobile).
+
+## Develop
+
+```bash
+pymobile run          # preview the UI tree on your machine
+```
+
+## Build
+
+```bash
+pymobile build            # incremental build
+pymobile build --clean    # full rebuild
+pymobile build --icon assets/icon.png
+```
+
+The APK is written to `build/`.
+
+## Configure
+
+Edit `pymobile.toml`: application name, package id, permissions and icon all
+live there. Run `pymobile info` to see the resolved configuration.

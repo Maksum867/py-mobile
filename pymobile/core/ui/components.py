@@ -8,7 +8,9 @@ the application event bus.
 
 from __future__ import annotations
 
+import urllib.parse
 from collections.abc import Callable, Sequence
+from pathlib import Path
 from typing import Any
 
 from .widget import Widget, callback_name
@@ -157,10 +159,6 @@ class TextInput(Widget):
         }
 
 
-from pathlib import Path
-from typing import Any
-import urllib.parse
-
 class Image(Widget):
     """An image loaded from a packaged resource, a file path or a URL."""
 
@@ -176,28 +174,42 @@ class Image(Widget):
         if fit not in self.FITS:
             raise ValueError(f"fit must be one of {', '.join(self.FITS)}")
 
-        # Перевірка джерела
         self._validate_source(source)
-
         self.source = source
         self.fit = fit
 
     def _validate_source(self, source: str) -> None:
-        # 1. Якщо це URL (http://, https://, file://) — пропускаємо перевірку файлової системи
+        # 1. Remote sources (http/https/data) are loaded by the platform and
+        #    skip the local filesystem check.
         parsed = urllib.parse.urlparse(source)
         if parsed.scheme in ("http", "https", "data"):
             return
+        # 2. A file:// URL is unwrapped and validated like a plain path.
+        if parsed.scheme == "file":
+            source = urllib.parse.unquote(parsed.path)
+            if not source:  # file://logo.png puts the name in netloc
+                source = parsed.netloc
 
-        # 2. Якщо це ресурс або відносний/абсолютний шлях
-        path = Path(source)
+        # 3. Local paths are resolved against the working directory, which is
+        #    the project root both on the desktop (the CLI runs the app from
+        #    there) and on the device (the runtime chdirs into the app
+        #    folder). Resolving outside it is path traversal and is rejected
+        #    instead of silently reading an arbitrary file.
+        base = Path.cwd().resolve()
+        path = (base / source).resolve()
+        if not path.is_relative_to(base):
+            raise ValueError(
+                f"image path {source!r} escapes the project directory; "
+                "use a path relative to the project root"
+            )
 
-        # Перевірка на спроби виходу за межі (Path Traversal на кшталт ../../etc/passwd)
-        # Якщо шлях починається з системного кореня і не існує — це помилка
         if not path.exists():
             raise FileNotFoundError(f"Image resource file does not exist: '{source}'")
 
         if not path.is_file():
-            raise IsADirectoryError(f"Image resource path points to a directory, not a file: '{source}'")
+            raise IsADirectoryError(
+                f"Image resource path points to a directory, not a file: '{source}'"
+            )
 
     def props(self) -> dict[str, Any]:
         return {**super().props(), "source": self.source, "fit": self.fit}

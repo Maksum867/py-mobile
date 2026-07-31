@@ -32,6 +32,9 @@ public class MainActivity extends Activity {
     private ViewBuilder builder;
     private final Handler ui = new Handler(Looper.getMainLooper());
 
+    /** True once the first widget tree has been handed to the UI thread. */
+    private volatile boolean rendered = false;
+
     /** Set while a permission dialog is open; counted down by the callback. */
     private static volatile CountDownLatch permissionLatch;
     private static volatile boolean permissionGranted;
@@ -62,15 +65,40 @@ public class MainActivity extends Activity {
         builder = new ViewBuilder(this);
 
         showPlaceholder("Starting Python…");
+        // Tell PythonRuntime to report the long first-launch extraction.
+        PythonRuntime.onStatus = new Runnable() {
+            @Override
+            public void run() {
+                postPlaceholder("First launch: extracting the Python runtime…");
+            }
+        };
 
         new Thread(new Runnable() {
             @Override
             public void run() {
-                int status = PythonRuntime.run(getApplicationContext(), "main.py");
-                Log.i(TAG, "python exited with " + status);
-                if (status != 0) {
-                    postPlaceholder("Python exited with code " + status
-                            + "\n\nRun `adb logcat -s pymobile.stderr` for details.");
+                try {
+                    // The entry point comes from assets/pymobile.properties
+                    // (defaulting to main.py), so a project that configures a
+                    // different `entrypoint` actually runs that file.
+                    int status = PythonRuntime.run(getApplicationContext());
+                    Log.i(TAG, "python exited with " + status);
+                    if (!rendered) {
+                        // Python finished without ever drawing a frame. Do not
+                        // leave "Starting Python…" on screen forever: show the
+                        // exit code and point at the real error in logcat.
+                        postPlaceholder("Python exited with code " + status
+                                + " before rendering the UI.\n\n"
+                                + "Run `adb logcat -s pymobile.stderr` for the traceback.");
+                    } else if (status != 0) {
+                        postPlaceholder("Python exited with code " + status
+                                + "\n\nRun `adb logcat -s pymobile.stderr` for details.");
+                    }
+                } catch (Throwable error) {
+                    // e.g. System.loadLibrary failed: surface it instead of
+                    // leaving the placeholder frozen forever.
+                    Log.e(TAG, "python failed to start", error);
+                    postPlaceholder("Python failed to start:\n" + error
+                            + "\n\nRun `adb logcat -s pymobile` for the full error.");
                 }
             }
         }, "python-main").start();
@@ -78,6 +106,7 @@ public class MainActivity extends Activity {
 
     /** Build the tree off the JSON Python sent us and swap it in. */
     void renderTree(final String json) {
+        rendered = true;
         ui.post(new Runnable() {
             @Override
             public void run() {

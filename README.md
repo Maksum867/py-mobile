@@ -90,12 +90,12 @@ device. No Java, no Gradle, no Android Studio.
 
 | | |
 | --- | --- |
-| **Real APKs** | Signed with v1+v2+v3 schemes, containing `classes.dex`, `resources.arsc` and an embedded CPython 3.14 for ARM64. |
+| **Real APKs** | Signed with `apksigner` (v1/v2/v3 schemes depending on `minSdk`), containing `classes.dex`, `resources.arsc` and an embedded CPython 3.14 for ARM64. |
 | **Native views** | Widgets become genuine `TextView`, `Button`, `EditText`, `Switch`, `ProgressBar` and `LinearLayout` instances — not a web view or a custom canvas. |
 | **Fast** | About five seconds per build. An unchanged rebuild is instant. |
 | **Small setup** | ~800 MB of tooling, downloaded automatically. The NDK is not required. |
 | **Testable** | Your whole app runs and is unit-testable on a desktop, with no emulator. |
-| **No dependencies** | The runtime uses only the standard library, which keeps APKs small. |
+| **No dependencies** | The packaged runtime uses only the standard library, which keeps APKs small (`certifi` is a build-time input for the CA bundle, never shipped as code). |
 
 Verified on a physical device running Android 14.
 
@@ -103,16 +103,25 @@ Verified on a physical device running Android 14.
 
 ## Installation
 
-**Requirements:** Python 3.10+, about 1 GB of free disk space, an Android 5.0+
-device.
+**Requirements:** Python 3.10+ for the tooling, about 1 GB of free disk
+space, an Android 5.0+ device.
 
 ```bash
 pip install pymobile-framework
 ```
 
-> The distribution is named **`py-mobile`** because `pymobile` on PyPI belongs
-> to an unrelated project. The import name and the CLI command are still
-> `pymobile`.
+> **Which Python runs where.** The tools you install with `pip` run on your
+> machine's Python (3.10+). The APK, however, embeds its own interpreter —
+> CPython **3.14** for ARM64 (the only version with official Android builds).
+> Your app code runs on that embedded 3.14 on the device. `optimize=true`
+> (the default) compiles bytecode with *your* Python, so if yours is older
+> than 3.14 set `optimize = false` in `pymobile.toml` to ship sources instead
+> (the device compiles them at runtime). You can inspect the embedded version
+> with `pymobile doctor` or by setting `python_version` in the config.
+
+> The distribution is named **`pymobile-framework`** because the bare
+> `pymobile` name on PyPI belongs to an unrelated project. The import name and
+> the CLI command are still `pymobile`.
 
 Then install the Android toolchain, once per machine:
 
@@ -924,7 +933,7 @@ lib/arm64-v8a/*.so           CPython, OpenSSL, SQLite, the JNI bridge
 assets/app/                  your code and the pymobile package
 assets/python/               standard library and CA certificates
 res/mipmap-*/icon.png        icons, five densities
-META-INF/                    signature (v1+v2+v3)
+META-INF/                    signature (v1/v2/v3 depending on minSdk)
 ```
 
 Builds are reproducible: identical inputs produce a byte-identical APK. The
@@ -968,7 +977,7 @@ five densities (48, 72, 96, 144 and 192 px). Install the `icons` extra for
 high-quality resampling:
 
 ```bash
-pip install "py-mobile[icons]"
+pip install "pymobile-framework[icons]"
 ```
 
 Without it the icon is copied unscaled; the build still succeeds. With no icon
@@ -1240,6 +1249,9 @@ class Slider(Widget):
 ## Limitations
 
 - **arm64-v8a only.** Covers roughly 99% of active devices; x86_64 is planned.
+- **The app runs on embedded CPython 3.14.** Your machine's Python version
+  only drives the tooling; it cannot be chosen freely for the device because
+  older CPythons have no official Android builds.
 - **APK size is about 16.6 MB** (11.7 MB with `--minimal-stdlib --no-ssl`),
   dominated by the interpreter and standard library.
 - **Android 5.0 (API 21) minimum.**
@@ -1298,7 +1310,7 @@ git clone https://github.com/Maksum867/py-mobile.git
 cd pymobile
 pip install -e ".[dev]"
 
-pytest                  # 331 tests
+pytest                  # 525 tests (10 skipped without the Android SDK)
 ruff check pymobile     # linting
 mypy pymobile           # strict type checking
 ```

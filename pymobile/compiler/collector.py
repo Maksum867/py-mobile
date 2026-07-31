@@ -94,10 +94,7 @@ def _is_excluded(relative: Path, patterns: Sequence[str]) -> bool:
         # at the root must still match ``**/__pycache__/**``), and also try
         # the trimmed form when walking suffixes.
         anywhere = pattern.startswith("**/")
-        if anywhere:
-            trimmed = pattern[3:]
-        else:
-            trimmed = pattern
+        trimmed = pattern[3:] if anywhere else pattern
         anchored = (not anywhere) and ("/" in pattern)
         # Full-path anchored match.
         if _match_pattern(text, pattern):

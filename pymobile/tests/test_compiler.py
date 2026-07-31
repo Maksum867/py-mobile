@@ -322,21 +322,37 @@ class TestPipeline:
         assert any(name.startswith("res/mipmap-") for name in names)
 
     def test_optimize_ships_bytecode(self, project: ProjectConfig) -> None:
+        (project.root / "helper.py").write_text("VALUE = 1\n", encoding="utf-8")
         project.optimize = True
         result = build_apk(project)
         with zipfile.ZipFile(result.apk) as archive:
             names = archive.namelist()
-        assert "assets/app/main.pyc" in names
-        assert "assets/app/main.py" not in names
+        # Non-entry modules ship as bytecode; the entry point stays source so
+        # the on-device launcher (which runs it by name) always finds it.
+        assert "assets/app/helper.pyc" in names
+        assert "assets/app/helper.py" not in names
+        assert "assets/app/main.py" in names
+
+    def test_optimize_entrypoint_stays_source(self, project: ProjectConfig) -> None:
+        project.optimize = True
+        result = build_apk(project)
+        with zipfile.ZipFile(result.apk) as archive:
+            names = archive.namelist()
+            props = archive.read("assets/pymobile.properties").decode()
+        assert "assets/app/main.py" in names
+        assert "entrypoint=main.py" in props
 
     def test_native_optimize_compiles_bytecode(self, project: ProjectConfig) -> None:
+        (project.root / "helper.py").write_text("VALUE = 1\n", encoding="utf-8")
         project.optimize = True
         pipeline = BuildPipeline(project, native=True)
         with tempfile.TemporaryDirectory() as tmp:
             workdir = Path(tmp)
             entries = pipeline._compile_sources(pipeline._collect(), workdir)
-            assert any(path.suffix == ".pyc" for _, path in entries)
-            assert not any(path.suffix == ".py" for _, path in entries)
+            names = [name for name, _ in entries]
+            assert "helper.pyc" in names
+            assert "helper.py" not in names
+            assert "main.py" in names  # entry point stays source
 
     def test_no_optimize_ships_sources(self, project: ProjectConfig) -> None:
         project.optimize = False

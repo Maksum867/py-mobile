@@ -9,6 +9,7 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.util.Properties;
 
 /**
  * Extracts the bundled Python runtime and application code, then starts the
@@ -22,14 +23,42 @@ public class PythonRuntime {
     private static final String TAG = "pymobile";
     private static boolean started = false;
 
+    /**
+     * Optional callback fired when a long-running phase begins (currently the
+     * first-launch asset extraction). The activity uses it to show progress
+     * instead of a frozen "Starting Python…" screen.
+     */
+    public static volatile Runnable onStatus;
+
     static {
         System.loadLibrary("pymobile");
     }
 
     private native int startPython(String home, String appDir, String entrypoint);
 
+    /**
+     * The entry point recorded in assets/pymobile.properties, or "main.py".
+     *
+     * The compiler writes this file for every build (the recorded value is
+     * main.pyc when `optimize = true`), so the packaged app honours the
+     * `entrypoint` key from pymobile.toml instead of hard-coding a file name.
+     */
+    private static String resolveEntrypoint(Context context) {
+        try (InputStream input = context.getAssets().open("pymobile.properties")) {
+            Properties props = new Properties();
+            props.load(input);
+            String entry = props.getProperty("entrypoint");
+            if (entry != null && !entry.trim().isEmpty()) {
+                return entry.trim();
+            }
+        } catch (IOException ignored) {
+            // No properties file (e.g. apps built by an older compiler).
+        }
+        return "main.py";
+    }
+
     /** Extract assets if needed and run the entry point on the calling thread. */
-    public static synchronized int run(Context context, String entrypoint) {
+    public static synchronized int run(Context context) {
         if (started) {
             Log.w(TAG, "Python runtime already started");
             return 0;
@@ -40,6 +69,9 @@ public class PythonRuntime {
             File stamp = new File(root, ".extracted");
             if (!stamp.exists()) {
                 Log.i(TAG, "extracting runtime…");
+                if (onStatus != null) {
+                    onStatus.run();
+                }
                 deleteRecursively(root);
                 extractAssetDir(context.getAssets(), "python", root);
                 extractAssetDir(context.getAssets(), "app", root);
@@ -49,7 +81,7 @@ public class PythonRuntime {
             File home = new File(root, "python");
             File appDir = new File(root, "app");
             return new PythonRuntime().startPython(
-                    home.getAbsolutePath(), appDir.getAbsolutePath(), entrypoint);
+                    home.getAbsolutePath(), appDir.getAbsolutePath(), resolveEntrypoint(context));
         } catch (IOException error) {
             Log.e(TAG, "failed to prepare the Python runtime", error);
             return 1;

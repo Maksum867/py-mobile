@@ -1,0 +1,42 @@
+# PyMobile project configuration.
+# Full reference: https://github.com/Maksum867/py-mobile
+
+[app]
+name = "Test"
+package = "org.pymobile.test"
+version = "0.1.0"
+version_code = 1
+
+# Entry point, relative to source_dir.
+entrypoint = "main.py"
+source_dir = "."
+
+# Android platform settings.
+min_sdk = 21
+target_sdk = 34
+orientation = "portrait"
+
+permissions = [
+    "android.permission.INTERNET",
+    "android.permission.VIBRATE",
+    "android.permission.POST_NOTIFICATIONS",
+]
+
+# Path to a square PNG (512x512 recommended).
+# Leave it out to use the default Android icon.
+# icon = "assets/icon.png"
+
+# Build settings.
+abis = ["arm64-v8a"]
+output_dir = "build"
+optimize = true       # ship bytecode instead of sources
+strip_debug = true    # strip docstrings and asserts (-OO)
+
+exclude = [
+    "**/__pycache__/**",
+    "**/*.pyc",
+    "tests/**",
+    ".git/**",
+    ".venv/**",
+    "build/**",
+]

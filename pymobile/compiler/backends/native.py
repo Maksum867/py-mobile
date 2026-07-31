@@ -157,6 +157,11 @@ class NativeBackend:
         #: Non-fatal problems worth surfacing to the user.
         self.warnings: list[str] = []
 
+    @property
+    def _python_mm(self) -> str:
+        """Embedded CPython major.minor, e.g. ``"3.14"``."""
+        return ".".join(self.config.python_version.split(".")[:2])
+
     # -- 1. native library -------------------------------------------------
     def compile_jni(self, workdir: Path) -> Path:
         """Provide ``libpymobile.so``, compiling it only when an NDK is present.
@@ -167,7 +172,16 @@ class NativeBackend:
 
         Set ``PYMOBILE_BUILD_JNI=1`` to compile it from source with the NDK.
         """
-        output_dir = workdir / "lib" / "arm64-v8a"
+        abi = self.config.abis[0]
+        # The launcher classes, the NDK clang invocation and the prebuilt
+        # bridge are all arm64-only today; fail early instead of assembling an
+        # APK that cannot run on the device.
+        if abi != "arm64-v8a":
+            raise PyMobileError(
+                f"native builds currently support only arm64-v8a, not {abi!r}",
+                hint="List only arm64-v8a in `abis`.",
+            )
+        output_dir = workdir / "lib" / abi
         output_dir.mkdir(parents=True, exist_ok=True)
         libdir = self.python_runtime / "lib"
 
@@ -185,7 +199,18 @@ class NativeBackend:
             return output_dir
 
     def _use_prebuilt_bridge(self, output_dir: Path, libdir: Path) -> None:
-        """Copy the packaged ``libpymobile.so`` and the interpreter libraries."""
+        """Copy the packaged ``libpymobile.so`` and the interpreter libraries.
+
+        Only the arm64-v8a prebuilt ships with the package; other ABIs fail
+        loudly here instead of producing an APK without a usable bridge.
+        """
+        abi = self.config.abis[0]
+        if abi != "arm64-v8a":
+            raise PyMobileError(
+                f"the prebuilt native bridge only supports arm64-v8a, not {abi!r}",
+                hint="List only arm64-v8a in `abis`, or set PYMOBILE_BUILD_JNI=1 "
+                "and install the NDK to compile the bridge for another ABI.",
+            )
         prebuilt = resource_path("android", "prebuilt", "arm64-v8a", "libpymobile.so")
         shutil.copy2(prebuilt, output_dir / "libpymobile.so")
         _log.debug("using the prebuilt JNI bridge")
@@ -204,7 +229,7 @@ class NativeBackend:
         With ``--no-ssl`` the TLS libraries are left out altogether, which
         saves a further ~4 MB for an app that makes no HTTPS requests.
         """
-        wanted = ["libpython3.14", "libsqlite3"]
+        wanted = [f"libpython{self._python_mm}", "libsqlite3"]
         if not self.config.no_ssl:
             wanted += ["libssl", "libcrypto"]
 
@@ -213,7 +238,7 @@ class NativeBackend:
             if not name.startswith(tuple(wanted)):
                 continue
             # Prefer the _python variant; drop the duplicate when both exist.
-            if not name.startswith("libpython3.14"):
+            if not name.startswith(f"libpython{self._python_mm}"):
                 stem = name[: -len(".so")]
                 if not stem.endswith("_python") and (libdir / f"{stem}_python.so").exists():
                     _log.debug("skipping duplicate runtime library %s", name)
@@ -226,7 +251,7 @@ class NativeBackend:
         assert clang is not None  # checked by the caller
 
         source = resource_path("android", "jni", "pymobile_jni.c")
-        include = self.python_runtime / "include" / "python3.14"
+        include = self.python_runtime / "include" / f"python{self._python_mm}"
         output = output_dir / "libpymobile.so"
 
         _run(
@@ -238,7 +263,7 @@ class NativeBackend:
                 f"-I{include}",
                 str(source),
                 f"-L{libdir}",
-                "-lpython3.14",
+                f"-lpython{self._python_mm}",
                 "-llog",
                 "-o",
                 output,
@@ -401,7 +426,7 @@ class NativeBackend:
         """Map archive paths to files for the stdlib and the application."""
         assets: dict[str, Path] = {}
 
-        stdlib = self.python_runtime / "lib" / "python3.14"
+        stdlib = self.python_runtime / "lib" / f"python{self._python_mm}"
         for path in stdlib.rglob("*"):
             if not path.is_file():
                 continue
@@ -410,7 +435,7 @@ class NativeBackend:
                 continue
             if path.suffix in (".pyc", ".pyo", ".a", ".exe"):
                 continue
-            assets[f"assets/python/lib/python3.14/{relative.as_posix()}"] = path
+            assets[f"assets/python/lib/python{self._python_mm}/{relative.as_posix()}"] = path
 
         # Android has no OpenSSL cert bundle at the path CPython expects, so
         # HTTPS fails with CERTIFICATE_VERIFY_FAILED unless we ship one.
@@ -465,12 +490,30 @@ class NativeBackend:
         staged = workdir / "unsigned.apk"
         shutil.copy2(base_apk, staged)
 
+        # The device reads pymobile.properties to learn the entry point (and
+        # falls back to main.py when it is absent). The entry point is always
+        # shipped as source, so the value is the plain source name; only fall
+        # back to bytecode if the source was somehow not packaged.
+        entry = self.config.entrypoint
+        if f"assets/app/{entry}" not in assets and f"assets/app/{entry}c" in assets:
+            entry += "c"
+        properties = workdir / "pymobile.properties"
+        properties.write_text(
+            f"name={self.config.name}\n"
+            f"package={self.config.package}\n"
+            f"version={self.config.version}\n"
+            f"entrypoint={entry}\n"
+            f"optimize={int(self.config.optimize)}\n",
+            encoding="utf-8",
+        )
+        assets["assets/pymobile.properties"] = properties
+
         with zipfile.ZipFile(staged, "a", compression=zipfile.ZIP_DEFLATED) as archive:
             archive.write(dex, "classes.dex")
             for library in sorted(native_dir.glob("*.so")):
                 # Native libraries must be stored uncompressed and page-aligned
                 # so Android can load them directly from the APK.
-                info = zipfile.ZipInfo(f"lib/arm64-v8a/{library.name}")
+                info = zipfile.ZipInfo(f"lib/{self.config.abis[0]}/{library.name}")
                 info.compress_type = zipfile.ZIP_STORED
                 info.external_attr = 0o755 << 16
                 archive.writestr(info, library.read_bytes())

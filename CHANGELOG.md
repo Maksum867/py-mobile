@@ -3,6 +3,58 @@
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project uses [semantic versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- CLI no longer silently overrides `optimize = true` from `pymobile.toml`;
+  the documented `--no-optimize` flag exists now, and the dataclass default
+  matches the documentation.
+- Python 3.10/3.11 support restored: `tomllib` is optional (with a `tomli`
+  backport dependency) and archives are extracted without the 3.12-only
+  `filter="data"` argument.
+- The packaged app honours the configured `entrypoint`: `pymobile.properties`
+  is written for native builds too and the launcher reads it instead of
+  hard-coding `main.py` (and records `main.pyc` when bytecode is shipped).
+- `Switch` state updates reach the native view again (the renderer checked
+  `instanceof Button` first, which `Switch` also satisfies) without echoing
+  the change back to Python as a user toggle.
+- `Align.SPACE_BETWEEN` now renders on device via tagged weight-1 spacers
+  that the in-place update path skips.
+- The pyjnius fallback bridge waits for the permission dialog instead of
+  reporting an instant denial, and fails loudly when asked to render a UI it
+  cannot draw.
+- `App.run()` calls `stop()` when the on-device event loop ends, so timers
+  are cancelled before the interpreter is finalised.
+- `pymobile run` shows the first screen instead of printing nothing; `watch`
+  and `run --web` stop the previous application instead of leaking timers.
+- `Image` sources are validated against the project root and can no longer
+  escape it; `Style` rejects negative `weight`/`elevation`/`corner_radius`
+  and invalid `width`/`height` values.
+- Native builds reject non-`arm64-v8a` ABIs with a clear message instead of
+  producing an uninstallable APK.
+- Linting (`ruff check pymobile`) passes again; a stale test count in the
+  README was corrected.
+- **Device startup regression fixed:** with `optimize=true` the APK shipped
+  only `main.pyc` while the on-device launcher ran the entry point by name,
+  so the app hung on "Starting Python…". The entry point is now always
+  packaged as source and the launcher falls back between `.py`/`.pyc`.
+- Device startup failures are no longer invisible: the launcher always shows
+  an error (with a logcat hint) when Python exits before rendering, and the
+  first-launch asset extraction reports progress.
+- Embedded Python version is explicit: `python_version` in the config is
+  validated (only versions with official Android builds are supported) and
+  `pymobile doctor` prints it. The README clarifies that the tooling needs
+  Python 3.10+ while the APK embeds CPython 3.14.
+
+## [0.4.0] — 2026-07-30
+
+- `HttpClient` with retries/backoff and error statuses returned as responses.
+- i18n: JSON catalogues, Slavic plural forms, `device_language()`.
+- `Stack`, `SafeArea`, `Expanded`/`Flexible`, `Grid` containers.
+- `--minimal-stdlib` and `--no-ssl` build flags; reproducible APK assembly.
+- Desktop tooling: `preview --png`, `run --gui`/`run --web`, `watch`.
+
 ## [0.3.0] — 2026-07-29
 
 Ten pieces of friction reported from building a real Pomodoro app, addressed

@@ -55,6 +55,13 @@ class TestValidation:
         with pytest.raises(ConfigError, match="abis"):
             ProjectConfig(abis=[])
 
+    def test_embedded_python_defaults_to_314(self) -> None:
+        assert ProjectConfig().python_version == "3.14.0"
+
+    def test_unsupported_embedded_python_rejected(self) -> None:
+        with pytest.raises(ConfigError, match="embedded Python"):
+            ProjectConfig(python_version="3.13.0")
+
 
 class TestDerivedPaths:
     def test_paths_resolve_against_root(self, tmp_path: Path) -> None:

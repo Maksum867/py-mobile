@@ -298,6 +298,9 @@ class Navigator:
         """Clear the stack and start again from ``screen``."""
         while self._stack:
             top = self._stack.pop()
+            # Mirror pop()/replace(): every screen being removed is hidden
+            # before it is unmounted, so the lifecycle stays symmetric.
+            top.on_hide()
             top._mounted = False
             top.on_unmount()
             top._cancel_subscriptions()

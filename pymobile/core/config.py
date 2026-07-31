@@ -13,7 +13,16 @@ from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
-import tomllib
+try:  # Python 3.11+
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python 3.10
+    try:
+        import tomli as tomllib  # type: ignore[no-redef]
+    except ModuleNotFoundError as exc:  # pragma: no cover
+        raise ImportError(
+            "PyMobile needs `tomllib` (Python 3.11+) or the `tomli` package "
+            "on Python 3.10: pip install tomli"
+        ) from exc
 
 from ..errors import ConfigError
 
@@ -25,6 +34,11 @@ _PACKAGE_RE = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$")
 _VERSION_RE = re.compile(r"^\d+(\.\d+){0,3}([-.][0-9A-Za-z.]+)?$")
 _ORIENTATIONS = ("portrait", "landscape", "sensor", "user")
 _ABI_CHOICES = ("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
+
+#: CPython versions with official Android builds that PyMobile can embed.
+#: The prebuilt JNI bridge is compiled against the 3.14 C API, so this is the
+#: only supported value today. The dev tooling itself runs on Python 3.10+.
+SUPPORTED_EMBEDDED_PYTHON = frozenset({"3.14.0"})
 
 
 @dataclass(slots=True)
@@ -51,7 +65,12 @@ class ProjectConfig:
     # -- build -------------------------------------------------------------
     abis: list[str] = field(default_factory=lambda: ["arm64-v8a"])
     output_dir: str = "build"
-    optimize: bool = False
+    #: Ship bytecode instead of sources. The documentation and the generated
+    #: ``pymobile.toml`` both default to ``true``, so the dataclass must agree.
+    optimize: bool = True
+    #: CPython version embedded in the APK — the interpreter the app actually
+    #: runs on. Independent from the version of Python running the tooling.
+    python_version: str = "3.14.0"
     strip_debug: bool = True
     #: Drop desktop-only stdlib packages (pydoc, unittest, venv, ...) — ~1.7 MB.
     minimal_stdlib: bool = False
@@ -103,6 +122,16 @@ class ProjectConfig:
             )
         if self.target_sdk < self.min_sdk:
             raise ConfigError("`target_sdk` must be >= `min_sdk`")
+        if Path(self.source_dir).is_absolute():
+            raise ConfigError(
+                f"`source_dir` must be relative to the project root, not {self.source_dir!r}",
+                hint="Use '.', 'src' or a similar relative path.",
+            )
+        if Path(self.entrypoint).is_absolute() or ".." in Path(self.entrypoint).parts:
+            raise ConfigError(
+                f"`entrypoint` must be relative to `source_dir`, not {self.entrypoint!r}",
+                hint="Use a plain module path such as main.py or app/main.py.",
+            )
         if self.orientation not in _ORIENTATIONS:
             raise ConfigError(
                 f"Invalid orientation {self.orientation!r}",
@@ -116,6 +145,13 @@ class ProjectConfig:
             )
         if not self.abis:
             raise ConfigError("`abis` must list at least one architecture")
+        if self.python_version not in SUPPORTED_EMBEDDED_PYTHON:
+            raise ConfigError(
+                f"Unsupported embedded Python version {self.python_version!r}",
+                hint="The APK runs inside an embedded CPython; only versions "
+                "with official Android builds are supported: "
+                + ", ".join(sorted(SUPPORTED_EMBEDDED_PYTHON)),
+            )
 
     # -- derived paths -----------------------------------------------------
     @property

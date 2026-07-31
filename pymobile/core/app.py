@@ -99,8 +99,11 @@ class App:
         """Start the app with ``screen`` as the initial view.
 
         On a device this blocks in the UI event loop until the activity is
-        destroyed; on a desktop it returns once the first screen is rendered,
-        which keeps previews and tests non-blocking.
+        destroyed and then shuts the app down (cancelling timers, firing
+        ``app:stop``) before returning — the interpreter is finalised right
+        after ``run()`` returns, so background work must not outlive it. On a
+        desktop it returns once the first screen is rendered, which keeps
+        previews and tests non-blocking.
         """
         global _current
         configure(self._log_level)
@@ -111,7 +114,13 @@ class App:
         self.navigator.reset(screen)
 
         if hasattr(self.bridge, "next_event"):
-            self._event_loop()
+            try:
+                self._event_loop()
+            finally:
+                # The event loop only exits when the platform asks us to stop
+                # (activity destroyed, hardware back on the root screen), so
+                # this is the moment to release timers and subscriptions.
+                self.stop()
 
     def _event_loop(self) -> None:
         """Dispatch UI events until the platform asks us to stop.

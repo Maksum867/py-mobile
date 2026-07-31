@@ -17,6 +17,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from ... import __version__
 from ...errors import NetworkError
 from ...logging import get_logger
 
@@ -25,7 +26,8 @@ __all__ = ["HttpClient", "Response", "DEFAULT_TIMEOUT"]
 _log = get_logger("http")
 
 DEFAULT_TIMEOUT = 15.0
-_RETRY_STATUSES = frozenset({408, 425, 429, 500, 502, 503, 504})
+#: Retryable statuses: the documented 408/425/429 plus every 5xx.
+_RETRY_STATUSES = frozenset({408, 425, 429})
 Params = Mapping[str, str | int | float | bool | None]
 
 
@@ -86,7 +88,7 @@ class HttpClient:
     timeout: float = DEFAULT_TIMEOUT
     retries: int = 0
     backoff: float = 0.5
-    user_agent: str = "PyMobile/0.1"
+    user_agent: str = f"PyMobile/{__version__}"
 
     # -- verbs -------------------------------------------------------------
     def get(self, url: str, *, params: Params | None = None, **kwargs: Any) -> Response:
@@ -153,7 +155,9 @@ class HttpClient:
                 elapsed=elapsed,
                 encoding=response.encoding,
             )
-            if response.status in _RETRY_STATUSES and attempt < attempts:
+            if (
+                response.status in _RETRY_STATUSES or response.status >= 500
+            ) and attempt < attempts:
                 self._sleep(attempt)
                 _log.debug("retrying %s %s after HTTP %s", method, final_url, response.status)
                 continue

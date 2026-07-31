@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import sys
 import time
 
 import pytest
-import sys
 
 from pymobile import App, Column, Label, Screen, Widget
 from pymobile.core.bridge import StubBridge, get_bridge, reset_bridge, set_bridge

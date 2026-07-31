@@ -6,15 +6,14 @@ resolution, error messages, asset selection — is tested unconditionally.
 """
 
 from __future__ import annotations
-from pymobile.compiler.toolchain import ToolchainError
 
 import os
+import sys
 import zipfile
 from pathlib import Path
 from typing import Any
 
 import pytest
-import sys
 
 from pymobile.compiler.runtime import ABI_TRIPLETS, runtime_cache_dir
 from pymobile.compiler.toolchain import Toolchain, ToolchainError, find_toolchain
@@ -495,7 +494,19 @@ class TestEventLoop:
     def test_loop_exits_when_queue_drains(self) -> None:
         app, home = self._app_with([])
         app.run(home)  # must return rather than hang
-        assert app.running
+        # The device loop only exits when the platform is shutting down, so
+        # run() now stops the app (timers cancelled, app:stop fired).
+        assert not app.running
+
+    def test_app_stops_and_cancels_timers_when_loop_ends(self) -> None:
+        from pymobile import App
+
+        app, home = self._app_with([("btn", "press", "")])
+        handle = app.set_interval(50, lambda: None)
+        app.run(home)
+        assert not app.running
+        assert handle.cancelled
+        assert App.current() is None
 
     def test_unknown_widget_is_ignored(self) -> None:
         app, home = self._app_with([("ghost", "press", "")])
@@ -510,16 +521,22 @@ class TestEventLoop:
     def test_handler_error_does_not_break_the_loop(self) -> None:
         from pymobile import Button, Column, Screen, Widget
 
+        hits: list[int] = []
+
         def boom() -> None:
             raise RuntimeError("bad handler")
 
         class Broken(Screen):
             def build(self) -> Widget:
-                return Column(Button("x", on_press=boom, id="b"))
+                return Column(
+                    Button("x", on_press=boom, id="b"),
+                    Button("y", on_press=lambda: hits.append(1), id="ok"),
+                )
 
-        app, _ = self._app_with([("b", "press", ""), ("b", "press", "")])
+        app, _ = self._app_with([("b", "press", ""), ("ok", "press", ""), ("ok", "press", "")])
         app.run(Broken())
-        assert app.running  # survived both failing presses
+        # The failing handler did not stop the loop: the next button still ran.
+        assert hits == [1, 1]
 
 
 class TestWindowsToolPaths:
@@ -697,7 +714,9 @@ class TestToolchainRequirements:
 
         (bt / f"aapt2{ext}").write_text("", encoding="utf-8")
         (bt / f"zipalign{ext}").write_text("", encoding="utf-8")
-        (bt / f"apksigner{bat if sys.platform == 'win32' else ext}").write_text("", encoding="utf-8")
+        (bt / f"apksigner{bat if sys.platform == 'win32' else ext}").write_text(
+            "", encoding="utf-8"
+        )
         (jdk / f"keytool{ext}").write_text("", encoding="utf-8")
         (tmp_path / "android.jar").write_text("", encoding="utf-8")
 
@@ -830,8 +849,7 @@ class TestBuildRobustness:
     ) -> None:
         monkeypatch.setenv("PYMOBILE_BUILD_JNI", "1")
 
-        # Створюємо фейковий prebuilt .so у гештальті репозиторію
-        # (якщо NativeBackend шукає його у своєму пакеті)
+        # Create a fake prebuilt .so where NativeBackend looks for it.
         def mock_run(*args: object, **kwargs: object) -> None:
             raise PyMobileError("clang exploded")
 
@@ -864,7 +882,9 @@ class TestBuildRobustness:
         (jdk_bin / f"keytool{ext}").write_text("", encoding="utf-8")
         (bt / f"aapt2{ext}").write_text("", encoding="utf-8")
         (bt / f"zipalign{ext}").write_text("", encoding="utf-8")
-        (bt / f"apksigner{bat if sys.platform == 'win32' else ext}").write_text("", encoding="utf-8")
+        (bt / f"apksigner{bat if sys.platform == 'win32' else ext}").write_text(
+            "", encoding="utf-8"
+        )
         (tmp_path / "j.jar").write_text("", encoding="utf-8")
 
         from pymobile.compiler.backends.native import NativeBackend

@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 # Published on PyPI as py-mobile; the import name and CLI command stay
 # `pymobile`.
 name = "pymobile-framework"
-version = "0.4.0"
+version = "0.5.0"
 description = "A small, fast and extensible Python framework for building Android applications."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -34,7 +34,11 @@ classifiers = [
 # extra dependency costs APK size and build time. certifi is the one exception
 # — Android ships no OpenSSL cert file, so a CA bundle must be packaged or
 # every HTTPS request fails. It is a build-time input, not shipped as code.
-dependencies = ["certifi>=2024.2.2"]
+dependencies = [
+    "certifi>=2024.2.2",
+    # tomllib is stdlib on 3.11+; Python 3.10 needs the backport package.
+    "tomli>=2.0; python_version < '3.11'",
+]
 
 [project.optional-dependencies]
 icons = ["Pillow>=10.0"]

@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+build/
+dist/
+.pymobile-cache.json
+*.apk
+.venv/
+venv/
+.env
+.DS_Store

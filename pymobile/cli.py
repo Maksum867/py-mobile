@@ -113,7 +113,13 @@ def cmd_build(args: argparse.Namespace) -> int:
         config.icon = args.icon
     if args.output:
         config.output_dir = args.output
-    config.optimize = getattr(args, "optimize", False)
+    # Only override when the user actually passed the flag: these arguments
+    # default to False, so assigning unconditionally would silently discard
+    # `optimize = true` from pymobile.toml on every build.
+    if getattr(args, "optimize", False):
+        config.optimize = True
+    if getattr(args, "no_optimize", False):
+        config.optimize = False
     if getattr(args, "minimal_stdlib", False):
         config.minimal_stdlib = True
     if getattr(args, "no_ssl", False):
@@ -169,8 +175,21 @@ def cmd_run(args: argparse.Namespace) -> int:
         return _run_gui(config, entry)
 
     _out.info(f"running {entry.name} in desktop preview mode")
-    _out.hint("use --gui for a clickable window")
     _execute(config, entry)
+
+    from .core.bridge import get_bridge
+    from .core.ui.preview import render_ascii
+
+    # last_tree lives on the stub bridges; the abstract Bridge has no such
+    # attribute, so read it defensively.
+    tree = getattr(get_bridge(), "last_tree", None)
+    if tree is None:
+        raise PyMobileError(
+            "The app rendered nothing.",
+            hint="Make sure the entry point calls App(...).run(SomeScreen()).",
+        )
+    print(render_ascii(tree, title=config.name))
+    _out.hint("use --gui for a clickable window")
     return 0
 
 
@@ -233,6 +252,7 @@ def _run_web(config: ProjectConfig, entry: Path, args: argparse.Namespace) -> in
     _out.info("press Ctrl+C to stop")
     with contextlib.suppress(KeyboardInterrupt):  # Ctrl+C is how you stop it
         preview.serve_forever()
+    app.stop()  # cancel timers and fire app:stop before the process exits
     _out.ok("stopped")
     return 0
 
@@ -271,14 +291,25 @@ def _reload(config: ProjectConfig, entry: Path, args: argparse.Namespace) -> Non
     modules, so editing an imported helper takes effect too — a plain re-exec
     of main.py would keep the stale version cached in sys.modules.
     """
+    from .core.app import App
     from .core.bridge import StubBridge, set_bridge
     from .core.ui.preview import render_ascii, render_png
+
+    # A previous reload left a running App behind (timers keep firing on
+    # daemon threads); stop it before executing the new entry point.
+    previous = App.current()
+    if previous is not None:
+        previous.stop()
 
     started = time.perf_counter()
     bridge = StubBridge(verbose=False)
     set_bridge(bridge)
     _purge_project_modules(config.source_path)
 
+    # _execute() switches to the project root for the run; restore the caller's
+    # working directory afterwards (the watcher works on absolute paths, and
+    # direct callers like the tests must not be left inside a tmp directory).
+    previous_cwd = os.getcwd()
     try:
         _execute(config, entry)
     except Exception as error:
@@ -288,6 +319,8 @@ def _reload(config: ProjectConfig, entry: Path, args: argparse.Namespace) -> Non
 
             traceback.print_exc()
         return
+    finally:
+        os.chdir(previous_cwd)
 
     tree = bridge.last_tree
     if tree is None:
@@ -350,9 +383,15 @@ def _execute(config: ProjectConfig, entry: Path) -> dict[str, object]:
     The running :class:`~pymobile.core.app.App` is looked up afterwards and
     exposed as ``__pymobile_app__`` so callers do not have to guess the name
     the developer gave their application object.
+
+    The working directory is switched to the project root first and stays
+    there for the rest of the process: that is exactly what the device does
+    (the runtime ``chdir``s into the app folder), so relative resources such
+    as ``Image("assets/logo.png")`` resolve the same way on both platforms.
     """
     if str(config.source_path) not in sys.path:
         sys.path.insert(0, str(config.source_path))
+    os.chdir(config.source_path)
     namespace: dict[str, object] = {"__name__": "__main__", "__file__": str(entry)}
     exec(compile(entry.read_text(encoding="utf-8"), str(entry), "exec"), namespace)
 
@@ -429,7 +468,7 @@ def cmd_setup_sdk(args: argparse.Namespace) -> int:
     with_ndk = getattr(args, "with_ndk", False)
     size = "~2.7 GB" if with_ndk else "~800 MB"
 
-    # Перевіряємо, чи існує папка SDK і чи вона не порожня (тобто закешована)
+    # A non-empty SDK directory means the toolchain was already installed.
     already_installed = target_path.exists() and any(target_path.iterdir())
 
     if already_installed:
@@ -475,6 +514,9 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         return 0
 
     _out.ok(f"configuration valid: {config.name} ({config.package})")
+    _out.info(
+        f"embedded runtime: CPython {config.python_version} ({', '.join(config.abis)})"
+    )
     if not config.entrypoint_path.exists():
         _out.error(f"entry point missing: {config.entrypoint_path}")
         problems += 1
@@ -588,6 +630,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--optimize", action="store_true", help="ship bytecode instead of sources"
     )
     build.add_argument(
+        "--no-optimize",
+        action="store_true",
+        help="ship .py sources instead of bytecode (overrides `optimize` in pymobile.toml)",
+    )
+    build.add_argument(
         "--minimal-stdlib",
         action="store_true",
         help="drop desktop-only stdlib packages (pydoc, unittest, venv, ...): ~1.7 MB",
@@ -675,6 +722,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     configure("debug" if args.verbose else "warning")
 
+    # _execute() switches the working directory to the project root for the
+    # duration of the run; restore it afterwards so callers (and the test
+    # suite) are not left inside a directory that may be deleted.
+    previous_cwd = os.getcwd()
     try:
         return int(args.func(args))
     except PyMobileError as exc:
@@ -693,6 +744,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise
         _out.hint("re-run with --verbose to see the full traceback")
         return 1
+    finally:
+        os.chdir(previous_cwd)
 
 
 if __name__ == "__main__":  # pragma: no cover

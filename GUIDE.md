@@ -37,6 +37,11 @@ pip install pymobile-framework
 The distribution is named `py-mobile` because `pymobile` on PyPI belongs to an
 unrelated project. The import name and the CLI command remain `pymobile`.
 
+The tooling runs on your machine's Python 3.10+. The APK itself embeds
+CPython 3.14 for ARM64 — that is the interpreter your app code runs on — so
+if your machine's Python is older than 3.14 keep `optimize = false` in
+`pymobile.toml` to ship sources instead of bytecode (see [Config](#11-configuration)).
+
 Then, once per machine:
 
 ```bash

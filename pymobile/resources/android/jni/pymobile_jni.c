@@ -259,10 +259,36 @@ static PyObject *py_vibrate_pattern(PyObject *self, PyObject *args) {
     if (env && g_native_class) {
         jlongArray array = (*env)->NewLongArray(env, (jsize)length);
         jlong *values = (jlong *)malloc(sizeof(jlong) * (size_t)length);
+        if (!values) {
+            (*env)->DeleteLocalRef(env, array);
+            if (attached) {
+                (*g_vm)->DetachCurrentThread(g_vm);
+            }
+            PyErr_NoMemory();
+            return NULL;
+        }
+        int ok = 1;
         for (Py_ssize_t i = 0; i < length; i++) {
             PyObject *item = PySequence_GetItem(sequence, i);
-            values[i] = (jlong)PyLong_AsLong(item);
+            if (!item) {
+                ok = 0;
+                break;
+            }
+            long value = PyLong_AsLong(item);
             Py_XDECREF(item);
+            if (value == -1 && PyErr_Occurred()) {
+                ok = 0;
+                break;
+            }
+            values[i] = (jlong)value;
+        }
+        if (!ok) {
+            free(values);
+            (*env)->DeleteLocalRef(env, array);
+            if (attached) {
+                (*g_vm)->DetachCurrentThread(g_vm);
+            }
+            return NULL;
         }
         (*env)->SetLongArrayRegion(env, array, 0, (jsize)length, values);
         free(values);
@@ -602,17 +628,26 @@ Java_org_pymobile_app_PythonRuntime_startPython(
         LOGE("failed to configure sys.path");
     }
 
-    char runner[2048];
+    /* The launcher passes the entry name (the prebuilt dex historically
+     * hard-codes "main.py"). With optimize=true only main.pyc exists, so fall
+     * back to the sibling file (main.py <-> main.pyc) before running. */
+    char runner[4096];
     snprintf(runner, sizeof(runner),
-             "import runpy, sys, traceback\n"
+             "import runpy, sys, os, traceback\n"
+             "_entry = '%s'\n"
+             "_path = os.path.join('%s', _entry)\n"
+             "if not os.path.exists(_path):\n"
+             "    _alt = _entry + 'c' if not _entry.endswith('.pyc') else _entry[:-1]\n"
+             "    if os.path.exists(os.path.join('%s', _alt)):\n"
+             "        _path = os.path.join('%s', _alt)\n"
              "try:\n"
-             "    runpy.run_path('%s/%s', run_name='__main__')\n"
+             "    runpy.run_path(_path, run_name='__main__')\n"
              "except SystemExit:\n"
              "    pass\n"
              "except BaseException:\n"
              "    traceback.print_exc()\n"
              "    sys.stderr.flush()\n",
-             app_dir, entry);
+             entry, app_dir, app_dir, app_dir);
 
     int rc = PyRun_SimpleString(runner);
     LOGI("python finished with rc=%d", rc);
