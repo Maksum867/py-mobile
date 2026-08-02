@@ -55,11 +55,41 @@ class AndroidBridge(Bridge):
 
     # -- notifications -----------------------------------------------------
     def ensure_channel(self, channel_id: str, channel_name: str, importance: int) -> None:
-        """Channels are created on demand by the Java layer."""
+        """Create the notification channel with the exact configured values.
+
+        The prebuilt JNI bridge may not expose ``ensure_channel`` (older
+        ``libpymobile.so``). Falling back silently is safe: ``DeviceServices``
+        creates the channel on demand inside ``notify`` anyway.
+        """
+        if self._native is not None and hasattr(self._native, "ensure_channel"):
+            self._native.ensure_channel(channel_id, channel_name, int(importance))
 
     def notify(self, spec: NotificationSpec) -> None:
-        if self._native is not None:
-            self._native.notify(spec.title, spec.body, spec.notification_id, spec.ongoing)
+        if self._native is None:
+            return
+        native = self._native
+        try:
+            # New bridge: full signature (channel id/name, small icon).
+            native.notify(
+                spec.title,
+                spec.body,
+                spec.notification_id,
+                spec.ongoing,
+                spec.channel_id,
+                spec.channel_name,
+                spec.small_icon,
+            )
+        except TypeError:
+            # Older libpymobile.so only accepts (title, body, id, ongoing).
+            native.notify(
+                spec.title,
+                spec.body,
+                spec.notification_id,
+                spec.ongoing,
+            )
+        except Exception:
+            # Never let a bridge hiccup break the app.
+            _log.exception("notify failed")
 
     def cancel_notification(self, notification_id: int) -> None:
         if self._native is not None:
@@ -67,7 +97,12 @@ class AndroidBridge(Bridge):
 
     # -- vibration ---------------------------------------------------------
     def vibrate(self, milliseconds: int, amplitude: int = -1) -> None:
-        if self._native is not None:
+        if self._native is None:
+            return
+        try:
+            self._native.vibrate(int(milliseconds), int(amplitude))
+        except TypeError:
+            # Older libpymobile.so only accepts the duration.
             self._native.vibrate(int(milliseconds))
 
     def vibrate_pattern(self, pattern: list[int], repeat: int = -1) -> None:
@@ -113,6 +148,20 @@ class AndroidBridge(Bridge):
         if getter is None:  # runtime older than the current framework
             return ""
         return str(getter() or "")
+
+    # -- external ----------------------------------------------------------
+    def open_url(self, url: str) -> bool:
+        """Open ``url`` in the system browser on Android.
+
+        Falls back to the native module when it exposes ``open_url``; otherwise
+        returns ``False`` (no crash, the app keeps running).
+        """
+        if self._native is not None and hasattr(self._native, "open_url"):
+            try:
+                return bool(self._native.open_url(url))
+            except Exception:
+                return False
+        return False
 
     # -- events ------------------------------------------------------------
     def next_event(self, timeout_ms: int = -1) -> tuple[str, str, str] | None:

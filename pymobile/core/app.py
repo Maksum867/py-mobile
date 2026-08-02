@@ -16,14 +16,18 @@ from ..errors import PyMobileError
 from ..logging import configure, get_logger
 from .api.notifications import Notifications
 from .api.permissions import Permission, PermissionManager
+from .api.storage import Storage
 from .api.vibration import Vibration
 from .bridge import Bridge, get_bridge
 from .events import EventBus, Subscription
 from .i18n import translations
+from .jobs import JobHandle, JobManager
 from .net.http import HttpClient
 from .platform import current_platform
+from .plugins import plugins as _plugin_registry
 from .scheduler import Scheduler, TimerHandle
 from .ui.screen import Navigator, Screen, ScreenT
+from .ui.theme import Theme
 
 __all__ = ["App"]
 
@@ -52,8 +56,15 @@ class App:
         base_url: str = "",
         log_level: str = "info",
         auto_render: bool = True,
+        storage_path: str | None = None,
+        theme: str | Theme | None = None,
+        version: str = "",
+        package: str = "",
+        log_file: str | None = None,
     ) -> None:
         self.name = name
+        self.version = version or "0.1.0"
+        self.package = package or "org.pymobile.app"
         self.bridge: Bridge = bridge or get_bridge()
         self.events = EventBus()
         self.navigator = Navigator(self, on_change=self._on_screen_change)
@@ -61,8 +72,12 @@ class App:
         self.vibration = Vibration(self.bridge)
         self.permissions = PermissionManager(self.bridge)
         self.http = HttpClient(base_url=base_url)
+        self.storage = Storage(storage_path) if storage_path is not None else Storage()
+        self._theme = self._resolve_theme(theme)
         self._scheduler = Scheduler()
+        self.jobs = JobManager()
         self._log_level = log_level
+        self._log_file = log_file
         self._running = False
         #: When true (the default) a widget change redraws the screen by itself.
         self.auto_render = auto_render
@@ -94,6 +109,46 @@ class App:
         """The currently visible screen."""
         return self.navigator.current
 
+    @property
+    def theme(self) -> Theme:
+        """The active application theme."""
+        return self._theme
+
+    @property
+    def info(self) -> dict[str, str]:
+        """Application metadata: name, version, package, platform."""
+        return {
+            "name": self.name,
+            "version": self.version,
+            "package": self.package,
+            "platform": self.platform,
+        }
+
+    def set_theme(self, theme: str | Theme) -> None:
+        """Switch the theme and redraw the visible screen (like a language change)."""
+        resolved = self._resolve_theme(theme)
+        if resolved.name == self._theme.name and resolved.as_dict() == self._theme.as_dict():
+            return
+        self._theme = resolved
+        self.events.emit("app:theme", source=resolved.name)
+        screen = self.navigator.current
+        if screen is not None and self._running:
+            screen.refresh()
+
+    @staticmethod
+    def _resolve_theme(theme: str | Theme | None) -> Theme:
+        """Turn a name/Theme/None into a :class:`Theme` (defaults to light)."""
+        if theme is None:
+            return Theme.light()
+        if isinstance(theme, Theme):
+            return theme
+        lowered = theme.strip().lower()
+        if lowered in ("dark", "dark_mode"):
+            return Theme.dark()
+        if lowered in ("light", "light_mode", ""):
+            return Theme.light()
+        raise ValueError(f"unknown theme {theme!r}; use 'light', 'dark' or a Theme object")
+
     # -- lifecycle ---------------------------------------------------------
     def run(self, screen: Screen) -> None:
         """Start the app with ``screen`` as the initial view.
@@ -103,10 +158,12 @@ class App:
         which keeps previews and tests non-blocking.
         """
         global _current
-        configure(self._log_level)
+        configure(self._log_level, log_file=self._log_file)
         _log.info("starting %s on %s (bridge=%s)", self.name, self.platform, self.bridge.name)
         self._running = True
         _current = self
+        _plugin_registry.activate_all(self)
+        _plugin_registry.on_app_start(self)
         self.events.emit("app:start", source=self.name)
         self.navigator.reset(screen)
 
@@ -159,12 +216,19 @@ class App:
             _log.debug("event for unknown widget %r", widget_id)
             return
 
+        _log.debug("ui event %s on %s (type=%s) value=%r",
+                   kind, widget_id, type(widget).__name__, value)
+
         if kind == "press" and hasattr(widget, "press"):
             widget.press()
         elif kind == "change" and hasattr(widget, "set_value"):
             widget.set_value(value)
         elif kind == "toggle" and hasattr(widget, "set_checked"):
             widget.set_checked(value == "true")
+        elif kind == "increment" and hasattr(widget, "increment"):
+            widget.increment()
+        elif kind == "decrement" and hasattr(widget, "decrement"):
+            widget.decrement()
         self.events.emit(f"ui:{kind}", source=widget_id, value=value)
 
     def stop(self) -> None:
@@ -179,6 +243,8 @@ class App:
             return
         self._running = False
         self._unsubscribe_language()
+        self.jobs.shutdown()
+        _plugin_registry.on_app_stop(self)
         if _current is self:
             _current = None
         self.events.emit("app:stop", source=self.name)
@@ -277,6 +343,21 @@ class App:
     def set_timeout(self, delay_ms: int, callback: Callable[[], None]) -> TimerHandle:
         """Run ``callback`` once after ``delay_ms`` milliseconds."""
         return self._scheduler.set_timeout(delay_ms, callback)
+
+    # -- background jobs ---------------------------------------------------
+    def run_job(self, fn: Callable[[], Any], *, name: str | None = None) -> JobHandle:
+        """Run ``fn`` once on a background thread; returns a :class:`JobHandle`.
+
+        The result/error is captured on the handle and delivered to ``then``
+        callbacks, so the UI is never blocked and errors do not crash the app.
+        """
+        return self.jobs.enqueue(fn, name=name)
+
+    def repeat_job(
+        self, interval_ms: int, fn: Callable[[], Any], *, name: str | None = None
+    ) -> JobHandle:
+        """Run ``fn`` every ``interval_ms`` until cancelled; returns a handle."""
+        return self.jobs.every(interval_ms, fn, name=name)
 
     def toast(self, message: str, *, long: bool = False) -> None:
         """Show a short platform message."""

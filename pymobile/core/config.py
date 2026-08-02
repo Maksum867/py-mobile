@@ -62,9 +62,12 @@ class ProjectConfig:
             "**/__pycache__/**",
             "**/*.pyc",
             "**/*.pyo",
+            "**/tests/**",
             "tests/**",
+            "**/test_*.py",
             ".git/**",
             ".venv/**",
+            "venv/**",
             "build/**",
             "dist/**",
         ]

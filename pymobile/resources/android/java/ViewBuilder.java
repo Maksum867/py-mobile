@@ -12,13 +12,19 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
+import android.widget.CheckBox;
 import android.widget.CompoundButton;
 import android.widget.EditText;
 import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
+import android.widget.RadioButton;
+import android.widget.RadioGroup;
+import android.widget.RatingBar;
 import android.widget.ScrollView;
+import android.widget.SeekBar;
+import android.widget.Spinner;
 import android.widget.Switch;
 import android.widget.TextView;
 
@@ -108,6 +114,51 @@ final class ViewBuilder {
             case "Switch":
                 view = buildSwitch(id, props);
                 break;
+            case "Checkbox":
+                view = buildCheckbox(id, props);
+                break;
+            case "Slider":
+                view = buildSlider(id, props);
+                break;
+            case "RatingBar":
+                view = buildRatingBar(id, props);
+                break;
+            case "Dropdown":
+                view = buildDropdown(id, props);
+                break;
+            case "Chip":
+                view = buildChip(id, props);
+                break;
+            case "Badge":
+                view = buildBadge(props);
+                break;
+            case "SearchBar":
+                view = buildTextInput(id, props);
+                break;
+            case "Stepper":
+                view = buildStepper(id, props);
+                break;
+            case "RadioButton":
+                view = buildRadioButton(id, props);
+                break;
+            case "RadioGroup":
+                view = buildRadioGroup(node, id, props);
+                break;
+            case "SegmentedButtons":
+                view = buildSegmented(id, props);
+                break;
+            case "Link":
+                view = buildLink(id, props);
+                break;
+            case "ProgressText":
+                view = buildProgressText(id, props);
+                break;
+            case "DataTable":
+                view = buildDataTable(node, props);
+                break;
+            case "Avatar":
+                view = buildAvatar(props);
+                break;
             case "ProgressBar":
                 view = buildProgress(props);
                 break;
@@ -116,6 +167,12 @@ final class ViewBuilder {
                 break;
             case "Spacer":
                 view = buildSpacer(props);
+                break;
+            case "List":
+                view = buildList(node, props);
+                break;
+            case "ListTile":
+                view = buildListTile(id, props);
                 break;
             case "Label":
             default:
@@ -626,6 +683,382 @@ final class ViewBuilder {
         return toggle;
     }
 
+    private View buildCheckbox(final String id, JSONObject props) {
+        CheckBox checkbox = new CheckBox(context);
+        checkbox.setChecked(props.optBoolean("checked", false));
+        checkbox.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            @Override
+            public void onCheckedChanged(CompoundButton view, boolean checked) {
+                Native.dispatchEvent(id, "toggle", checked ? "true" : "false");
+            }
+        });
+        return checkbox;
+    }
+
+    private View buildSlider(final String id, JSONObject props) {
+        SeekBar seek = new SeekBar(context);
+        double minimum = props.optDouble("minimum", 0);
+        double maximum = props.optDouble("maximum", 100);
+        int steps = Math.max(1, (int) Math.round(maximum - minimum));
+        seek.setMax(steps);
+        seek.setProgress((int) Math.round(props.optDouble("value", 0) - minimum));
+        seek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override
+            public void onProgressChanged(SeekBar bar, int progress, boolean fromUser) {
+                if (fromUser) {
+                    Native.dispatchEvent(id, "change",
+                            String.valueOf(minimum + progress));
+                }
+            }
+
+            @Override
+            public void onStartTrackingTouch(SeekBar bar) {
+            }
+
+            @Override
+            public void onStopTrackingTouch(SeekBar bar) {
+            }
+        });
+        return seek;
+    }
+
+    private View buildRatingBar(final String id, JSONObject props) {
+        RatingBar rating = new RatingBar(context);
+        int maximum = Math.max(1, props.optInt("maximum", 5));
+        rating.setNumStars(maximum);
+        rating.setMax(maximum);
+        rating.setStepSize(1f);
+        rating.setRating((float) props.optDouble("rating", 0));
+        rating.setOnRatingBarChangeListener(new RatingBar.OnRatingBarChangeListener() {
+            @Override
+            public void onRatingChanged(RatingBar bar, float value, boolean fromUser) {
+                if (fromUser) {
+                    Native.dispatchEvent(id, "change", String.valueOf(value));
+                }
+            }
+        });
+        return rating;
+    }
+
+    private View buildDropdown(final String id, JSONObject props) {
+        Spinner spinner = new Spinner(context);
+        JSONArray options = props.optJSONArray("options");
+        String[] entries = new String[options == null ? 0 : options.length()];
+        for (int i = 0; i < entries.length; i++) {
+            entries[i] = options.optString(i, "");
+        }
+        android.widget.ArrayAdapter<String> adapter = new android.widget.ArrayAdapter<>(
+                context, android.R.layout.simple_spinner_item, entries);
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        spinner.setAdapter(adapter);
+        String selected = props.optString("value", entries.length > 0 ? entries[0] : "");
+        for (int i = 0; i < entries.length; i++) {
+            if (entries[i].equals(selected)) {
+                spinner.setSelection(i);
+                break;
+            }
+        }
+        spinner.setOnItemSelectedListener(new android.widget.AdapterView.OnItemSelectedListener() {
+            @Override
+            public void onItemSelected(
+                    android.widget.AdapterView<?> parent, View view, int position, long itemId) {
+                Native.dispatchEvent(id, "change",
+                        String.valueOf(entries[position]));
+            }
+
+            @Override
+            public void onNothingSelected(android.widget.AdapterView<?> parent) {
+            }
+        });
+        return spinner;
+    }
+
+    private View buildChip(final String id, JSONObject props) {
+        Button chip = new Button(context);
+        chip.setText(props.optString("text", ""));
+        chip.setAllCaps(false);
+        if (props.optBoolean("selected", false)) {
+            chip.setTextColor(Color.parseColor("#FFFFFF"));
+            chip.setBackgroundColor(parseColor(props.optString("selectedColor", "#3F51B5"),
+                    Color.parseColor("#3F51B5")));
+        }
+        chip.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                Native.dispatchEvent(id, "press", "");
+            }
+        });
+        return chip;
+    }
+
+    private View buildBadge(JSONObject props) {
+        TextView badge = new TextView(context);
+        badge.setText(props.optString("text", ""));
+        badge.setTextColor(parseColor(props.optString("color", "#FFFFFF"),
+                Color.parseColor("#FFFFFF")));
+        badge.setBackgroundColor(parseColor(props.optString("background", "#3F51B5"),
+                Color.parseColor("#3F51B5")));
+        badge.setGravity(Gravity.CENTER);
+        int pad = dp(6);
+        badge.setPadding(pad, dp(2), pad, dp(2));
+        return badge;
+    }
+
+    private View buildStepper(final String id, JSONObject props) {
+        LinearLayout row = new LinearLayout(context);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER);
+
+        Button minus = new Button(context);
+        minus.setText("−");
+        minus.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                Native.dispatchEvent(id, "decrement", "");
+            }
+        });
+        TextView value = new TextView(context);
+        value.setText(String.valueOf(props.optInt("value", 0)));
+        value.setGravity(Gravity.CENTER);
+        value.setPadding(dp(12), 0, dp(12), 0);
+        value.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
+        Button plus = new Button(context);
+        plus.setText("+");
+        plus.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                Native.dispatchEvent(id, "increment", "");
+            }
+        });
+
+        row.addView(minus);
+        row.addView(value);
+        row.addView(plus);
+        row.setTag(id);  // the outer row carries the widget id
+        return row;
+    }
+
+    private View buildRadioButton(final String id, JSONObject props) {
+        RadioButton radio = new RadioButton(context);
+        radio.setText(props.optString("text", ""));
+        radio.setChecked(props.optBoolean("selected", false));
+        radio.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                Native.dispatchEvent(id, "press", "");
+            }
+        });
+        return radio;
+    }
+
+    private View buildRadioGroup(JSONObject node, final String id, JSONObject props)
+            throws JSONException {
+        RadioGroup group = new RadioGroup(context);
+        group.setOrientation(LinearLayout.VERTICAL);
+        JSONArray children = node.optJSONArray("children");
+        if (children != null) {
+            for (int i = 0; i < children.length(); i++) {
+                JSONObject childNode = children.getJSONObject(i);
+                View child = buildChild(childNode);
+                group.addView(child);
+                if (childNode.optJSONObject("props") != null
+                        && childNode.optJSONObject("props").optBoolean("selected", false)) {
+                    group.check(child.getId() == 0 ? -1 : child.getId());
+                }
+            }
+        }
+        // The outer group carries the widget id.
+        group.setTag(id);
+        return group;
+    }
+
+    private View buildSegmented(final String id, JSONObject props) {
+        LinearLayout row = new LinearLayout(context);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        JSONArray options = props.optJSONArray("options");
+        String selected = props.optString("value", "");
+        if (options != null) {
+            for (int i = 0; i < options.length(); i++) {
+                final String label = options.optString(i, "");
+                Button segment = new Button(context);
+                segment.setText(label);
+                segment.setAllCaps(false);
+                if (label.equals(selected)) {
+                    segment.setTextColor(Color.parseColor("#FFFFFF"));
+                    segment.setBackgroundColor(Color.parseColor("#3F51B5"));
+                }
+                segment.setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        Native.dispatchEvent(id, "change", label);
+                    }
+                });
+                row.addView(segment);
+            }
+        }
+        row.setTag(id);
+        return row;
+    }
+
+    private View buildLink(final String id, JSONObject props) {
+        TextView link = new TextView(context);
+        link.setText(props.optString("text", ""));
+        link.setTextColor(Color.parseColor("#3F51B5"));
+        link.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
+        final String url = props.optString("url", "");
+        link.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                // Open the URL in the system browser directly from Java (no JNI
+                // round-trip), so links work even with an older libpymobile.so.
+                if (url != null && !url.isEmpty()) {
+                    DeviceServices.openUrl(context, url);
+                } else {
+                    Native.dispatchEvent(id, "press", "");
+                }
+            }
+        });
+        return link;
+    }
+
+    private View buildProgressText(final String id, JSONObject props) {
+        ProgressBar bar = new ProgressBar(context, null,
+                android.R.attr.progressBarStyleHorizontal);
+        bar.setMax(Math.max(1, (int) props.optDouble("maximum", 100)));
+        bar.setProgress((int) props.optDouble("value", 0));
+        // The label is separate; we keep the bar itself simple and let the
+        // Python side present the "Downloading 42%" text via a sibling label.
+        bar.setTag(id);
+        return bar;
+    }
+
+    private View buildDataTable(JSONObject node, JSONObject props) throws JSONException {
+        LinearLayout table = new LinearLayout(context);
+        table.setOrientation(LinearLayout.VERTICAL);
+        JSONArray headers = props.optJSONArray("headers");
+        JSONArray rows = props.optJSONArray("rows");
+        if (headers != null) {
+            LinearLayout head = new LinearLayout(context);
+            head.setOrientation(LinearLayout.HORIZONTAL);
+            for (int i = 0; i < headers.length(); i++) {
+                TextView cell = new TextView(context);
+                cell.setText(headers.optString(i, ""));
+                cell.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+                cell.setPadding(dp(8), dp(4), dp(8), dp(4));
+                head.addView(cell);
+            }
+            table.addView(head);
+        }
+        if (rows != null) {
+            for (int r = 0; r < rows.length(); r++) {
+                LinearLayout row = new LinearLayout(context);
+                row.setOrientation(LinearLayout.HORIZONTAL);
+                JSONArray cells = rows.optJSONArray(r);
+                for (int c = 0; c < (cells == null ? 0 : cells.length()); c++) {
+                    TextView cell = new TextView(context);
+                    cell.setText(cells.optString(c, ""));
+                    cell.setPadding(dp(8), dp(4), dp(8), dp(4));
+                    row.addView(cell);
+                }
+                table.addView(row);
+            }
+        }
+        return table;
+    }
+
+    private View buildAvatar(JSONObject props) {
+        TextView avatar = new TextView(context);
+        String text = props.optString("text", "");
+        if (text.length() > 2) {
+            text = text.substring(0, 2);
+        }
+        avatar.setText(text.toUpperCase());
+        avatar.setTextColor(parseColor(props.optString("color", "#FFFFFF"),
+                Color.parseColor("#FFFFFF")));
+        avatar.setGravity(Gravity.CENTER);
+        int size = dp(props.optInt("size", 48));
+        avatar.setBackgroundColor(parseColor(props.optString("background", "#3F51B5"),
+                Color.parseColor("#3F51B5")));
+        avatar.setMinimumWidth(size);
+        avatar.setMinimumHeight(size);
+        return avatar;
+    }
+
+    /**
+     * List is already virtualised on the Python side (only a window of rows is
+     * serialised), so here it is a plain vertical stack of its children.
+     */
+    private View buildList(JSONObject node, JSONObject props) throws JSONException {
+        LinearLayout list = new LinearLayout(context);
+        list.setOrientation(LinearLayout.VERTICAL);
+        int spacing = dp(props.optInt("spacing", 0));
+        JSONArray children = node.optJSONArray("children");
+        if (children != null) {
+            for (int i = 0; i < children.length(); i++) {
+                LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT);
+                if (spacing > 0 && i > 0) {
+                    params.topMargin = spacing;
+                }
+                list.addView(buildChild(children.getJSONObject(i)), params);
+            }
+        }
+        return list;
+    }
+
+    /** A tappable list row: title + subtitle + trailing, dispatching "press". */
+    private View buildListTile(final String id, JSONObject props) {
+        LinearLayout row = new LinearLayout(context);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(12), dp(10), dp(12), dp(10));
+        // A subtle ripple requires a background; use a selectable borderless item.
+        if (android.os.Build.VERSION.SDK_INT >= 21) {
+            android.content.res.TypedArray a = context.obtainStyledAttributes(
+                    new int[]{android.R.attr.selectableItemBackground});
+            row.setBackgroundResource(a.getResourceId(0, 0));
+            a.recycle();
+        }
+
+        LinearLayout texts = new LinearLayout(context);
+        texts.setOrientation(LinearLayout.VERTICAL);
+        TextView title = new TextView(context);
+        title.setText(props.optString("title", ""));
+        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
+        title.setTextColor(Color.parseColor("#212121"));
+        texts.addView(title);
+        String subtitle = props.optString("subtitle", "");
+        if (!subtitle.isEmpty()) {
+            TextView sub = new TextView(context);
+            sub.setText(subtitle);
+            sub.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+            sub.setTextColor(Color.parseColor("#757575"));
+            texts.addView(sub);
+        }
+
+        LinearLayout.LayoutParams textsParams = new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        row.addView(texts, textsParams);
+
+        String trailing = props.optString("trailing", "");
+        if (!trailing.isEmpty()) {
+            TextView trailingView = new TextView(context);
+            trailingView.setText(trailing);
+            trailingView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
+            trailingView.setTextColor(Color.parseColor("#757575"));
+            row.addView(trailingView);
+        }
+
+        row.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                Native.dispatchEvent(id, "press", "");
+            }
+        });
+        return row;
+    }
+
     private View buildProgress(JSONObject props) {
         boolean indeterminate = props.optBoolean("indeterminate", false);
         ProgressBar bar = new ProgressBar(
@@ -703,6 +1136,69 @@ final class ViewBuilder {
         view.setEnabled(node.optBoolean("enabled", true));
         view.setVisibility(node.optBoolean("visible", true) ? View.VISIBLE : View.GONE);
 
+        // Re-apply style (background, padding, elevation, ...) so theme switches
+        // and styling changes are reflected without a full rebuild.
+        applyStyle(view, node.optJSONObject("style"));
+
+        // ListTile is a row built from props (no serialised children), so update
+        // its title text in place rather than treating it as a child container.
+        if ("ListTile".equals(type) && view instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) view;
+            for (int i = 0; i < group.getChildCount(); i++) {
+                View child = group.getChildAt(i);
+                if (child instanceof LinearLayout) {
+                    ViewGroup texts = (ViewGroup) child;
+                    if (texts.getChildCount() > 0 && texts.getChildAt(0) instanceof TextView) {
+                        ((TextView) texts.getChildAt(0))
+                                .setText(props.optString("title", ""));
+                    }
+                }
+            }
+            return true;
+        }
+
+        // Components that build a composite view from props but serialise as a
+        // leaf (no "children" in the tree). The generic ViewGroup walk below
+        // would compare the live child count against zero and return false,
+        // forcing a full rebuild of the ENTIRE screen on every render — which
+        // closes the keyboard, resets scroll and loses widget state. So update
+        // them in place as leaves instead.
+        if ("Stepper".equals(type) && view instanceof ViewGroup) {
+            // Layout: [minus button][value text][plus button]
+            ViewGroup group = (ViewGroup) view;
+            for (int i = 0; i < group.getChildCount(); i++) {
+                View child = group.getChildAt(i);
+                if (child instanceof TextView) {
+                    ((TextView) child).setText(String.valueOf(props.optInt("value", 0)));
+                }
+            }
+            return true;
+        }
+        if ("SegmentedButtons".equals(type) && view instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) view;
+            String selected = props.optString("value", "");
+            for (int i = 0; i < group.getChildCount(); i++) {
+                View child = group.getChildAt(i);
+                if (child instanceof TextView) {
+                    boolean isSelected = ((TextView) child).getText().toString()
+                            .equals(selected);
+                    if (isSelected) {
+                        child.setBackgroundColor(Color.parseColor("#3F51B5"));
+                        ((TextView) child).setTextColor(Color.parseColor("#FFFFFF"));
+                    } else {
+                        child.setBackgroundColor(Color.TRANSPARENT);
+                        ((TextView) child).setTextColor(Color.parseColor("#212121"));
+                    }
+                }
+            }
+            return true;
+        }
+        if ("DataTable".equals(type)) {
+            // DataTable content is rebuilt by the Python side when it changes;
+            // accept the update so the screen is not rebuilt wholesale.
+            return true;
+        }
+
         if (view instanceof ViewGroup) {
             JSONArray children = node.optJSONArray("children");
             ViewGroup group = (ViewGroup) view;
@@ -732,6 +1228,42 @@ final class ViewBuilder {
             return true;
         }
 
+        if (view instanceof CheckBox) {
+            // CheckBox extends CompoundButton extends Button, so this must come
+            // before the Button branch. CompoundButton has no public getter for
+            // its listener, so we cannot save/restore it; setChecked here is a
+            // programmatic sync and the Python side guards against echo loops.
+            CheckBox checkbox = (CheckBox) view;
+            boolean checked = props.optBoolean("checked", false);
+            if (checkbox.isChecked() != checked) {
+                checkbox.setChecked(checked);
+            }
+            return true;
+        }
+        if (view instanceof SeekBar) {
+            SeekBar seek = (SeekBar) view;
+            double minimum = props.optDouble("minimum", 0);
+            int progress = (int) Math.round(props.optDouble("value", 0) - minimum);
+            if (seek.getProgress() != progress) {
+                seek.setProgress(progress);
+            }
+            return true;
+        }
+        if (view instanceof RatingBar) {
+            RatingBar rating = (RatingBar) view;
+            float value = (float) props.optDouble("rating", 0);
+            if (Math.abs(rating.getRating() - value) > 1e-3f) {
+                rating.setOnRatingBarChangeListener(null);
+                rating.setRating(value);
+                // Re-attach is intentionally skipped: the build path owns the
+                // listener and a partial tree rebuild re-creates the view.
+            }
+            return true;
+        }
+        if (view instanceof Spinner) {
+            // Selection is user-driven; do not overwrite it from Python.
+            return true;
+        }
         if (view instanceof Button) {
             ((Button) view).setText(props.optString("text", ""));
             return true;

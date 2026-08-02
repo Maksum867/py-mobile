@@ -133,6 +133,10 @@ class BuildPipeline:
             self.warnings.append(
                 "targetSdk >= 33 without POST_NOTIFICATIONS: notifications stay hidden."
             )
+        if self.config.no_ssl and self._uses_http():
+            self.warnings.append(
+                "Built with --no-ssl but code uses HttpClient; HTTPS requests will fail."
+            )
 
     def _uses_http(self) -> bool:
         """Best-effort scan of the app sources for HTTP client usage.
@@ -345,7 +349,9 @@ class BuildPipeline:
         toolchain.verify(require_ndk=False)
 
         runtime = self._stage("runtime", lambda: ensure_runtime(self.config.abis[0]))
-        backend = NativeBackend(self.config, toolchain, runtime)
+        backend = NativeBackend(
+            self.config, toolchain, runtime, abi=self.config.abis[0]
+        )
 
         native_dir = self._stage("jni", lambda: backend.compile_jni(workdir))
         dex = self._stage("dex", lambda: backend.compile_java(workdir))

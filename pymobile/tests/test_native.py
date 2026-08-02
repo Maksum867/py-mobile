@@ -370,8 +370,8 @@ class _FakeNative:
     def toast(self, message: str, longer: bool = False) -> None:
         self.calls.append(("toast", (message, longer)))
 
-    def vibrate(self, milliseconds: int) -> None:
-        self.calls.append(("vibrate", (milliseconds,)))
+    def vibrate(self, milliseconds: int, amplitude: int = -1) -> None:
+        self.calls.append(("vibrate", (milliseconds, amplitude)))
 
     def vibrate_pattern(self, pattern: list[int], repeat: int = -1) -> None:
         self.calls.append(("vibrate_pattern", (tuple(pattern), repeat)))
@@ -379,8 +379,13 @@ class _FakeNative:
     def cancel_vibration(self) -> None:
         self.calls.append(("cancel_vibration", ()))
 
-    def notify(self, title: str, body: str, identifier: int, ongoing: bool = False) -> None:
-        self.calls.append(("notify", (title, body, identifier, ongoing)))
+    def notify(self, title: str, body: str, identifier: int, ongoing: bool = False,
+            channel_id: str = "", channel_name: str = "", small_icon: str = "") -> None:
+        self.calls.append(("notify", (title, body, identifier, ongoing,
+                                      channel_id, channel_name, small_icon)))
+
+    def ensure_channel(self, channel_id: str, channel_name: str, importance: int) -> None:
+        self.calls.append(("ensure_channel", (channel_id, channel_name, importance)))
 
     def cancel_notification(self, identifier: int) -> None:
         self.calls.append(("cancel_notification", (identifier,)))
@@ -430,7 +435,7 @@ class TestAndroidBridge:
 
         bridge = self._bridge()
         bridge.notify(NotificationSpec("T", "B", 7, "c", "C", ongoing=True))
-        assert ("notify", ("T", "B", 7, True)) in bridge._native.calls
+        assert ("notify", ("T", "B", 7, True, "c", "C", None)) in bridge._native.calls
 
     def test_permission_round_trip(self) -> None:
         bridge = self._bridge()
@@ -1088,6 +1093,17 @@ class TestDeviceFixes:
 
     def test_views_are_tagged_with_their_id(self) -> None:
         assert "view.setTag(id)" in self._java("ViewBuilder.java")
+
+    def test_new_widgets_have_java_renderers(self) -> None:
+        """Every new component must have a Java branch, or it silently renders
+        as a plain label on a real device (untappable)."""
+        source = self._java("ViewBuilder.java")
+        for widget in (
+            "ListTile", "List", "Slider", "Checkbox", "RatingBar", "Dropdown",
+            "Chip", "Badge", "Stepper", "RadioButton", "RadioGroup",
+            "SegmentedButtons", "Link", "DataTable", "Avatar",
+        ):
+            assert f"case \"{widget}\":" in source, f"missing Java renderer for {widget}"
 
     # -- permissions -------------------------------------------------------
     def test_permission_request_blocks_for_the_answer(self) -> None:

@@ -98,6 +98,21 @@ class TestCollector:
         result = collect_sources(tmp_path, tmp_path / "main.py", exclude=["tests/**"])
         assert result.count == 1
 
+    def test_exclude_glob_semantics(self) -> None:
+        """Regression: globs must follow gitignore semantics."""
+        from pymobile.compiler.collector import _is_excluded
+
+        # A pattern with no slash matches at any depth.
+        assert _is_excluded(Path("pkg/test_foo.py"), ["test_*.py"])
+        assert not _is_excluded(Path("pkg/helper.py"), ["test_*.py"])
+        # '**/dir/**' matches root-level and nested __pycache__.
+        assert _is_excluded(Path("__pycache__/x.pyc"), ["**/__pycache__/**"])
+        assert _is_excluded(Path("sub/__pycache__/x.pyc"), ["**/__pycache__/**"])
+        # A pattern with a slash is anchored to the root.
+        assert _is_excluded(Path("build/x.py"), ["build/**"])
+        assert not _is_excluded(Path("sub/build/x.py"), ["build/**"])
+        assert _is_excluded(Path("sub/build/x.py"), ["**/build/**"])
+
     def test_assets_included(self, tmp_path: Path) -> None:
         (tmp_path / "main.py").write_text("x = 1", encoding="utf-8")
         (tmp_path / "data.json").write_text("{}", encoding="utf-8")
@@ -217,6 +232,22 @@ class TestCache:
         path.write_text("x = 1", encoding="utf-8")
         first = fingerprint_files([path])
         path.write_text("x = 22222", encoding="utf-8")
+        assert fingerprint_files([path]) != first
+
+    def test_fingerprint_catches_same_second_same_size_edit(self, tmp_path: Path) -> None:
+        """Regression: a whole-second mtime with an unchanged size used to hide
+        an edit made twice within one clock second, returning a stale APK."""
+        import os
+        import time
+
+        path = tmp_path / "a.py"
+        path.write_text("AAAAA", encoding="utf-8")
+        ts = int(time.time())
+        os.utime(path, (ts, ts))
+        first = fingerprint_files([path])
+        # Same path, same byte size, same whole-second mtime — different content.
+        path.write_text("BBBBB", encoding="utf-8")
+        os.utime(path, (ts, ts))
         assert fingerprint_files([path]) != first
 
     def test_fingerprint_is_stable(self, tmp_path: Path) -> None:
@@ -353,6 +384,9 @@ class TestPipeline:
         assert not build_apk(project).cached
 
     def test_syntax_error_still_packages_source(self, project: ProjectConfig) -> None:
+        # The warning only fires on the bytecode-compile path, which requires
+        # optimize=True (the default is to ship sources directly).
+        project.optimize = True
         (project.root / "broken.py").write_text("def (:\n", encoding="utf-8")
         result = build_apk(project)
         assert any("broken.py" in warning for warning in result.warnings)

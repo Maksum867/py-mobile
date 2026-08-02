@@ -3,6 +3,149 @@
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project uses [semantic versioning](https://semver.org/).
 
+## [0.6.0] — 2026-08-03
+
+### Added
+
+**UI components**
+
+- `RadioButton` / `RadioGroup` — mutually exclusive selection within a group.
+- `SegmentedButtons` — horizontal selection panel (tabs / segmented control).
+- `ProgressText` — `ProgressBar` with a text label overlay (e.g. "Downloading 42%").
+- `Link` — clickable text that opens a URL in the system browser via the native bridge.
+- `DataTable` — simple table with headers and rows.
+- `Avatar` — round avatar with initials or an image.
+- `Checkbox` — toggle with `on_toggle` callback.
+- `Slider` — value slider with `minimum`, `maximum` and `on_change`.
+- `RatingBar` — star rating widget.
+- `Dropdown` — selection from a list of options.
+- `Chip` — compact element for actions, filters or tags.
+- `Badge` — small notification counter.
+- `Stepper` — increment/decrement numeric value.
+- `SearchBar` — text input with search semantics and `on_change`.
+
+**Notifications**
+
+- Fixed notification channel creation: channels are now created reliably on
+  all devices. Building with `PYMOBILE_BUILD_JNI=1` ensures the native bridge
+  includes the `ensure_channel` entry point.
+- Added documentation for the full notification setup: permission declaration,
+  runtime request, JNI build flag and device settings check.
+
+## [0.5.1] — 2026-08-02
+
+### Added
+
+**List**
+
+- `List(item_count, builder)` — virtualised list that renders only visible
+  rows, so 10 000+ items scroll smoothly.
+- `ListTile(title, subtitle, trailing, on_press)` — list row builder.
+- Methods: `refresh()`, `scroll_to(index)`. Add/clear are blocked because
+  the list is virtualised.
+
+**Plugins**
+
+- `Plugin(name)` base class with `activate(app)`, `on_app_start(app)`,
+  `on_app_stop(app)` hooks.
+- `PluginRegistry` with `register()`, `activate_all()`, `on_app_start()`,
+  `on_app_stop()`.
+- Plugins are activated automatically in `App.run()` and stopped in
+  `App.stop()`.
+- Exported as `Plugin`, `PluginRegistry`, `plugins`.
+
+**Background jobs**
+
+- `JobManager.enqueue(fn)` runs a function once on a background thread;
+  `JobManager.every(interval_ms, fn)` repeats until cancelled.
+- `JobHandle` with `.then(on_success, on_error)`, `.wait(timeout)`,
+  `.cancel()`, `.done`, `.cancelled`, `.result`, `.error`.
+- `App.run_job(fn)` and `App.repeat_job(ms, fn)` convenience methods.
+
+**Logger**
+
+- `configure(level, color, log_file=)` — optional file logger with
+  timestamps.
+- `get_diagnostics()` — returns framework version, platform, Python version,
+  log level and active handlers.
+- `App(log_file="app.log")` parameter.
+
+**Build**
+
+- NativeBackend accepts `abi=` parameter; hardcoded `arm64-v8a` replaced
+  with `self.abi`. Enables `x86_64` builds for emulators and Chromebooks.
+- Pipeline passes `config.abis[0]` to the backend.
+
+## [0.5.0] — 2026-08-01
+
+### Added
+
+**Themes**
+
+- `Theme(name, colors)` — semantic colour palette.
+- `Theme.light()` and `Theme.dark()` built-in themes.
+- `App(theme="light"|"dark"|Theme)` — sets the initial theme.
+- `app.set_theme("dark")` — switches at runtime and redraws the visible
+  screen (like a language change).
+- `app.theme.is_dark`, `app.theme["PRIMARY"]`, `theme.color("TEXT")`.
+- Exported as `Theme` from `pymobile` and `pymobile.core.ui`.
+
+**Storage**
+
+- `Storage` — JSON key-value store with atomic writes (temp + rename).
+- `App(storage_path=...)` → `app.storage`.
+- API: `get`, `set`, `delete`, `contains`, `clear`, `keys`, `items`, `[]`
+  operator.
+- `default_storage_path()` — Android private files / desktop `~/.pymobile`.
+- Override with `PYMOBILE_STORAGE_DIR` environment variable.
+
+**Async HTTP**
+
+- `HttpFuture` — non-blocking HTTP requests.
+- `HttpClient.get_async`, `post_async`, `put_async`, `delete_async` — run
+  on a daemon thread, UI never blocks.
+- `future.then(on_success, on_error)` callbacks.
+- `future.get(timeout)` — block until result.
+- `future.cancel()` — suppress callbacks.
+- `future.done`, `future.cancelled`.
+- Exported as `HttpFuture` from `pymobile`.
+
+## [0.4.0] — 2026-07-31
+
+### Added
+
+**Input validation**
+
+- `Validator(fields)` — declarative form/input validation.
+- `validate()` returns `dict[str, list[str]]` of errors.
+- `validate_or_raise()` raises `ValidationError` on first failure.
+- Validators: `required`, `optional`, `email`, `length`, `min_length`,
+  `max_length`, `integer`, `number`, `between`, `min`, `max`, `matches`,
+  `one_of`, `regex`, `boolean`.
+- Pure logic, no UI dependency. Exported as `Validator`, `ValidationError`.
+
+**HTTP cache / offline**
+
+- `HttpCache` — disk-backed cache for GET responses, based on `Storage`.
+- `HttpClient(cache=...)` parameter.
+- `get_cached(url, ttl=300)` — returns cached response if fresh, stores
+  new responses, falls back to stale cache on network failure (offline
+  mode).
+- `Response.from_cache` flag.
+
+**Snapshot testing**
+
+- `snapshot_path(test_file, name)` — resolves golden file path.
+- `assert_snapshot(widget_or_tree, __file__, name=...)` — first run writes
+  golden file to `snapshots/`; subsequent runs compare and raise
+  `AssertionError` with diff on mismatch.
+- `update=True` regenerates the golden file.
+
+**App metadata**
+
+- `App(version=, package=)` parameters.
+- `app.info` dict with `name`, `version`, `package`, `platform`.
+
 ## [0.3.0] — 2026-07-29
 
 Ten pieces of friction reported from building a real Pomodoro app, addressed
@@ -81,7 +224,7 @@ end to end.
 - `pymobile build --minimal-stdlib` drops desktop-only stdlib packages
   (~1.7 MB) and `--no-ssl` drops OpenSSL and the CA bundle (~4.7 MB).
 - `--no-ssl` now warns at build time when the sources use `HttpClient`, rather
-  than shipping an APK that fails with "No module named _ssl" on device.
+  than shipping an APK that fails with "No module named *ssl*" on device.
 
 ### Fixed
 
@@ -157,7 +300,7 @@ end to end.
 
 ### Fixed
 
-- The missing-`INTERNET` build warning no longer fires for apps that never use
+- The missing `INTERNET` build warning no longer fires for apps that never use
   the network; the validator now scans the sources for `HttpClient` /
   `app.http` usage first.
 - `pymobile.__version__` is now guarded by a test against `pyproject.toml`, so

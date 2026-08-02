@@ -15,6 +15,9 @@ __all__ = ["Style", "Color", "Align", "EdgeInsets"]
 
 _HEX_COLOR = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$")
 
+#: Named sizes a Style width/height accepts (mirrors the native renderer).
+_DIMENSION_WORDS = frozenset({"match", "fill", "wrap", "match_parent", "wrap_content"})
+
 
 class Color:
     """Named colours plus validation for ``#RGB``/``#RRGGBB``/``#AARRGGBB``."""
@@ -56,8 +59,19 @@ class Align:
     #: Cross-axis only: fill the container across the axis.
     STRETCH = "stretch"
 
+    #: Values accepted by ``align`` (main axis).
+    MAIN = (START, CENTER, END, SPACE_BETWEEN)
     #: Values accepted by ``cross_align``.
     CROSS = (START, CENTER, END, STRETCH)
+
+    @classmethod
+    def validate_main(cls, value: str) -> str:
+        """Return a valid ``align`` value, or raise :class:`ValueError`."""
+        if value not in cls.MAIN:
+            raise ValueError(
+                f"invalid align {value!r}; expected one of {', '.join(cls.MAIN)}"
+            )
+        return value
 
     @classmethod
     def validate_cross(cls, value: str) -> str:
@@ -151,6 +165,33 @@ class Style:
             raise ValueError("min_height must not exceed max_height")
         if self.aspect_ratio is not None and self.aspect_ratio <= 0:
             raise ValueError("aspect_ratio must be positive")
+        if (
+            self.align is not None
+            and self.align not in Align.MAIN
+            and self.align not in Align.CROSS
+        ):
+            raise ValueError(f"invalid align {self.align!r}")
+        for name, size in (("width", self.width), ("height", self.height)):
+            if isinstance(size, int):
+                if size <= 0:
+                    raise ValueError(f"{name} must be a positive number of dp")
+            elif isinstance(size, str):
+                if size not in _DIMENSION_WORDS:
+                    raise ValueError(
+                        f"invalid {name} {size!r}; expected a positive number "
+                        f"or one of: {', '.join(sorted(_DIMENSION_WORDS))}"
+                    )
+            elif size is not None:
+                raise ValueError(
+                    f"invalid {name} {size!r}; expected a positive number "
+                    f"or one of: {', '.join(sorted(_DIMENSION_WORDS))}"
+                )
+        if self.weight is not None and self.weight < 0:
+            raise ValueError("weight must not be negative")
+        if self.elevation is not None and self.elevation < 0:
+            raise ValueError("elevation must not be negative")
+        if self.corner_radius is not None and self.corner_radius < 0:
+            raise ValueError("corner_radius must not be negative")
 
     def merge(self, **overrides: Any) -> Style:
         """Return a copy with some attributes replaced."""

@@ -83,6 +83,33 @@ class Screen:
             if id(value) not in owned or value._explicit_id:
                 continue
             value.id = name
+        self._check_unique_ids()
+
+    def _check_unique_ids(self) -> None:
+        """Verify every widget in the tree has a unique id.
+
+        The native renderer patches views by id, so two widgets sharing the
+        same id silently clobber each other on every redraw. Detecting the
+        clash at build time turns a hard-to-debug visual glitch into a loud,
+        actionable error.
+        """
+        assert self._root is not None
+        seen: dict[str, Widget] = {}
+        duplicates: list[str] = []
+        for widget in self._root.walk():
+            existing = seen.get(widget.id)
+            if existing is None:
+                seen[widget.id] = widget
+            elif widget.id not in duplicates:
+                duplicates.append(widget.id)
+        if duplicates:
+            raise PyMobileError(
+                f"duplicate widget id(s) in {type(self).__name__}: "
+                + ", ".join(repr(wid) for wid in duplicates),
+                hint="Give each widget a unique `id=` (or assign conflicting "
+                "widgets to different attributes so the auto-naming does not "
+                "collide).",
+            )
 
     def invalidate(self) -> None:
         """Ask the application to redraw this screen.

@@ -149,11 +149,14 @@ class NativeBackend:
         python_runtime: Path,
         *,
         keystore: Path | None = None,
+        abi: str = "arm64-v8a",
     ) -> None:
         self.config = config
         self.toolchain = toolchain
         self.python_runtime = python_runtime
         self.keystore = keystore
+        #: The target ABI (e.g. "arm64-v8a" or "x86_64").
+        self.abi = abi
         #: Non-fatal problems worth surfacing to the user.
         self.warnings: list[str] = []
 
@@ -167,7 +170,7 @@ class NativeBackend:
 
         Set ``PYMOBILE_BUILD_JNI=1`` to compile it from source with the NDK.
         """
-        output_dir = workdir / "lib" / "arm64-v8a"
+        output_dir = workdir / "lib" / self.abi
         output_dir.mkdir(parents=True, exist_ok=True)
         libdir = self.python_runtime / "lib"
 
@@ -186,7 +189,7 @@ class NativeBackend:
 
     def _use_prebuilt_bridge(self, output_dir: Path, libdir: Path) -> None:
         """Copy the packaged ``libpymobile.so`` and the interpreter libraries."""
-        prebuilt = resource_path("android", "prebuilt", "arm64-v8a", "libpymobile.so")
+        prebuilt = resource_path("android", "prebuilt", self.abi, "libpymobile.so")
         shutil.copy2(prebuilt, output_dir / "libpymobile.so")
         _log.debug("using the prebuilt JNI bridge")
         self._copy_runtime_libraries(libdir, output_dir)
@@ -266,13 +269,14 @@ class NativeBackend:
         try:
             return self._compile_java_from_source(workdir)
         except PyMobileError as error:
-            self.warnings.append(f"falling back to the prebuilt dex: {error}")
+            detail = f" {error.hint}" if error.hint else ""
+            self.warnings.append(f"falling back to the prebuilt dex:{detail}")
             _log.warning("java build failed, using the prebuilt dex: %s", error)
             return self._use_prebuilt_dex(workdir)
 
     def _use_prebuilt_dex(self, workdir: Path) -> Path:
         """Copy the packaged launcher dex into the work directory."""
-        prebuilt = resource_path("android", "prebuilt", "arm64-v8a", "classes.dex")
+        prebuilt = resource_path("android", "prebuilt", self.abi, "classes.dex")
         target = workdir / "dex" / "classes.dex"
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(prebuilt, target)
@@ -468,7 +472,7 @@ class NativeBackend:
             for library in sorted(native_dir.glob("*.so")):
                 # Native libraries must be stored uncompressed and page-aligned
                 # so Android can load them directly from the APK.
-                info = zipfile.ZipInfo(f"lib/arm64-v8a/{library.name}")
+                info = zipfile.ZipInfo(f"lib/{self.abi}/{library.name}")
                 info.compress_type = zipfile.ZIP_STORED
                 info.external_attr = 0o755 << 16
                 archive.writestr(info, library.read_bytes())

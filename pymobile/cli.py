@@ -169,8 +169,21 @@ def cmd_run(args: argparse.Namespace) -> int:
         return _run_gui(config, entry)
 
     _out.info(f"running {entry.name} in desktop preview mode")
-    _out.hint("use --gui for a clickable window")
     _execute(config, entry)
+
+    from .core.bridge import get_bridge
+    from .core.ui.preview import render_ascii
+
+    # last_tree lives on the stub bridges; the abstract Bridge has no such
+    # attribute, so read it defensively.
+    tree = getattr(get_bridge(), "last_tree", None)
+    if tree is None:
+        raise PyMobileError(
+            "The app rendered nothing.",
+            hint="Make sure the entry point calls App(...).run(SomeScreen()).",
+        )
+    print(render_ascii(tree, title=config.name))
+    _out.hint("use --gui for a clickable window")
     return 0
 
 

@@ -23,12 +23,19 @@ _log = get_logger("compiler.cache")
 CACHE_FILENAME = ".pymobile-cache.json"
 _CACHE_VERSION = 1
 
+#: Files up to this size are fingerprinted by content hash; anything larger is
+#: fingerprinted by size + mtime so the cache stays fast on big binaries.
+#: 8 MB comfortably covers every source file and icon in a PyMobile project.
+_HASH_LIMIT = 8 * 1024 * 1024
+
 
 def fingerprint_files(paths: Iterable[Path]) -> str:
-    """Hash file paths together with their size and mtime.
+    """Hash file paths, sizes and enough of each file's identity to catch edits.
 
-    Content hashing would be more precise but noticeably slower on large
-    projects; size + mtime is what every fast build system uses.
+    Files below :data:`_HASH_LIMIT` are hashed by **content**, so editing a file
+    twice within the same clock second can no longer produce a stale "up to
+    date" build. Larger files fall back to size + nanosecond mtime to avoid
+    reading megabytes into memory on every build.
     """
     digest = hashlib.blake2b(digest_size=16)
     for path in sorted(paths):
@@ -38,7 +45,13 @@ def fingerprint_files(paths: Iterable[Path]) -> str:
             continue
         digest.update(str(path).encode("utf-8"))
         digest.update(str(stat.st_size).encode("ascii"))
-        digest.update(str(int(stat.st_mtime)).encode("ascii"))
+        if stat.st_size <= _HASH_LIMIT:
+            try:
+                digest.update(hashlib.blake2b(path.read_bytes(), digest_size=16).digest())
+            except OSError:  # vanished between stat and read — use mtime
+                digest.update(str(int(stat.st_mtime_ns)).encode("ascii"))
+        else:
+            digest.update(str(int(stat.st_mtime_ns)).encode("ascii"))
     return digest.hexdigest()
 
 

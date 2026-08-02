@@ -1,5 +1,8 @@
 package org.pymobile.app;
 
+import android.app.Activity;
+import android.util.Log;
+
 /**
  * The single Java entry point the native layer talks to.
  *
@@ -37,8 +40,8 @@ public final class Native {
     }
 
     /** Vibrate once. */
-    public static void vibrate(long milliseconds) {
-        DeviceServices.vibrate(MainActivity.current(), milliseconds);
+    public static void vibrate(long milliseconds, int amplitude) {
+        DeviceServices.vibrate(MainActivity.current(), milliseconds, amplitude);
     }
 
     /** Play a vibration pattern. */
@@ -51,9 +54,22 @@ public final class Native {
         DeviceServices.cancelVibration(MainActivity.current());
     }
 
-    /** Post a notification. */
-    public static void notify(String title, String body, int id, boolean ongoing) {
-        DeviceServices.notify(MainActivity.current(), title, body, id, ongoing);
+    /** Post a notification on the given channel. */
+    public static void notify(String title, String body, int id, boolean ongoing,
+            String channelId, String channelName, String smallIcon) {
+        Activity activity = MainActivity.current();
+        Log.i("pymobile", "Native.notify() activity=" + (activity != null)
+                + " title=" + title + " id=" + id);
+        DeviceServices.notify(activity, title, body, id, ongoing,
+                channelId, channelName, smallIcon);
+    }
+
+    /** Create a notification channel with the configured identity. */
+    public static void ensureChannel(String channelId, String channelName, int importance) {
+        Activity activity = MainActivity.current();
+        Log.i("pymobile", "Native.ensureChannel() activity=" + (activity != null)
+                + " channelId=" + channelId);
+        DeviceServices.ensureChannel(activity, channelId, channelName, importance);
     }
 
     /** Cancel a notification. */
@@ -74,5 +90,10 @@ public final class Native {
     /** The language the device is set to, as a BCP-47 tag such as "uk-UA". */
     public static String deviceLanguage() {
         return DeviceServices.deviceLanguage(MainActivity.current());
+    }
+
+    /** Open a URL in the system browser. */
+    public static boolean openUrl(String url) {
+        return DeviceServices.openUrl(MainActivity.current(), url);
     }
 }

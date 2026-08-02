@@ -10,9 +10,10 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from pathlib import Path
 from typing import ClassVar
 
-__all__ = ["get_logger", "configure", "LOGGER_NAME"]
+__all__ = ["get_logger", "configure", "get_diagnostics", "LOGGER_NAME"]
 
 LOGGER_NAME = "pymobile"
 
@@ -51,6 +52,13 @@ class _Formatter(logging.Formatter):
         return f"{prefix} {message}"
 
 
+class _FileFormatter(logging.Formatter):
+    """Timestamped formatter for file loggers (no ANSI colour)."""
+
+    def __init__(self) -> None:
+        super().__init__("%(asctime)s %(levelname)s %(name)s %(message)s")
+
+
 def supports_color(stream: object = None) -> bool:
     """Return ``True`` when ANSI colours are safe to emit."""
     stream = stream or sys.stderr
@@ -59,18 +67,50 @@ def supports_color(stream: object = None) -> bool:
     return bool(getattr(stream, "isatty", lambda: False)())
 
 
-def configure(level: str | int = "info", *, color: bool | None = None) -> logging.Logger:
-    """Attach a single stderr handler to the ``pymobile`` logger."""
+def configure(
+    level: str | int = "info",
+    *,
+    color: bool | None = None,
+    log_file: str | Path | None = None,
+) -> logging.Logger:
+    """Attach a stderr handler (and optionally a file handler) to ``pymobile``.
+
+    When ``log_file`` is given, log records are also written there with
+    timestamps, which is useful for diagnosing issues on a device where stderr
+    is not easy to reach.
+    """
     logger = logging.getLogger(LOGGER_NAME)
     resolved = _LEVELS.get(level, level) if isinstance(level, str) else level
     logger.setLevel(resolved)
     logger.propagate = False
-    handler = logging.StreamHandler(sys.stderr)
-    handler.setFormatter(_Formatter(color=supports_color() if color is None else color))
     for existing in list(logger.handlers):
         logger.removeHandler(existing)
-    logger.addHandler(handler)
+    logger.addHandler(logging.StreamHandler(sys.stderr))
+    if log_file is not None:
+        path = Path(log_file)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        file_handler = logging.FileHandler(path, encoding="utf-8")
+        file_handler.setFormatter(_FileFormatter())
+        logger.addHandler(file_handler)
     return logger
+
+
+def get_diagnostics() -> dict[str, object]:
+    """Return a snapshot of runtime facts useful for support/debugging.
+
+    Includes the Python version, platform, whether a file/console handler is
+    attached and the configured level. Safe to call from anywhere.
+    """
+    logger = logging.getLogger(LOGGER_NAME)
+    from .core.platform import current_platform  # local import avoids a cycle
+
+    return {
+        "framework": "pymobile",
+        "platform": str(current_platform()),
+        "python": sys.version.split()[0],
+        "level": logging.getLevelName(logger.level),
+        "handlers": [type(h).__name__ for h in logger.handlers],
+    }
 
 
 def get_logger(name: str | None = None) -> logging.Logger:
@@ -78,3 +118,4 @@ def get_logger(name: str | None = None) -> logging.Logger:
     if not name:
         return logging.getLogger(LOGGER_NAME)
     return logging.getLogger(f"{LOGGER_NAME}.{name}")
+

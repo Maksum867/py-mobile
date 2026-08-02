@@ -193,6 +193,15 @@ public class MainActivity extends Activity {
     }
 
     @Override
+    protected void onNewIntent(android.content.Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        // The Python runtime is already running; a tap on a notification (or a
+        // re-launch with SINGLE_TOP) must NOT re-run Python, which would crash.
+        // Just ensure the activity is in the foreground.
+    }
+
+    @Override
     protected void onDestroy() {
         super.onDestroy();
         if (instance == this) {

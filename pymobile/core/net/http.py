@@ -9,18 +9,20 @@ with backoff, a base URL and default headers.
 from __future__ import annotations
 
 import json as jsonlib
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
 from ...errors import NetworkError
 from ...logging import get_logger
+from .cache import HttpCache
 
-__all__ = ["HttpClient", "Response", "DEFAULT_TIMEOUT"]
+__all__ = ["HttpClient", "Response", "HttpFuture", "DEFAULT_TIMEOUT"]
 
 _log = get_logger("http")
 
@@ -39,6 +41,7 @@ class Response:
     url: str
     elapsed: float = 0.0
     encoding: str = "utf-8"
+    from_cache: bool = False
 
     @property
     def ok(self) -> bool:
@@ -73,12 +76,112 @@ class Response:
         return self
 
 
+class HttpFuture:
+    """A handle to an in-flight background HTTP request.
+
+    Returned by the ``*_async`` verbs. The request runs on a daemon thread so
+    the UI never blocks. Attach a callback with :meth:`then` (called on the
+    calling thread when the request finishes) or await the result with
+    :meth:`get`. Cancelling prevents the callbacks from firing (the request
+    itself continues to completion on its thread).
+    """
+
+    __slots__ = ("_client", "_method", "_url", "_kwargs", "_done", "_result",
+                 "_error", "_callbacks", "_lock", "_cancelled")
+
+    def __init__(
+        self,
+        client: "HttpClient",
+        method: str,
+        url: str,
+        kwargs: dict[str, Any],
+    ) -> None:
+        self._client = client
+        self._method = method
+        self._url = url
+        self._kwargs = kwargs
+        self._done = threading.Event()
+        self._result: Response | None = None
+        self._error: BaseException | None = None
+        self._callbacks: list[Callable[[], None]] = []
+        self._lock = threading.Lock()
+        self._cancelled = False
+
+    # -- results -----------------------------------------------------------
+    @property
+    def done(self) -> bool:
+        """Whether the request has finished."""
+        return self._done.is_set()
+
+    @property
+    def cancelled(self) -> bool:
+        """Whether :meth:`cancel` was called."""
+        return self._cancelled
+
+    def cancel(self) -> None:
+        """Suppress callbacks for this request."""
+        with self._lock:
+            self._cancelled = True
+            self._callbacks.clear()
+
+    def get(self, timeout: float | None = None) -> Response:
+        """Block until the request finishes and return the :class:`Response`.
+
+        Raises :class:`NetworkError` if the request failed. ``timeout`` bounds
+        the wait (``None`` waits forever).
+        """
+        self._done.wait(timeout)
+        if self._error is not None:
+            raise self._error
+        if self._result is None:
+            raise NetworkError("Request did not complete")
+        return self._result
+
+    def then(self, on_success: Callable[[Response], None],
+             on_error: Callable[[BaseException], None] | None = None) -> "HttpFuture":
+        """Register callbacks to run once the request completes.
+
+        ``on_success`` is called with the :class:`Response`; ``on_error`` (if
+        given) with the exception. If the request has already finished, the
+        relevant callback runs immediately on the calling thread.
+        """
+        with self._lock:
+            if self._cancelled:
+                return self
+            self._callbacks.append(lambda: self._fire(on_success, on_error))
+            if self._done.is_set():
+                cb = self._callbacks.pop()
+                cb()
+            return self
+
+    def _fire(self, on_success, on_error) -> None:
+        if self._error is not None:
+            if on_error is not None:
+                on_error(self._error)
+        elif self._result is not None:
+            on_success(self._result)
+
+    def _complete(self, result: Response | None, error: BaseException | None) -> None:
+        with self._lock:
+            self._result = result
+            self._error = error
+            self._done.set()
+            callbacks = list(self._callbacks)
+            self._callbacks.clear()
+        for cb in callbacks:
+            if not self._cancelled:
+                cb()
+
+
 @dataclass(slots=True)
 class HttpClient:
-    """A small, synchronous HTTP client.
+    """A small HTTP client with both synchronous and async (background) verbs.
 
     ``retries`` applies to connection errors and to retryable status codes
-    (408/425/429 and 5xx) with exponential backoff.
+    (408/425/429 and 5xx) with exponential backoff. The synchronous ``get``/
+    ``post``/``put``/``delete`` return a :class:`Response` directly; the
+    ``*_async`` variants run on a background thread and return an
+    :class:`HttpFuture` so the UI thread is never blocked.
     """
 
     base_url: str = ""
@@ -86,9 +189,10 @@ class HttpClient:
     timeout: float = DEFAULT_TIMEOUT
     retries: int = 0
     backoff: float = 0.5
-    user_agent: str = "PyMobile/0.1"
+    user_agent: str = f"PyMobile/{__import__('pymobile').__version__}"
+    cache: HttpCache | None = field(default=None, repr=False)
 
-    # -- verbs -------------------------------------------------------------
+    # -- synchronous verbs -------------------------------------------------
     def get(self, url: str, *, params: Params | None = None, **kwargs: Any) -> Response:
         """Perform a GET request."""
         return self.request("GET", url, params=params, **kwargs)
@@ -104,6 +208,75 @@ class HttpClient:
     def delete(self, url: str, **kwargs: Any) -> Response:
         """Perform a DELETE request."""
         return self.request("DELETE", url, **kwargs)
+
+    # -- asynchronous verbs ------------------------------------------------
+    def get_async(self, url: str, *, params: Params | None = None, **kwargs: Any) -> HttpFuture:
+        """Start a GET request on a background thread; returns an :class:`HttpFuture`."""
+        kwargs.setdefault("params", params)
+        return self._async("GET", url, kwargs)
+
+    def post_async(self, url: str, **kwargs: Any) -> HttpFuture:
+        """Start a POST request on a background thread; returns an :class:`HttpFuture`."""
+        return self._async("POST", url, kwargs)
+
+    def put_async(self, url: str, **kwargs: Any) -> HttpFuture:
+        """Start a PUT request on a background thread; returns an :class:`HttpFuture`."""
+        return self._async("PUT", url, kwargs)
+
+    def delete_async(self, url: str, **kwargs: Any) -> HttpFuture:
+        """Start a DELETE request on a background thread; returns an :class:`HttpFuture`."""
+        return self._async("DELETE", url, kwargs)
+
+    def _async(self, method: str, url: str, kwargs: dict[str, Any]) -> HttpFuture:
+        future = HttpFuture(self, method, url, dict(kwargs))
+
+        def run() -> None:
+            try:
+                result = self.request(method, url, **kwargs)
+                future._complete(result, None)
+            except BaseException as error:  # noqa: BLE001 - delivered to callbacks
+                future._complete(None, error)
+
+        threading.Thread(target=run, name=f"pymobile-http-{method}", daemon=True).start()
+        return future
+
+    # -- cached GET --------------------------------------------------------
+    def get_cached(
+        self,
+        url: str,
+        *,
+        ttl: float = 300.0,
+        params: Params | None = None,
+        **kwargs: Any,
+    ) -> Response:
+        """Perform a GET, serving a cached copy when fresh and storing on success.
+
+        Returns a fresh cached response without hitting the network when one is
+        available and newer than ``ttl`` seconds. Otherwise performs the request
+        and stores the successful (2xx) result in the cache. On a network
+        failure, a stale cached response (any age) is returned so the app can
+        keep working offline; if there is no cache at all the ``NetworkError``
+        propagates.
+
+        Requires ``self.cache``; raises ``ValueError`` when it is unset.
+        """
+        if self.cache is None:
+            raise ValueError("get_cached() needs a cache; pass HttpClient(cache=HttpCache())")
+        final_url = self._build_url(url, params)
+        if self.cache.is_fresh(final_url, ttl):
+            entry = self.cache.get(final_url)
+            if entry is not None:
+                return _entry_to_response(entry, final_url, from_cache=True)
+        try:
+            response = self.get(final_url, params=params, **kwargs)
+        except NetworkError:
+            stale = self.cache.get_stale(final_url, ttl)
+            if stale is not None:
+                return _entry_to_response(stale, final_url, from_cache=True)
+            raise
+        if response.ok and self.cache is not None:
+            self.cache.set(final_url, response.status, response.headers, response.content)
+        return response
 
     # -- core --------------------------------------------------------------
     def request(
@@ -255,3 +428,16 @@ class HttpClient:
         """Exponential backoff between retries."""
         if self.backoff > 0:
             time.sleep(self.backoff * (2 ** (attempt - 1)))
+
+
+def _entry_to_response(entry: dict[str, Any], url: str, *, from_cache: bool = True) -> Response:
+    """Rebuild a :class:`Response` from a cached entry, marking it as cached."""
+    content = bytes(entry.get("content", []))
+    return Response(
+        status=int(entry.get("status", 0)),
+        headers=dict(entry.get("headers", {})),
+        content=content,
+        url=url,
+        encoding=entry.get("encoding", "utf-8"),
+        from_cache=from_cache,
+    )

@@ -18,41 +18,72 @@ Build it with ``pymobile build``.
 
 from __future__ import annotations
 
-__version__ = "0.5.1"
+__version__ = "0.6.0"
 __author__ = "MAKSYM KHLYSTUN"
 __license__ = "MIT"
 
-from .core.api import Notifications, Permission, PermissionManager, Vibration
+from .core.api import (
+    Notifications,
+    Permission,
+    PermissionManager,
+    Storage,
+    default_storage_path,
+    Vibration,
+)
 from .core.app import App
 from .core.config import ProjectConfig, load_config
 from .core.events import Event, EventBus
 from .core.i18n import device_language, t, translations
-from .core.net import HttpClient, Response
+from .core.jobs import JobHandle, JobManager
+from .core.net import HttpClient, HttpCache, HttpFuture, Response
 from .core.platform import Platform, current_platform, is_android, is_desktop
+from .core.plugins import Plugin, PluginRegistry, plugins
 from .core.scheduler import Scheduler, TimerHandle
+from .core.validation import Validator, ValidationError
+from .logging import get_diagnostics
 from .core.ui import (
     Align,
     Button,
+    Avatar,
+    Badge,
+    Button,
+    Checkbox,
+    Chip,
     Color,
     Column,
     Container,
+    DataTable,
     Divider,
+    Dropdown,
     EdgeInsets,
     Expanded,
+    Flexible,
     Grid,
     Image,
     Label,
+    Link,
+    List,
+    ListTile,
     Navigator,
     ProgressBar,
+    ProgressText,
+    RadioButton,
+    RadioGroup,
+    RatingBar,
     Row,
     SafeArea,
     Screen,
     ScrollView,
+    SearchBar,
+    SegmentedButtons,
+    Slider,
     Spacer,
     Stack,
+    Stepper,
     Style,
     Switch,
     TextInput,
+    Theme,
     Widget,
 )
 from .errors import (
@@ -84,8 +115,12 @@ __all__ = [
     "Vibration",
     "Permission",
     "PermissionManager",
+    "Storage",
+    "default_storage_path",
     # networking
     "HttpClient",
+    "HttpCache",
+    "HttpFuture",
     "Response",
     # i18n
     "device_language",
@@ -101,6 +136,23 @@ __all__ = [
     "Switch",
     "ProgressBar",
     "Spacer",
+    "Slider",
+    "Checkbox",
+    "RatingBar",
+    "Dropdown",
+    "Chip",
+    "Badge",
+    "Stepper",
+    "SearchBar",
+    "RadioButton",
+    "RadioGroup",
+    "SegmentedButtons",
+    "ProgressText",
+    "Link",
+    "DataTable",
+    "Avatar",
+    "List",
+    "ListTile",
     "Column",
     "Row",
     "ScrollView",
@@ -113,8 +165,23 @@ __all__ = [
     "EdgeInsets",
     "Divider",
     "Expanded",
+    "Flexible",
     "Grid",
     "SafeArea",
+    "Theme",
+    "List",
+    "ListTile",
+    # validation
+    "Validator",
+    "ValidationError",
+    # jobs & plugins
+    "JobManager",
+    "JobHandle",
+    "Plugin",
+    "PluginRegistry",
+    "plugins",
+    # diagnostics
+    "get_diagnostics",
     # errors
     "PyMobileError",
     "ConfigError",

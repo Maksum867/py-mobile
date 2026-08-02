@@ -357,6 +357,58 @@ app.notifications.cancel(notification_id)
 The channel is created once automatically. Android 13+ requires the
 `POST_NOTIFICATIONS` permission — the compiler warns if it is missing.
 
+**Requirements for notifications to work:**
+
+1. Declare `POST_NOTIFICATIONS` in `pymobile.toml`:
+
+```toml
+permissions = [
+    "android.permission.INTERNET",
+    "android.permission.POST_NOTIFICATIONS",
+]
+```
+
+2. Request the permission at runtime (after the screen is visible):
+
+```python
+from pymobile import Permission
+
+results = self.app.permissions.request(Permission.POST_NOTIFICATIONS)
+if results.get(Permission.POST_NOTIFICATIONS.value, False):
+    self.app.notify("Title", "Body")
+```
+
+3. **Build with JNI from source** — the prebuilt `libpymobile.so` may not
+   include the notification channel support:
+
+```powershell
+# Windows PowerShell
+$env:JAVA_HOME = "C:\Users\You\.andro\jdk-17.0.13+11"
+$env:PYMOBILE_BUILD_JAVA = "1"
+$env:PYMOBILE_BUILD_JNI = "1"
+pymobile build --native --clean
+```
+
+```bash
+# macOS / Linux
+export JAVA_HOME=~/.andro/jdk-17.0.13+11
+PYMOBILE_BUILD_JAVA=1 PYMOBILE_BUILD_JNI=1 pymobile build --native --clean
+```
+
+> **Note:** `PYMOBILE_BUILD_JNI=1` requires the NDK. Install it with:
+> `pymobile setup-sdk --with-ndk`
+
+4. Ensure notifications are enabled in device settings:
+   *Settings → Apps → Your App → Notifications*.
+
+**Troubleshooting notifications:**
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| No notification appears | Channel not created | Build with `PYMOBILE_BUILD_JNI=1` |
+| Permission dialog doesn't show | Missing from `pymobile.toml` | Add `POST_NOTIFICATIONS` to `permissions` |
+| `notify()` returns ID but nothing shows | System notifications disabled | Enable in device settings |
+
 ### Vibration
 
 ```python
@@ -528,6 +580,27 @@ pymobile build --native -v               # per-stage timings
 
 > `pymobile build` **without** `--native` produces a structural package for
 > quick checks only — it does not install on a device.
+
+### Building with notifications support
+
+If your app uses notifications, build with JNI compiled from source:
+
+```powershell
+# Windows PowerShell
+$env:JAVA_HOME = "C:\Users\You\.andro\jdk-17.0.13+11"
+$env:PYMOBILE_BUILD_JAVA = "1"
+$env:PYMOBILE_BUILD_JNI = "1"
+pymobile build --native --clean
+```
+
+```bash
+# macOS / Linux
+export JAVA_HOME=~/.andro/jdk-17.0.13+11
+PYMOBILE_BUILD_JAVA=1 PYMOBILE_BUILD_JNI=1 pymobile build --native --clean
+```
+
+> **Note:** `PYMOBILE_BUILD_JNI=1` requires the NDK. Install it with:
+> `pymobile setup-sdk --with-ndk`
 
 Twelve independent stages:
 
@@ -733,6 +806,11 @@ It is a valid HTTP response. Use `response.ok` or `response.raise_for_status()`.
 **Why is no permission dialog shown?**
 The permission is probably missing from `permissions` in `pymobile.toml`.
 Android denies undeclared permissions without showing anything.
+
+**Why don't notifications appear on the device?**
+Three things must all be true: (1) `POST_NOTIFICATIONS` is in `pymobile.toml`,
+(2) the permission is requested at runtime, and (3) the APK is built with
+`PYMOBILE_BUILD_JNI=1`. Also check *Settings → Apps → Your App → Notifications*.
 
 **Why doesn't the button react?**
 Check `enabled` — a disabled button ignores taps.

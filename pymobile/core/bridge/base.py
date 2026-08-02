@@ -103,3 +103,15 @@ class Bridge(ABC):
         the framework falls back to the environment.
         """
         return ""
+
+    # -- external ----------------------------------------------------------
+    def open_url(self, url: str) -> bool:
+        """Open ``url`` in an external viewer (browser).
+
+        Returns ``True`` when handled; the default desktop implementation opens
+        the system browser via ``webbrowser``.
+        """
+        import webbrowser
+
+        webbrowser.open(url)
+        return True

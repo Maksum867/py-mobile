@@ -7,7 +7,7 @@ what will be packaged.
 
 from __future__ import annotations
 
-import fnmatch
+import re
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -47,11 +47,90 @@ class SourceSet:
             yield path.relative_to(self.root)
 
 
+def _glob_to_regex(glob: str) -> str:
+    """Turn a gitignore glob body into regex source (without anchors).
+
+    ``*`` matches within a path segment, ``?`` one character, ``[...]`` a
+    character class and ``**`` matches across directories.
+    """
+    out: list[str] = []
+    i, n = 0, len(glob)
+    while i < n:
+        c = glob[i]
+        if c == "*":
+            if i + 1 < n and glob[i + 1] == "*":
+                out.append(".*")
+                i += 2
+            else:
+                out.append("[^/]*")
+                i += 1
+        elif c == "?":
+            out.append("[^/]")
+            i += 1
+        elif c == "[":
+            j = i + 1
+            while j < n and glob[j] != "]":
+                j += 1
+            if j < n:
+                out.append(glob[i : j + 1])
+                i = j + 1
+            else:
+                out.append(re.escape(c))
+                i += 1
+        else:
+            out.append(re.escape(c))
+            i += 1
+    return "".join(out)
+
+
 def _is_excluded(relative: Path, patterns: Sequence[str]) -> bool:
-    """Whether a relative path matches any exclude glob."""
+    """Whether ``relative`` matches any gitignore-style exclude glob.
+
+    Semantics follow gitignore so project-level patterns behave the way users
+    expect:
+
+    * a leading ``/`` anchors the pattern to the source root;
+    * a pattern with a ``/`` in the middle is anchored to the source root
+      (``build/**`` only excludes a top-level ``build/``);
+    * a pattern with no ``/`` matches the file name (or any path suffix) at
+      any depth, so ``test_*.py`` catches ``pkg/test_foo.py`` too;
+    * a leading ``**/`` unanchors the remainder, so ``**/__pycache__/**``
+      matches a root-level ``__pycache__/`` as well as nested ones;
+    * a trailing ``/`` means "this directory and everything under it".
+    """
     text = relative.as_posix()
-    for pattern in patterns:
-        if fnmatch.fnmatch(text, pattern) or fnmatch.fnmatch(f"/{text}", f"/{pattern}"):
+    for raw in patterns:
+        pattern = raw.strip()
+        if not pattern:
+            continue
+        dir_only = pattern.endswith("/")
+        body = pattern.rstrip("/")
+        if not body:
+            continue
+
+        anywhere = body.startswith("**/")
+        anchored = body.startswith("/")
+        if anywhere:
+            body = body[3:]
+        elif anchored:
+            body = body[1:]
+
+        core = _glob_to_regex(body)
+        if not core:
+            continue
+        if dir_only:
+            core += "(?:/.*)?"
+
+        if anywhere:
+            # The remainder may begin at any path segment.
+            rx = re.compile(rf"(?:^|/){core}")
+        elif "/" in body or anchored:
+            # Anchored to the source root.
+            rx = re.compile(rf"^{core}$")
+        else:
+            # No slash: match the file name (or a suffix) at any depth.
+            rx = re.compile(rf"(?:^|/){core}$")
+        if rx.search(text) is not None:
             return True
     return False
 

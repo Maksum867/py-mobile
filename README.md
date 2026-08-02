@@ -64,6 +64,13 @@ device. No Java, no Gradle, no Android Studio.
 - [Styling](#styling)
 - [Screens and navigation](#screens-and-navigation)
 - [Updating the screen](#updating-the-screen)
+- [Themes](#themes)
+- [Storage](#storage)
+- [Background jobs](#background-jobs)
+- [HTTP cache and offline mode](#http-cache-and-offline-mode)
+- [Async HTTP](#async-http)
+- [Input validation](#input-validation)
+- [Plugins](#plugins)
 - [Notifications](#notifications)
 - [Vibration](#vibration)
 - [Permissions](#permissions)
@@ -229,7 +236,7 @@ validate → collect → compile → icons → toolchain → runtime
 
 ## UI components
 
-Nine components. All of them accept `id`, `style`, `visible` and `enabled`.
+30+ components. All of them accept `id`, `style`, `visible` and `enabled`.
 
 ### Label
 
@@ -274,6 +281,42 @@ switch.toggle()            # returns the new state
 switch.set_checked(False)
 ```
 
+### Checkbox
+
+```python
+checkbox = Checkbox(checked=False, on_toggle=lambda state: print(state))
+checkbox.toggle()
+checkbox.set_checked(True)
+```
+
+### RadioButton / RadioGroup
+
+```python
+group = RadioGroup(
+    RadioButton("Option A"),
+    RadioButton("Option B"),
+    on_select=lambda value: print(f"Selected: {value}"),
+)
+```
+
+### SegmentedButtons
+
+Horizontal selection panel (tabs or segmented control).
+
+```python
+segmented = SegmentedButtons(
+    ["Today", "Week", "Month"],
+    on_change=lambda value: print(value),
+)
+```
+
+### Slider
+
+```python
+slider = Slider(value=50, minimum=0, maximum=100,
+                on_change=lambda v: print(v))
+```
+
 ### ProgressBar
 
 ```python
@@ -284,6 +327,85 @@ bar.fraction               # 0.0 … 1.0
 ProgressBar(indeterminate=True)    # spinner
 ```
 
+### ProgressText
+
+ProgressBar with a text label overlay.
+
+```python
+ProgressText(42, maximum=100, label="Downloading")
+# Shows: "Downloading 42%"
+```
+
+### RatingBar
+
+```python
+rating = RatingBar(value=3, maximum=5,
+                   on_change=lambda v: print(v))
+```
+
+### Dropdown
+
+```python
+dropdown = Dropdown(
+    options=["Red", "Green", "Blue"],
+    on_change=lambda value: print(value),
+)
+```
+
+### SearchBar
+
+```python
+search = SearchBar(
+    placeholder="Search...",
+    on_change=lambda query: filter_items(query),
+)
+```
+
+### Chip / Badge
+
+```python
+Chip("Python", on_press=lambda: print("clicked"))
+Badge("3")       # notification badge
+```
+
+### Stepper
+
+```python
+stepper = Stepper(value=1, minimum=0, maximum=10,
+                  on_change=lambda v: print(v))
+```
+
+### Link
+
+Clickable text that opens a URL in the system browser.
+
+```python
+Link("Visit example.com", url="https://example.com")
+```
+
+### DataTable
+
+Simple table with headers and rows.
+
+```python
+DataTable(
+    headers=["Name", "Age", "City"],
+    rows=[
+        ["Alice", "30", "Kyiv"],
+        ["Bob", "25", "Lviv"],
+    ],
+)
+```
+
+### Avatar
+
+Round avatar with initials or an image.
+
+```python
+Avatar("MK")                           # initials
+Avatar("MK", image="assets/photo.png") # image
+```
+
 ### Image
 
 ```python
@@ -291,6 +413,21 @@ Image("assets/logo.png", fit="cover")   # contain | cover | fill | none
 ```
 
 Paths are relative to your project directory.
+
+### List / ListTile
+
+Virtualised list — renders only visible rows, so 10 000 items scroll smoothly.
+
+```python
+List(
+    item_count=10000,
+    builder=lambda index: ListTile(
+        title=f"Item {index}",
+        subtitle=f"Description {index}",
+        on_press=lambda: print(f"tapped {index}"),
+    ),
+)
+```
 
 ### Spacer
 
@@ -554,6 +691,157 @@ mode the first missed redraw logs a warning rather than leaving you guessing.
 
 ---
 
+## Themes
+
+Light and dark themes with semantic colour palette.
+
+```python
+App("My App", theme="dark")          # or "light" (default)
+App("My App", theme=Theme.dark())    # custom Theme object
+
+app.set_theme("dark")                # switch at runtime — screen redraws
+app.theme.is_dark                    # True / False
+app.theme["PRIMARY"]                 # resolved colour
+```
+
+Built-in themes: `Theme.light()` and `Theme.dark()`. Custom themes use
+`Theme(name, colors)` with your own palette.
+
+The active theme is available everywhere via `app.theme`. Widgets pick up
+colours automatically when you use `Color.PRIMARY`, `Color.BACKGROUND` etc.
+
+---
+
+## Storage
+
+Key-value JSON storage with atomic writes.
+
+```python
+app.storage["token"] = "abc123"      # set
+token = app.storage["token"]         # get
+del app.storage["token"]             # delete
+
+app.storage.get("token", default="") # with default
+app.storage.keys()                   # all keys
+app.storage.clear()                  # wipe everything
+```
+
+Data persists across app restarts. On Android it uses the app's private files
+directory; on desktop `~/.pymobile/`. Override with `PYMOBILE_STORAGE_DIR`.
+
+```python
+App("My App", storage_path="/custom/path")
+```
+
+---
+
+## Background jobs
+
+Run work off the UI thread without blocking the screen.
+
+```python
+handle = app.run_job(lambda: fetch_heavy_data())
+handle.then(on_success=lambda data: self.show(data),
+            on_error=lambda err: self.show_error(err))
+handle.wait(timeout=10)   # block until done (rare)
+handle.cancel()
+
+# Repeating job
+handle = app.repeat_job(5000, lambda: poll_server())
+handle.cancel()            # stop when done
+```
+
+`JobHandle` exposes `.done`, `.cancelled`, `.result`, `.error`.
+
+---
+
+## HTTP cache and offline mode
+
+Disk-backed cache for GET requests.
+
+```python
+from pymobile import HttpClient
+
+client = HttpClient(base_url="https://api.example.com", cache=app.storage)
+
+# Cached request — returns instantly from cache if fresh
+response = client.get_cached("/items", ttl=300)   # 5 minutes
+
+# If network fails, stale cache is returned (offline mode)
+# response.from_cache tells you if the data came from cache
+```
+
+---
+
+## Async HTTP
+
+Non-blocking requests that don't freeze the UI.
+
+```python
+future = client.get_async("/items")
+future.then(
+    on_success=lambda r: self.update_list(r.json()),
+    on_error=lambda err: self.show_error(err),
+)
+
+future.done       # True when finished
+future.cancel()   # suppress callbacks
+result = future.get(timeout=10)   # block if needed
+```
+
+Methods: `get_async`, `post_async`, `put_async`, `delete_async`.
+
+---
+
+## Input validation
+
+Pure logic, no UI dependency.
+
+```python
+from pymobile import Validator
+
+v = Validator({
+    "email":    ["required", "email"],
+    "name":     ["required", {"min_length": 2}, {"max_length": 50}],
+    "age":      ["optional", "integer", {"between": [1, 120]}],
+})
+
+errors = v.validate({"email": "bad", "name": ""})
+# {"email": ["invalid email"], "name": ["required"]}
+
+v.validate_or_raise({"email": "bad"})   # raises ValidationError
+```
+
+Validators: `required`, `optional`, `email`, `length`, `min_length`,
+`max_length`, `integer`, `number`, `between`, `min`, `max`, `matches`,
+`one_of`, `regex`, `boolean`.
+
+---
+
+## Plugins
+
+Extend the app without touching its code.
+
+```python
+from pymobile import Plugin, plugins
+
+class AnalyticsPlugin(Plugin):
+    name = "analytics"
+
+    def activate(self, app):
+        app.on("screen:change", self.track)
+
+    def track(self, event):
+        print(f"screen: {event.source}")
+
+plugins.register(AnalyticsPlugin())
+# Activated automatically in App.run()
+```
+
+Hooks: `activate(app)`, `on_app_start(app)`, `on_app_stop(app)`.
+
+---
+
 ## Reacting to events
 
 Subscribe from a screen and the handler is removed when the screen goes away:
@@ -584,6 +872,59 @@ app.notifications.cancel(notification_id)
 
 The notification channel is created automatically. On Android 13+ you need the
 `POST_NOTIFICATIONS` permission — see below.
+
+### Requirements for notifications to work
+
+1. **Declare the permission in `pymobile.toml`:**
+
+```toml
+permissions = [
+    "android.permission.INTERNET",
+    "android.permission.POST_NOTIFICATIONS",
+]
+```
+
+2. **Request the permission at runtime** (after the screen is visible):
+
+```python
+from pymobile import Permission
+
+results = self.app.permissions.request(Permission.POST_NOTIFICATIONS)
+if results.get(Permission.POST_NOTIFICATIONS.value, False):
+    self.app.notify("Title", "Body")
+```
+
+3. **Build with JNI from source** — the prebuilt `libpymobile.so` may not
+   include the notification channel support. Use:
+
+```powershell
+# Windows PowerShell
+$env:JAVA_HOME = "C:\Users\You\.andro\jdk-17.0.13+11"
+$env:PYMOBILE_BUILD_JAVA = "1"
+$env:PYMOBILE_BUILD_JNI = "1"
+pymobile build --native --clean
+```
+
+```bash
+# macOS / Linux
+export JAVA_HOME=~/.andro/jdk-17.0.13+11
+PYMOBILE_BUILD_JAVA=1 PYMOBILE_BUILD_JNI=1 pymobile build --native --clean
+```
+
+> **Note:** `PYMOBILE_BUILD_JNI=1` requires the NDK. Install it with:
+> `pymobile setup-sdk --with-ndk`
+
+4. **Check device settings** — ensure notifications are enabled for the app:
+   *Settings → Apps → Your App → Notifications*.
+
+### Troubleshooting
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| No notification appears | Channel not created | Build with `PYMOBILE_BUILD_JNI=1` |
+| Permission dialog doesn't show | Missing from `pymobile.toml` | Add `POST_NOTIFICATIONS` to `permissions` |
+| `notify()` returns ID but nothing shows | System notifications disabled | Enable in device Settings → Apps → Notifications |
+| `SecurityException` in logcat | Permission not granted | Request permission at runtime |
 
 ---
 
@@ -903,6 +1244,28 @@ pymobile build --native --minimal-stdlib   # drop desktop-only stdlib
 pymobile build --native --no-ssl           # drop OpenSSL (no HTTPS)
 ```
 
+### Building with notifications support
+
+If your app uses notifications, build with JNI compiled from source. The
+prebuilt `libpymobile.so` may not include the notification channel support:
+
+```powershell
+# Windows PowerShell
+$env:JAVA_HOME = "C:\Users\You\.andro\jdk-17.0.13+11"
+$env:PYMOBILE_BUILD_JAVA = "1"
+$env:PYMOBILE_BUILD_JNI = "1"
+pymobile build --native --clean
+```
+
+```bash
+# macOS / Linux
+export JAVA_HOME=~/.andro/jdk-17.0.13+11
+PYMOBILE_BUILD_JAVA=1 PYMOBILE_BUILD_JNI=1 pymobile build --native --clean
+```
+
+> **Note:** `PYMOBILE_BUILD_JNI=1` requires the NDK. Install it with:
+> `pymobile setup-sdk --with-ndk`
+
 > Without `--native` you get a lightweight structural package used for quick
 > checks. **It does not install on a device.**
 
@@ -1008,6 +1371,22 @@ adb logcat -s pymobile pymobile.stdout pymobile.stderr
 
 If a single widget fails to render, it is replaced by red text naming the
 error while the rest of the screen keeps working.
+
+### Diagnostics
+
+```python
+from pymobile import get_diagnostics
+
+info = get_diagnostics()
+# {"framework_version": "0.5.1", "platform": "android",
+#  "python": "3.14.0", "log_level": "debug", "handlers": [...]}
+```
+
+### File logging
+
+```python
+App("My App", log_level="debug", log_file="app.log")
+```
 
 ---
 
@@ -1239,7 +1618,8 @@ class Slider(Widget):
 
 ## Limitations
 
-- **arm64-v8a only.** Covers roughly 99% of active devices; x86_64 is planned.
+- **arm64-v8a and x86_64 supported.** arm64 covers ~99% of active devices;
+  x86_64 is available for emulators and Chromebooks.
 - **APK size is about 16.6 MB** (11.7 MB with `--minimal-stdlib --no-ssl`),
   dominated by the interpreter and standard library.
 - **Android 5.0 (API 21) minimum.**
@@ -1269,6 +1649,13 @@ Because it is a valid HTTP response. Use `response.ok` or
 Either the permission is missing from `pymobile.toml`, or you have already
 denied it twice and Android has blocked further prompts. See
 [Permissions](#permissions).
+
+**Why don't notifications appear on the device?**
+Three things must all be true: (1) `POST_NOTIFICATIONS` is in `pymobile.toml`,
+(2) the permission is requested at runtime, and (3) the APK is built with
+`PYMOBILE_BUILD_JNI=1` so the notification channel is created. Also check that
+notifications are enabled in *Settings → Apps → Your App → Notifications*.
+See [Notifications](#notifications).
 
 **Why doesn't my button respond?**
 Check `enabled` — a disabled button ignores taps.
@@ -1307,7 +1694,16 @@ To rebuild the native artifacts from source (requires
 `pymobile setup-sdk --with-ndk`):
 
 ```bash
+# macOS / Linux
 PYMOBILE_BUILD_JAVA=1 PYMOBILE_BUILD_JNI=1 pymobile build --native --clean
+```
+
+```powershell
+# Windows PowerShell
+$env:JAVA_HOME = "C:\Users\You\.andro\jdk-17.0.13+11"
+$env:PYMOBILE_BUILD_JAVA = "1"
+$env:PYMOBILE_BUILD_JNI = "1"
+pymobile build --native --clean
 ```
 
 Issues and pull requests are welcome.

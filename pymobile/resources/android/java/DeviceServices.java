@@ -50,24 +50,31 @@ final class DeviceServices {
      * also stretched, because anything under ~50 ms is imperceptible on most
      * hardware and looks like a bug to the user.
      */
-    static void vibrate(Context context, long milliseconds) {
+    static void vibrate(Context context, long milliseconds, int amplitude) {
         long duration = Math.max(milliseconds, MIN_PERCEPTIBLE_MS);
-        vibratePattern(context, new long[]{0, duration}, -1);
+        vibratePattern(context, new long[]{0, duration}, -1, amplitude);
     }
 
     /** Below this, a pulse is not reliably felt on typical hardware. */
     private static final long MIN_PERCEPTIBLE_MS = 50;
 
     static void vibratePattern(Context context, long[] pattern, int repeat) {
+        vibratePattern(context, pattern, repeat, 255);
+    }
+
+    static void vibratePattern(Context context, long[] pattern, int repeat, int amplitude) {
         Vibrator vibrator = vibrator(context);
         if (vibrator == null || pattern == null || pattern.length == 0) {
             return;
         }
+        // -1 means "the device default"; everything else is an explicit
+        // 1..255 strength that must be honoured.
+        int buzz = (amplitude == -1) ? 255 : amplitude;
         if (Build.VERSION.SDK_INT >= 26) {
             // Explicit amplitudes: some devices treat the default as "off".
             int[] amplitudes = new int[pattern.length];
             for (int i = 0; i < pattern.length; i++) {
-                amplitudes[i] = (i % 2 == 0) ? 0 : 255;
+                amplitudes[i] = (i % 2 == 0) ? 0 : buzz;
             }
             try {
                 vibrator.vibrate(VibrationEffect.createWaveform(pattern, amplitudes, repeat));
@@ -96,32 +103,70 @@ final class DeviceServices {
         return (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
     }
 
-    static void notify(Context context, String title, String body, int id, boolean ongoing) {
+    /** Create (or refresh) the notification channel with the configured identity. */
+    static void ensureChannel(Context context, String channelId, String channelName,
+            int importance) {
+        if (Build.VERSION.SDK_INT < 26) {
+            return;  // channels do not exist below Android 8
+        }
         NotificationManager manager = notificationManager(context);
         if (manager == null) {
             return;
         }
-        if (Build.VERSION.SDK_INT >= 26) {
-            NotificationChannel channel = new NotificationChannel(
-                    CHANNEL_ID, "General", NotificationManager.IMPORTANCE_DEFAULT);
-            manager.createNotificationChannel(channel);
+        String id = (channelId == null || channelId.isEmpty()) ? CHANNEL_ID : channelId;
+        String name = (channelName == null || channelName.isEmpty()) ? "General" : channelName;
+        int level = (importance <= 0) ? NotificationManager.IMPORTANCE_DEFAULT : importance;
+        manager.createNotificationChannel(new NotificationChannel(id, name, level));
+    }
+
+    static void notify(Context context, String title, String body, int id, boolean ongoing,
+            String channelId, String channelName, String smallIcon) {
+        Log.i(TAG, "notify() called: title=" + title + " id=" + id + " context=" + (context != null));
+        NotificationManager manager = notificationManager(context);
+        if (manager == null) {
+            Log.w(TAG, "notify() abort: NotificationManager is null");
+            return;
         }
+        String channel = (channelId == null || channelId.isEmpty()) ? CHANNEL_ID : channelId;
+        Log.i(TAG, "notify() channel=" + channel + " channelName=" + channelName);
+        ensureChannel(context, channel, channelName, NotificationManager.IMPORTANCE_DEFAULT);
 
         Notification.Builder builder;
         if (Build.VERSION.SDK_INT >= 26) {
-            builder = new Notification.Builder(context, CHANNEL_ID);
+            builder = new Notification.Builder(context, channel);
         } else {
             builder = new Notification.Builder(context);
         }
+        int iconRes = iconResource(context, smallIcon);
+        Log.i(TAG, "notify() iconRes=" + iconRes + " smallIcon=" + smallIcon);
         builder.setContentTitle(title)
                 .setContentText(body)
                 .setOngoing(ongoing)
                 .setAutoCancel(!ongoing)
-                .setSmallIcon(iconResource(context));
+                .setSmallIcon(iconRes);
+        // Tapping the notification should bring the running app to the front
+        // (not restart it, which would re-init Python and crash). Using
+        // SINGLE_TOP + SINGLE_TASK + CURRENT_TASK reuses the existing activity.
+        android.app.PendingIntent contentIntent =
+                android.app.PendingIntent.getActivity(
+                        context,
+                        0,
+                        new android.content.Intent(context, MainActivity.class)
+                                .setFlags(android.content.Intent.FLAG_ACTIVITY_SINGLE_TOP
+                                        | android.content.Intent.FLAG_ACTIVITY_CLEAR_TOP
+                                        | android.content.Intent.FLAG_ACTIVITY_NEW_TASK),
+                        android.app.PendingIntent.FLAG_UPDATE_CURRENT
+                                | android.app.PendingIntent.FLAG_IMMUTABLE);
+        builder.setContentIntent(contentIntent);
         try {
-            manager.notify(id, builder.build());
+            Notification notification = builder.build();
+            Log.i(TAG, "notify() posting notification id=" + id);
+            manager.notify(id, notification);
+            Log.i(TAG, "notify() SUCCESS id=" + id);
         } catch (SecurityException error) {
-            Log.w(TAG, "POST_NOTIFICATIONS not granted", error);
+            Log.e(TAG, "notify() FAILED: POST_NOTIFICATIONS not granted", error);
+        } catch (Exception error) {
+            Log.e(TAG, "notify() FAILED with exception", error);
         }
     }
 
@@ -132,10 +177,19 @@ final class DeviceServices {
         }
     }
 
-    /** Resolve the launcher icon, falling back to a platform drawable. */
-    private static int iconResource(Context context) {
+    /**
+     * Resolve the notification small icon: a custom one passed from Python if
+     * provided, otherwise the launcher icon, falling back to a platform
+     * drawable.
+     */
+    private static int iconResource(Context context, String smallIcon) {
+        String name = (smallIcon == null || smallIcon.isEmpty()) ? "icon" : smallIcon;
         int found = context.getResources().getIdentifier(
-                "icon", "mipmap", context.getPackageName());
+                name, "mipmap", context.getPackageName());
+        if (found == 0) {
+            found = context.getResources().getIdentifier(
+                    name, "drawable", context.getPackageName());
+        }
         return found != 0 ? found : android.R.drawable.ic_dialog_info;
     }
 
@@ -170,6 +224,24 @@ final class DeviceServices {
     }
 
     // -- misc -------------------------------------------------------------
+
+    /** Open a URL in the system browser. */
+    static boolean openUrl(Context context, String url) {
+        if (context == null || url == null || url.isEmpty()) {
+            return false;
+        }
+        try {
+            android.content.Intent intent = new android.content.Intent(
+                    android.content.Intent.ACTION_VIEW,
+                    android.net.Uri.parse(url));
+            intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+            context.startActivity(intent);
+            return true;
+        } catch (Exception error) {
+            Log.w(TAG, "could not open url: " + url, error);
+            return false;
+        }
+    }
 
     static void toast(Activity activity, String message, boolean longer) {
         if (activity == null) {

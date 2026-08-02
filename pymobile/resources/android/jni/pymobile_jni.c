@@ -235,11 +235,12 @@ static PyObject *py_toast(PyObject *self, PyObject *args) {
 
 static PyObject *py_vibrate(PyObject *self, PyObject *args) {
     long milliseconds = 0;
+    long amplitude = -1;
     (void)self;
-    if (!PyArg_ParseTuple(args, "l", &milliseconds)) {
+    if (!PyArg_ParseTuple(args, "l|l", &milliseconds, &amplitude)) {
         return NULL;
     }
-    call_void_method("vibrate", "(J)V", (jlong)milliseconds);
+    call_void_method("vibrate", "(JI)V", (jlong)milliseconds, (jint)amplitude);
     Py_RETURN_NONE;
 }
 
@@ -292,10 +293,14 @@ static PyObject *py_cancel_vibration(PyObject *self, PyObject *args) {
 static PyObject *py_notify(PyObject *self, PyObject *args) {
     const char *title;
     const char *body;
+    const char *channel_id = "";
+    const char *channel_name = "";
+    const char *small_icon = "";
     int identifier = 1;
     int ongoing = 0;
     (void)self;
-    if (!PyArg_ParseTuple(args, "ssi|p", &title, &body, &identifier, &ongoing)) {
+    if (!PyArg_ParseTuple(args, "ssi|psss", &title, &body, &identifier, &ongoing,
+                          &channel_id, &channel_name, &small_icon)) {
         return NULL;
     }
     int attached = 0;
@@ -303,17 +308,56 @@ static PyObject *py_notify(PyObject *self, PyObject *args) {
     if (env && g_native_class) {
         jstring jtitle = (*env)->NewStringUTF(env, title);
         jstring jbody = (*env)->NewStringUTF(env, body);
+        jstring jchannel = (*env)->NewStringUTF(env, channel_id);
+        jstring jchannelname = (*env)->NewStringUTF(env, channel_name);
+        jstring jicon = (*env)->NewStringUTF(env, small_icon);
         jmethodID method = (*env)->GetStaticMethodID(
-            env, g_native_class, "notify", "(Ljava/lang/String;Ljava/lang/String;IZ)V");
+            env, g_native_class, "notify",
+            "(Ljava/lang/String;Ljava/lang/String;IZLjava/lang/String;Ljava/lang/String;Ljava/lang/String;)V");
         if (method) {
             (*env)->CallStaticVoidMethod(env, g_native_class, method, jtitle, jbody,
-                                         (jint)identifier, (jboolean)ongoing);
+                                         (jint)identifier, (jboolean)ongoing,
+                                         jchannel, jchannelname, jicon);
             if ((*env)->ExceptionCheck(env)) {
                 (*env)->ExceptionClear(env);
             }
         }
         (*env)->DeleteLocalRef(env, jtitle);
         (*env)->DeleteLocalRef(env, jbody);
+        (*env)->DeleteLocalRef(env, jchannel);
+        (*env)->DeleteLocalRef(env, jchannelname);
+        (*env)->DeleteLocalRef(env, jicon);
+        if (attached) {
+            (*g_vm)->DetachCurrentThread(g_vm);
+        }
+    }
+    Py_RETURN_NONE;
+}
+
+static PyObject *py_ensure_channel(PyObject *self, PyObject *args) {
+    const char *channel_id;
+    const char *channel_name;
+    int importance = 3;
+    (void)self;
+    if (!PyArg_ParseTuple(args, "ss|i", &channel_id, &channel_name, &importance)) {
+        return NULL;
+    }
+    int attached = 0;
+    JNIEnv *env = jni_env(&attached);
+    if (env && g_native_class) {
+        jstring jid = (*env)->NewStringUTF(env, channel_id);
+        jstring jname = (*env)->NewStringUTF(env, channel_name);
+        jmethodID method = (*env)->GetStaticMethodID(
+            env, g_native_class, "ensureChannel", "(Ljava/lang/String;Ljava/lang/String;I)V");
+        if (method) {
+            (*env)->CallStaticVoidMethod(env, g_native_class, method, jid, jname,
+                                         (jint)importance);
+            if ((*env)->ExceptionCheck(env)) {
+                (*env)->ExceptionClear(env);
+            }
+        }
+        (*env)->DeleteLocalRef(env, jid);
+        (*env)->DeleteLocalRef(env, jname);
         if (attached) {
             (*g_vm)->DetachCurrentThread(g_vm);
         }
@@ -423,6 +467,33 @@ static PyObject *py_request_permission(PyObject *self, PyObject *args) {
     return PyBool_FromLong(granted);
 }
 
+static PyObject *py_open_url(PyObject *self, PyObject *args) {
+    const char *url;
+    int opened = 0;
+    (void)self;
+    if (!PyArg_ParseTuple(args, "s", &url)) {
+        return NULL;
+    }
+    int attached = 0;
+    JNIEnv *env = jni_env(&attached);
+    if (env && g_native_class) {
+        jstring jurl = (*env)->NewStringUTF(env, url);
+        jmethodID method = (*env)->GetStaticMethodID(
+            env, g_native_class, "openUrl", "(Ljava/lang/String;)Z");
+        if (method) {
+            opened = (*env)->CallStaticBooleanMethod(env, g_native_class, method, jurl);
+            if ((*env)->ExceptionCheck(env)) {
+                (*env)->ExceptionClear(env);
+            }
+        }
+        (*env)->DeleteLocalRef(env, jurl);
+        if (attached) {
+            (*g_vm)->DetachCurrentThread(g_vm);
+        }
+    }
+    return PyBool_FromLong(opened);
+}
+
 /* Block until a UI event arrives. Returns (widget_id, type, value) or None. */
 static PyObject *py_next_event(PyObject *self, PyObject *args) {
     int timeout_ms = -1;
@@ -475,10 +546,12 @@ static PyMethodDef module_methods[] = {
     {"vibrate_pattern", py_vibrate_pattern, METH_VARARGS, "Play a vibration pattern."},
     {"cancel_vibration", py_cancel_vibration, METH_NOARGS, "Stop vibrating."},
     {"notify", py_notify, METH_VARARGS, "Post a notification."},
+    {"ensure_channel", py_ensure_channel, METH_VARARGS, "Create a notification channel."},
     {"cancel_notification", py_cancel_notification, METH_VARARGS, "Cancel a notification."},
     {"has_permission", py_has_permission, METH_VARARGS, "Check a permission."},
     {"request_permission", py_request_permission, METH_VARARGS, "Request a permission."},
     {"device_language", py_device_language, METH_NOARGS, "The device's language tag."},
+    {"open_url", py_open_url, METH_VARARGS, "Open a URL in the browser."},
     {"next_event", py_next_event, METH_VARARGS, "Block until the next UI event."},
     {NULL, NULL, 0, NULL},
 };

@@ -15,9 +15,10 @@ notebooks.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
-__all__ = ["render_ascii", "render_png", "ascii_picture"]
+__all__ = ["render_ascii", "render_png", "ascii_picture", "snapshot_path", "assert_snapshot"]
 
 _BAR_WIDTH = 16
 _DIVIDER_WIDTH = 24
@@ -109,7 +110,7 @@ def _node_lines(node: dict[str, Any], *, show_ids: bool = False) -> list[str]:
         rows = _join_vertical(
             [_node_lines(child, show_ids=show_ids) for child in children]
         )
-    elif node_type in ("Column", "ScrollView", "Stack", "Container", "SafeArea"):
+    elif node_type in ("Column", "ScrollView", "Stack", "Container", "SafeArea", "RadioGroup", "List"):
         rows = _join_vertical(
             [_node_lines(child, show_ids=show_ids) for child in children]
         )
@@ -214,4 +215,146 @@ def _leaf_lines(node: dict[str, Any]) -> list[str]:
     if node_type == "Divider":
         return ["│" if props.get("vertical") else "─" * _DIVIDER_WIDTH]
 
+    if node_type == "Slider":
+        minimum = float(props.get("minimum", 0))
+        maximum = float(props.get("maximum", 100))
+        value = max(minimum, min(float(props.get("value", 0)), maximum))
+        span = max(maximum - minimum, 1e-9)
+        pos = round((value - minimum) / span * (_BAR_WIDTH - 1))
+        bar = list("─" * _BAR_WIDTH)
+        bar[pos] = "●"
+        return [f"[{''.join(bar)}] {value:g}"]
+
+    if node_type == "Checkbox":
+        return ["[✓] on" if props.get("checked") else "[ ] off"]
+
+    if node_type == "RatingBar":
+        rating = max(0.0, min(float(props.get("rating", 0)), int(props.get("maximum", 5))))
+        maximum = int(props.get("maximum", 5))
+        filled = "★" * round(rating)
+        empty = "☆" * max(0, maximum - round(rating))
+        return [f"{filled}{empty} {rating:g}/{maximum}"]
+
+    if node_type == "Dropdown":
+        return [f"[{props.get('value', '')} ▾]"]
+
+    if node_type == "Chip":
+        label = str(props.get("text", "")) or "chip"
+        mark = "● " if props.get("selected") else ""
+        return [f"({mark}{label})" if not disabled else f"({mark}{label}) ✗"]
+
+    if node_type == "Badge":
+        return [f"{{ {props.get('text', '')} }}"]
+
+    if node_type == "Stepper":
+        value = props.get("value", 0)
+        return [f"(-) {value} (+)"]
+
+    if node_type == "SearchBar":
+        value = str(props.get("value", "")) or str(props.get("placeholder", "Search…"))
+        return [f"⎡🔍 {value}⎦"]
+
+    if node_type == "RadioButton":
+        mark = "◉" if props.get("selected") else "○"
+        return [f"{mark} {props.get('text', '')}"]
+
+    if node_type == "SegmentedButtons":
+        options = [str(o) for o in props.get("options", [])]
+        value = props.get("value", "")
+        parts = [f"|{o}|" if o == value else f" {o} " for o in options]
+        return [" ".join(parts)]
+
+    if node_type == "ProgressText":
+        return [f"[{props.get('text', '')}]"]
+
+    if node_type == "Link":
+        text = str(props.get("text", "")) or "link"
+        return [f"<{text}>" if props.get("url") else f"<{text}>"]
+
+    if node_type == "DataTable":
+        headers = [str(h) for h in props.get("headers", [])]
+        rows = [[str(c) for c in r] for r in props.get("rows", [])]
+        if not headers:
+            return ["<table>"]
+        widths = [len(h) for h in headers]
+        for row in rows:
+            for i, cell in enumerate(row):
+                if i < len(widths):
+                    widths[i] = max(widths[i], len(cell))
+        header = " | ".join(h.ljust(w) for h, w in zip(headers, widths))
+        lines = [header, "-" * len(header)]
+        for row in rows:
+            padded = [cell.ljust(widths[i]) if i < len(widths) else cell
+                      for i, cell in enumerate(row)]
+            lines.append(" | ".join(padded))
+        return lines
+
+    if node_type == "Avatar":
+        if props.get("source"):
+            return [f"[🖼 {props.get('source', '')}]"]
+        return [f"[{props.get('text', '')[:2].upper()}]"]
+
+    if node_type == "ListTile":
+        title = str(props.get("title", ""))
+        subtitle = str(props.get("subtitle", ""))
+        trailing = str(props.get("trailing", ""))
+        base = title
+        if subtitle:
+            base += f" — {subtitle}"
+        if trailing:
+            base += f"  {trailing}"
+        return [f"▸ {base}" if not disabled else f"  {base}"]
+
     return [f"<{node_type}>"]
+
+
+# ---------------------------------------------------------------------------
+# Snapshot testing helpers (golden-file comparison for ASCII previews)
+# ---------------------------------------------------------------------------
+def snapshot_path(test_file: str, name: str = "screen", *, ext: str = ".txt") -> Path:
+    """Conventional snapshot file location next to a test module.
+
+    ``test_file`` is ``__file__`` from the calling test; the snapshot is written
+    to a ``snapshots/`` folder beside it, named ``<module>__<name>.txt``.
+    """
+    source = Path(test_file).resolve()
+    module = source.stem
+    return source.parent / "snapshots" / f"{module}__{name}{ext}"
+
+
+def assert_snapshot(
+    widget_or_tree: Any,
+    test_file: str,
+    name: str = "screen",
+    *,
+    show_ids: bool = False,
+    title: str = "",
+    update: bool = False,
+) -> str:
+    """Compare an ASCII render of ``widget_or_tree`` against a golden snapshot.
+
+    On the first run (or with ``update=True``) the snapshot file is written and
+    the test passes; on later runs the render must equal the stored golden text,
+    otherwise an :class:`AssertionError` is raised with a diff. This makes it
+    trivial to pin a screen's layout in tests and catch unintended changes.
+
+    Returns the rendered text so it can be reused.
+    """
+    rendered = render_ascii(widget_or_tree, show_ids=show_ids, title=title)
+    path = snapshot_path(test_file, name)
+    if update or not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(rendered, encoding="utf-8")
+        return rendered
+    golden = path.read_text(encoding="utf-8")
+    if rendered != golden:
+        import difflib
+
+        diff = "\n".join(difflib.unified_diff(
+            golden.splitlines(), rendered.splitlines(),
+            fromfile="snapshot", tofile="rendered", lineterm=""))
+        raise AssertionError(
+            f"Snapshot {path.name} changed:\n{diff}\n"
+            f"Run with update=True to accept the new output."
+        )
+    return rendered
