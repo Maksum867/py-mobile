@@ -5,7 +5,6 @@ from __future__ import annotations
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from pathlib import Path
 
 import pytest
 
@@ -177,7 +176,9 @@ def test_app_exposes_storage(tmp_path):
     path = tmp_path / "app.json"
     app = App("t", bridge=StubBridge(verbose=False), storage_path=str(path))
     app.storage["visited"] = 1
-    assert App("t", bridge=StubBridge(verbose=False), storage_path=str(path)).storage["visited"] == 1
+    assert (
+        App("t", bridge=StubBridge(verbose=False), storage_path=str(path)).storage["visited"] == 1
+    )
 
 
 # --------------------------------------------------------------------------

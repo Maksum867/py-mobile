@@ -91,8 +91,9 @@ class TestLookup:
 class TestPlurals:
     def test_english_rules(self) -> None:
         translations = Translations()
-        translations.load({"items": {"one": "{count} item", "other": "{count} items"}},
-                          language="en")
+        translations.load(
+            {"items": {"one": "{count} item", "other": "{count} items"}}, language="en"
+        )
         assert translations.get("items", count=1) == "1 item"
         assert translations.get("items", count=3) == "3 items"
 
@@ -230,9 +231,7 @@ class TestGettextInterop:
 
         count = len(keys)
         start = 7 * 4 + 16 * count
-        header = struct.pack(
-            "<7I", 0x950412DE, 0, count, 7 * 4, 7 * 4 + 8 * count, 0, 0
-        )
+        header = struct.pack("<7I", 0x950412DE, 0, count, 7 * 4, 7 * 4 + 8 * count, 0, 0)
         tables = b""
         for index in range(count):
             key_offset, key_length = offsets[index * 2]
@@ -277,6 +276,7 @@ class TestLanguageSwitchingRedraws:
         bridge = StubBridge(verbose=False)
         app = App("Demo", bridge=bridge)
         app.run(Home())
+
         def shown() -> str:
             tree = bridge.last_tree
             assert tree is not None

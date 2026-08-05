@@ -3,7 +3,6 @@ improved logging/diagnostics, and x86_64 compiler support."""
 
 from __future__ import annotations
 
-import threading
 import time
 
 import pytest
@@ -15,8 +14,8 @@ from pymobile import (
     ListTile,
     Plugin,
     PluginRegistry,
-    plugins,
     get_diagnostics,
+    plugins,
 )
 from pymobile.core.bridge import StubBridge
 

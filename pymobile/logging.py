@@ -118,4 +118,3 @@ def get_logger(name: str | None = None) -> logging.Logger:
     if not name:
         return logging.getLogger(LOGGER_NAME)
     return logging.getLogger(f"{LOGGER_NAME}.{name}")
-

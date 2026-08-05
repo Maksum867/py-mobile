@@ -160,6 +160,7 @@ class TestGuiAvailability:
         app.toast("hi")
         assert bridge.calls_named("toast")
 
+
 class _WebHome(Screen):
     title = "WebHome"
 

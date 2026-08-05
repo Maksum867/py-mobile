@@ -84,6 +84,7 @@ def email(value: Any) -> str | None:
 
 def length(minimum: int | None = None, maximum: int | None = None) -> ValidatorFn:
     """A string's length must fall within [minimum, maximum]."""
+
     def _check(value: Any) -> str | None:
         if value is None:
             return None
@@ -93,6 +94,7 @@ def length(minimum: int | None = None, maximum: int | None = None) -> ValidatorF
         if maximum is not None and size > maximum:
             return f"must be at most {maximum} characters"
         return None
+
     return _check
 
 
@@ -138,6 +140,7 @@ def number(value: Any) -> str | None:
 
 def between(low: float, high: float) -> ValidatorFn:
     """A numeric value must lie within [low, high]."""
+
     def _check(value: Any) -> str | None:
         if value is None:
             return None
@@ -148,25 +151,28 @@ def between(low: float, high: float) -> ValidatorFn:
         if not (low <= num <= high):
             return f"must be between {low} and {high}"
         return None
+
     return _check
 
 
-def min(low: float) -> ValidatorFn:  # noqa: A001 - intentional name
+def min(low: float) -> ValidatorFn:
     """A numeric value must be at least ``low``."""
     return between(low, float("inf"))
 
 
-def max(high: float) -> ValidatorFn:  # noqa: A001 - intentional name
+def max(high: float) -> ValidatorFn:
     """A numeric value must be at most ``high``."""
     return between(float("-inf"), high)
 
 
 def matches(other: str) -> ValidatorFn:
     """A string must equal ``other`` (useful for "confirm password")."""
+
     def _check(value: Any) -> str | None:
         if value != other:
             return "does not match"
         return None
+
     return _check
 
 
@@ -179,6 +185,7 @@ def one_of(choices: Sequence[Any]) -> ValidatorFn:
             rendered = ", ".join(str(c) for c in allowed)
             return f"must be one of: {rendered}"
         return None
+
     return _check
 
 
@@ -190,6 +197,7 @@ def regex(pattern: str, message: str | None = None) -> ValidatorFn:
         if not isinstance(value, str) or not compiled.fullmatch(value.strip()):
             return message or f"must match {pattern!r}"
         return None
+
     return _check
 
 
@@ -205,30 +213,84 @@ def boolean(value: Any) -> str | None:
 # --------------------------------------------------------------------------
 # Validator
 # --------------------------------------------------------------------------
-class Validator:
-    """Combines per-field validators and runs them over a data mapping.
+RuleSpec = ValidatorFn | str | Mapping[str, Any]
+FieldRules = Mapping[str, Sequence[RuleSpec]] | Sequence[tuple[str, Sequence[RuleSpec]]]
 
-    ``fields`` is an iterable of ``(name, [validator, ...])`` pairs. Fields whose
-    value is missing/empty are skipped unless they include :func:`required`.
+
+class Validator:
+    """Combine per-field validators and run them over a data mapping.
+
+    The constructor accepts either callable validators or the compact rule DSL
+    used in the public documentation::
+
+        Validator({
+            "email": ["required", "email"],
+            "age": ["optional", "integer", {"between": [1, 120]}],
+        })
+
+    Callable validators remain supported for advanced cases. The result maps
+    every invalid field to its first human-readable error.
     """
 
     __slots__ = ("_fields",)
 
-    def __init__(
-        self,
-        fields: Sequence[tuple[str, Sequence[ValidatorFn]]] = (),
-    ) -> None:
-        self._fields: list[tuple[str, list[ValidatorFn]]] = [
-            (name, list(fns)) for name, fns in fields
-        ]
+    def __init__(self, fields: FieldRules = ()) -> None:
+        entries = fields.items() if isinstance(fields, Mapping) else fields
+        self._fields = [(name, [self._resolve(rule) for rule in rules]) for name, rules in entries]
 
-    def add(self, name: str, *validators: ValidatorFn) -> None:
+    @staticmethod
+    def _resolve(rule: RuleSpec) -> ValidatorFn:
+        if callable(rule):
+            return rule
+        if isinstance(rule, str):
+            lookup: dict[str, ValidatorFn] = {
+                "required": required,
+                "optional": optional,
+                "email": email,
+                "integer": integer,
+                "number": number,
+                "boolean": boolean,
+            }
+            try:
+                return lookup[rule]
+            except KeyError as exc:
+                raise ValueError(f"unknown validation rule: {rule!r}") from exc
+        if not isinstance(rule, Mapping) or len(rule) != 1:
+            raise ValueError("a validation rule must be a callable, string, or one-key mapping")
+        name, argument = next(iter(rule.items()))
+        if name == "length":
+            if not isinstance(argument, Mapping):
+                raise ValueError("length rule expects {min: ..., max: ...}")
+            return length(argument.get("min"), argument.get("max"))
+        if name == "min_length":
+            return min_length(int(argument))
+        if name == "max_length":
+            return max_length(int(argument))
+        if name == "between":
+            low, high = argument
+            return between(float(low), float(high))
+        if name == "min":
+            return min(float(argument))
+        if name == "max":
+            return max(float(argument))
+        if name == "matches":
+            return matches(str(argument))
+        if name == "one_of":
+            if not isinstance(argument, Sequence) or isinstance(argument, str):
+                raise ValueError("one_of rule expects a sequence")
+            return one_of(argument)
+        if name == "regex":
+            return regex(str(argument))
+        raise ValueError(f"unknown validation rule: {name!r}")
+
+    def add(self, name: str, *validators: RuleSpec) -> None:
         """Register more validators for a field."""
+        resolved = [self._resolve(rule) for rule in validators]
         for existing in self._fields:
             if existing[0] == name:
-                existing[1].extend(validators)
+                existing[1].extend(resolved)
                 return
-        self._fields.append((name, list(validators)))
+        self._fields.append((name, resolved))
 
     def validate(self, data: Mapping[str, Any]) -> dict[str, str]:
         """Return a mapping of field name to first error message (empty when OK)."""
@@ -238,7 +300,6 @@ class Validator:
             present = value is not None and not (
                 isinstance(value, (str, list, dict, tuple, set)) and not value
             )
-            # Skip optional empty fields unless a 'required' is present.
             if not present and not any(fn is required for fn in validators):
                 continue
             for fn in validators:

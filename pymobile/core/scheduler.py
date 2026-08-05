@@ -160,9 +160,7 @@ class Scheduler:
     def _arm(self, handle: TimerHandle, delay_ms: int, target: Callable[[], None]) -> None:
         self._arm_seconds(handle, delay_ms / 1000.0, target)
 
-    def _arm_seconds(
-        self, handle: TimerHandle, delay: float, target: Callable[[], None]
-    ) -> None:
+    def _arm_seconds(self, handle: TimerHandle, delay: float, target: Callable[[], None]) -> None:
         timer = threading.Timer(delay, target)
         timer.daemon = True
         handle._set_timer(timer)

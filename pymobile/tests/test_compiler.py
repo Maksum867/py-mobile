@@ -184,9 +184,7 @@ class TestPackager:
         source = tmp_path / "main.py"
         source.write_text("x = 1", encoding="utf-8")
         output = tmp_path / "out.apk"
-        result = ApkPackager().build(
-            output, manifest="<manifest/>", sources=[("main.py", source)]
-        )
+        result = ApkPackager().build(output, manifest="<manifest/>", sources=[("main.py", source)])
         assert result.path.exists()
         with zipfile.ZipFile(output) as archive:
             assert archive.testzip() is None
@@ -214,9 +212,7 @@ class TestPackager:
         image = tmp_path / "icon.png"
         _write_png(image)
         output = tmp_path / "out.apk"
-        ApkPackager().build(
-            output, manifest="<m/>", sources=[], resources={"res/icon.png": image}
-        )
+        ApkPackager().build(output, manifest="<m/>", sources=[], resources={"res/icon.png": image})
         with zipfile.ZipFile(output) as archive:
             assert archive.getinfo("res/icon.png").compress_type == zipfile.ZIP_STORED
 

@@ -1,0 +1,90 @@
+name: Quality and Android smoke
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Python ${{ matrix.python }} quality
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[dev]"
+      - run: pytest
+      - run: ruff check pymobile
+      # Tests intentionally use concise untyped pytest fixtures; production
+      # package code is held to the strict configuration.
+      - run: mypy pymobile --exclude 'pymobile/tests'
+      - run: python -m build
+      - run: python -m twine check dist/*
+      - run: python tools/release_audit.py dist --output release-audit.json
+      - name: Upload package audit
+        uses: actions/upload-artifact@v4
+        with:
+          name: package-audit-py${{ matrix.python }}
+          path: |
+            dist/*
+            release-audit.json
+
+  android-emulator-smoke:
+    name: Native APK on Android API 34
+    runs-on: ubuntu-latest
+    needs: quality
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[android]"
+      - name: Cache PyMobile toolchain
+        uses: actions/cache@v4
+        with:
+          path: ~/.andro
+          key: pymobile-toolchain-v1-${{ runner.os }}
+      - name: Install PyMobile Android toolchain and NDK
+        run: pymobile setup-sdk --with-ndk
+      - name: Build an installable x86_64 smoke APK from native sources
+        working-directory: examples/device-smoke
+        env:
+          # The launcher dex is ABI-neutral and uses the packaged artifact;
+          # only the x86_64 JNI bridge needs an NDK source build.
+          PYMOBILE_BUILD_JNI: "1"
+        run: pymobile build --native --clean
+      - name: Install and launch on an emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          profile: pixel_2
+          script: |
+            adb install -r examples/device-smoke/build/pymobile-device-smoke-0.1.0.apk
+            adb logcat -c
+            adb shell am start -W -n org.pymobile.devicesmoke/org.pymobile.app.MainActivity
+            sleep 12
+            adb logcat -d -s pymobile.stdout pymobile.stderr pymobile | tee device-logcat.txt
+            grep -q PYMOBILE_DEVICE_SMOKE_BOOT device-logcat.txt
+      - name: Upload Android diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-device-smoke-diagnostics
+          path: |
+            device-logcat.txt
+            examples/device-smoke/build/*.apk
+          if-no-files-found: warn

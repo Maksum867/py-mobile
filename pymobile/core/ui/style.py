@@ -37,9 +37,7 @@ class Color:
     def validate(value: str) -> str:
         """Return the colour unchanged, or raise :class:`ValueError`."""
         if not _HEX_COLOR.match(value):
-            raise ValueError(
-                f"invalid color {value!r}; expected #RGB, #RRGGBB or #AARRGGBB"
-            )
+            raise ValueError(f"invalid color {value!r}; expected #RGB, #RRGGBB or #AARRGGBB")
         return value.upper()
 
 
@@ -68,9 +66,7 @@ class Align:
     def validate_main(cls, value: str) -> str:
         """Return a valid ``align`` value, or raise :class:`ValueError`."""
         if value not in cls.MAIN:
-            raise ValueError(
-                f"invalid align {value!r}; expected one of {', '.join(cls.MAIN)}"
-            )
+            raise ValueError(f"invalid align {value!r}; expected one of {', '.join(cls.MAIN)}")
         return value
 
     @classmethod

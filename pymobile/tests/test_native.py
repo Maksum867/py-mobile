@@ -6,15 +6,14 @@ resolution, error messages, asset selection — is tested unconditionally.
 """
 
 from __future__ import annotations
-from pymobile.compiler.toolchain import ToolchainError
 
 import os
+import sys
 import zipfile
 from pathlib import Path
 from typing import Any
 
 import pytest
-import sys
 
 from pymobile.compiler.runtime import ABI_TRIPLETS, runtime_cache_dir
 from pymobile.compiler.toolchain import Toolchain, ToolchainError, find_toolchain
@@ -298,7 +297,8 @@ class TestNativeBuild:
     """End-to-end: produce a signed APK and verify it."""
 
     @pytest.fixture(scope="class")
-    def built(self, tmp_path_factory: pytest.TempPathFactory) -> Path:
+    @classmethod
+    def built(cls, tmp_path_factory: pytest.TempPathFactory) -> Path:
         from pymobile.compiler.pipeline import build_apk
         from pymobile.compiler.scaffold import create_project
         from pymobile.core.config import load_config
@@ -379,10 +379,19 @@ class _FakeNative:
     def cancel_vibration(self) -> None:
         self.calls.append(("cancel_vibration", ()))
 
-    def notify(self, title: str, body: str, identifier: int, ongoing: bool = False,
-            channel_id: str = "", channel_name: str = "", small_icon: str = "") -> None:
-        self.calls.append(("notify", (title, body, identifier, ongoing,
-                                      channel_id, channel_name, small_icon)))
+    def notify(
+        self,
+        title: str,
+        body: str,
+        identifier: int,
+        ongoing: bool = False,
+        channel_id: str = "",
+        channel_name: str = "",
+        small_icon: str = "",
+    ) -> None:
+        self.calls.append(
+            ("notify", (title, body, identifier, ongoing, channel_id, channel_name, small_icon))
+        )
 
     def ensure_channel(self, channel_id: str, channel_name: str, importance: int) -> None:
         self.calls.append(("ensure_channel", (channel_id, channel_name, importance)))
@@ -538,9 +547,8 @@ class TestWindowsToolPaths:
             platform_jar=tmp_path / "android.jar",
             java_home=tmp_path / "jdk",
         )
-    def test_posix_uses_bare_names(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+
+    def test_posix_uses_bare_names(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr("platform.system", lambda: "Linux")
         toolchain = self._toolchain(tmp_path)
         assert toolchain.aapt2.name == "aapt2"
@@ -605,9 +613,12 @@ class TestJdkArchives:
     def test_windows_archive_is_a_zip(self) -> None:
         from pymobile.compiler.sdk_installer import _JDK_ARCHIVES
 
-        filename, is_zip = _JDK_ARCHIVES["Windows"]
+        filename, is_zip, checksum = _JDK_ARCHIVES["Windows"]
+
         assert filename.endswith(".zip")
-        assert is_zip
+        assert is_zip is True
+        assert len(checksum) == 64
+        assert all(character in "0123456789abcdef" for character in checksum)
 
     def test_unsupported_host_reports_hint(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from pymobile.compiler import sdk_installer
@@ -696,7 +707,9 @@ class TestToolchainRequirements:
 
         (bt / f"aapt2{ext}").write_text("", encoding="utf-8")
         (bt / f"zipalign{ext}").write_text("", encoding="utf-8")
-        (bt / f"apksigner{bat if sys.platform == 'win32' else ext}").write_text("", encoding="utf-8")
+        (bt / f"apksigner{bat if sys.platform == 'win32' else ext}").write_text(
+            "", encoding="utf-8"
+        )
         (jdk / f"keytool{ext}").write_text("", encoding="utf-8")
         (tmp_path / "android.jar").write_text("", encoding="utf-8")
 
@@ -764,7 +777,6 @@ class TestBuildRobustness:
         jdk_bin = tmp_path / "jdk" / "bin"
         jdk_bin.mkdir(parents=True, exist_ok=True)
 
-
         exts = ["", ".exe"] if sys.platform == "win32" else [""]
 
         if javac_exists:
@@ -773,7 +785,6 @@ class TestBuildRobustness:
 
         for ext in exts:
             (jdk_bin / f"keytool{ext}").write_text("", encoding="utf-8")
-
 
         bt = tmp_path / "bt"
         bt.mkdir(exist_ok=True)
@@ -825,12 +836,11 @@ class TestBuildRobustness:
 
     @requires_prebuilt_so
     def test_jni_falls_back_when_clang_fails(
-            self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("PYMOBILE_BUILD_JNI", "1")
 
-        # Створюємо фейковий prebuilt .so у гештальті репозиторію
-        # (якщо NativeBackend шукає його у своєму пакеті)
+        # Create a fake prebuilt .so where NativeBackend expects its package resource.
         def mock_run(*args: object, **kwargs: object) -> None:
             raise PyMobileError("clang exploded")
 
@@ -863,7 +873,9 @@ class TestBuildRobustness:
         (jdk_bin / f"keytool{ext}").write_text("", encoding="utf-8")
         (bt / f"aapt2{ext}").write_text("", encoding="utf-8")
         (bt / f"zipalign{ext}").write_text("", encoding="utf-8")
-        (bt / f"apksigner{bat if sys.platform == 'win32' else ext}").write_text("", encoding="utf-8")
+        (bt / f"apksigner{bat if sys.platform == 'win32' else ext}").write_text(
+            "", encoding="utf-8"
+        )
         (tmp_path / "j.jar").write_text("", encoding="utf-8")
 
         from pymobile.compiler.backends.native import NativeBackend
@@ -919,9 +931,7 @@ class TestRendererContract:
         builder = source[source.index("private View buildSpacer") :]
         builder = builder[: builder.index("\n    }")]
         # Strip comments first: the method documents why it must not call this.
-        code = "\n".join(
-            line for line in builder.splitlines() if not line.strip().startswith("//")
-        )
+        code = "\n".join(line for line in builder.splitlines() if not line.strip().startswith("//"))
         assert "setLayoutParams" not in code
 
     def test_children_are_built_defensively(self) -> None:
@@ -1099,11 +1109,23 @@ class TestDeviceFixes:
         as a plain label on a real device (untappable)."""
         source = self._java("ViewBuilder.java")
         for widget in (
-            "ListTile", "List", "Slider", "Checkbox", "RatingBar", "Dropdown",
-            "Chip", "Badge", "Stepper", "RadioButton", "RadioGroup",
-            "SegmentedButtons", "Link", "DataTable", "Avatar",
+            "ListTile",
+            "List",
+            "Slider",
+            "Checkbox",
+            "RatingBar",
+            "Dropdown",
+            "Chip",
+            "Badge",
+            "Stepper",
+            "RadioButton",
+            "RadioGroup",
+            "SegmentedButtons",
+            "Link",
+            "DataTable",
+            "Avatar",
         ):
-            assert f"case \"{widget}\":" in source, f"missing Java renderer for {widget}"
+            assert f'case "{widget}":' in source, f"missing Java renderer for {widget}"
 
     # -- permissions -------------------------------------------------------
     def test_permission_request_blocks_for_the_answer(self) -> None:
@@ -1150,9 +1172,7 @@ class TestCaBundleDiscovery:
 
         bundle = _find_ca_bundle()
         assert bundle is not None
-        assert bundle.read_text(encoding="ascii", errors="ignore").count(
-            "BEGIN CERTIFICATE"
-        ) > 10
+        assert bundle.read_text(encoding="ascii", errors="ignore").count("BEGIN CERTIFICATE") > 10
 
     def test_windows_store_export(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """The registry store is turned into a PEM file."""
@@ -1160,9 +1180,7 @@ class TestCaBundleDiscovery:
 
         from pymobile.compiler.backends.native import _export_windows_trust_store
 
-        sample = (
-            b"0\x82\x01\x00"  # not a real certificate, only the DER->PEM wrapper is exercised
-        )
+        sample = b"0\x82\x01\x00"  # not a real certificate, only the DER->PEM wrapper is exercised
         monkeypatch.setattr(
             ssl, "enum_certificates", lambda store: [(sample, "x509_asn", True)], raising=False
         )
@@ -1185,9 +1203,7 @@ class TestCaBundleDiscovery:
         )
         assert _export_windows_trust_store(tmp_path) is None
 
-    def test_tls_purpose_is_accepted(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_tls_purpose_is_accepted(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         import ssl
 
         from pymobile.compiler.backends.native import _export_windows_trust_store
@@ -1329,9 +1345,7 @@ class TestPermissionDialogTiming:
     def _activity(self) -> str:
         from pymobile.resources import resource_path
 
-        return resource_path("android", "java", "MainActivity.java").read_text(
-            encoding="utf-8"
-        )
+        return resource_path("android", "java", "MainActivity.java").read_text(encoding="utf-8")
 
     def test_dialog_waits_for_the_resumed_state(self) -> None:
         source = self._activity()

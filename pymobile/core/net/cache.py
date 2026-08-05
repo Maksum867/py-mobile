@@ -14,14 +14,13 @@ something rather than nothing. Use :class:`HttpCache` directly or hand it to
 from __future__ import annotations
 
 import hashlib
-import json
 import time
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from ..api.storage import Storage
 from ...logging import get_logger
+from ..api.storage import Storage
 
 __all__ = ["HttpCache"]
 
@@ -50,7 +49,7 @@ class HttpCache:
         self._prefix = prefix
 
     @classmethod
-    def at(cls, path: str | Path) -> "HttpCache":
+    def at(cls, path: str | Path) -> HttpCache:
         """Create a cache backed by a specific file (useful for tests)."""
         return cls(path)
 
@@ -59,7 +58,8 @@ class HttpCache:
 
     def get(self, url: str) -> dict[str, Any] | None:
         """Return the cached entry ``{status, headers, content, fetched_at}`` or ``None``."""
-        return self._storage.get(self._full_key(url))
+        entry = self._storage.get(self._full_key(url))
+        return entry if isinstance(entry, dict) else None
 
     def get_stale(self, url: str, ttl: float) -> dict[str, Any] | None:
         """Return a cached entry even if it is older than ``ttl``, or ``None``."""
@@ -70,9 +70,9 @@ class HttpCache:
         entry = self.get(url)
         if entry is None:
             return False
-        return (time.time() - entry.get("fetched_at", 0)) < ttl
+        return (time.time() - float(entry.get("fetched_at", 0))) < ttl
 
-    def set(self, url: str, status: int, headers: Mapping, content: bytes) -> None:
+    def set(self, url: str, status: int, headers: Mapping[str, str], content: bytes) -> None:
         """Store a response for ``url``."""
         self._storage.set(
             self._full_key(url),
@@ -98,4 +98,5 @@ class HttpCache:
         return isinstance(url, str) and self.get(url) is not None
 
     def __len__(self) -> int:
-        return sum(1 for k in self._storage.keys() if k.startswith(self._prefix))
+        # Storage exposes keys() but deliberately is not a Mapping/iterable.
+        return sum(1 for key in self._storage.keys() if key.startswith(self._prefix))  # noqa: SIM118

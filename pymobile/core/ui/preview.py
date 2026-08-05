@@ -99,21 +99,23 @@ def _node_lines(node: dict[str, Any], *, show_ids: bool = False) -> list[str]:
     if node_type == "Row" or (
         node_type == "ScrollView" and node.get("props", {}).get("horizontal")
     ):
-        rows = _join_horizontal(
-            [_node_lines(child, show_ids=show_ids) for child in children]
-        )
+        rows = _join_horizontal([_node_lines(child, show_ids=show_ids) for child in children])
     elif node_type == "Grid":
         rows = _grid_lines(node, show_ids=show_ids)
     elif node_type in ("Expanded", "Flexible"):
         # A flex wrapper draws exactly as its child; the space it claims is a
         # device-side concept with no meaning in a text picture.
-        rows = _join_vertical(
-            [_node_lines(child, show_ids=show_ids) for child in children]
-        )
-    elif node_type in ("Column", "ScrollView", "Stack", "Container", "SafeArea", "RadioGroup", "List"):
-        rows = _join_vertical(
-            [_node_lines(child, show_ids=show_ids) for child in children]
-        )
+        rows = _join_vertical([_node_lines(child, show_ids=show_ids) for child in children])
+    elif node_type in (
+        "Column",
+        "ScrollView",
+        "Stack",
+        "Container",
+        "SafeArea",
+        "RadioGroup",
+        "List",
+    ):
+        rows = _join_vertical([_node_lines(child, show_ids=show_ids) for child in children])
     else:
         rows = _leaf_lines(node)
 
@@ -221,9 +223,9 @@ def _leaf_lines(node: dict[str, Any]) -> list[str]:
         value = max(minimum, min(float(props.get("value", 0)), maximum))
         span = max(maximum - minimum, 1e-9)
         pos = round((value - minimum) / span * (_BAR_WIDTH - 1))
-        bar = list("─" * _BAR_WIDTH)
-        bar[pos] = "●"
-        return [f"[{''.join(bar)}] {value:g}"]
+        slider_bar: list[str] = list("─" * _BAR_WIDTH)
+        slider_bar[pos] = "●"
+        return [f"[{''.join(slider_bar)}] {value:g}"]
 
     if node_type == "Checkbox":
         return ["[✓] on" if props.get("checked") else "[ ] off"]
@@ -231,9 +233,9 @@ def _leaf_lines(node: dict[str, Any]) -> list[str]:
     if node_type == "RatingBar":
         rating = max(0.0, min(float(props.get("rating", 0)), int(props.get("maximum", 5))))
         maximum = int(props.get("maximum", 5))
-        filled = "★" * round(rating)
+        rating_filled = "★" * round(rating)
         empty = "☆" * max(0, maximum - round(rating))
-        return [f"{filled}{empty} {rating:g}/{maximum}"]
+        return [f"{rating_filled}{empty} {rating:g}/{maximum}"]
 
     if node_type == "Dropdown":
         return [f"[{props.get('value', '')} ▾]"]
@@ -269,7 +271,7 @@ def _leaf_lines(node: dict[str, Any]) -> list[str]:
 
     if node_type == "Link":
         text = str(props.get("text", "")) or "link"
-        return [f"<{text}>" if props.get("url") else f"<{text}>"]
+        return [f"<{text}>"]
 
     if node_type == "DataTable":
         headers = [str(h) for h in props.get("headers", [])]
@@ -281,11 +283,12 @@ def _leaf_lines(node: dict[str, Any]) -> list[str]:
             for i, cell in enumerate(row):
                 if i < len(widths):
                     widths[i] = max(widths[i], len(cell))
-        header = " | ".join(h.ljust(w) for h, w in zip(headers, widths))
+        header = " | ".join(h.ljust(w) for h, w in zip(headers, widths, strict=True))
         lines = [header, "-" * len(header)]
         for row in rows:
-            padded = [cell.ljust(widths[i]) if i < len(widths) else cell
-                      for i, cell in enumerate(row)]
+            padded = [
+                cell.ljust(widths[i]) if i < len(widths) else cell for i, cell in enumerate(row)
+            ]
             lines.append(" | ".join(padded))
         return lines
 
@@ -350,11 +353,16 @@ def assert_snapshot(
     if rendered != golden:
         import difflib
 
-        diff = "\n".join(difflib.unified_diff(
-            golden.splitlines(), rendered.splitlines(),
-            fromfile="snapshot", tofile="rendered", lineterm=""))
+        diff = "\n".join(
+            difflib.unified_diff(
+                golden.splitlines(),
+                rendered.splitlines(),
+                fromfile="snapshot",
+                tofile="rendered",
+                lineterm="",
+            )
+        )
         raise AssertionError(
-            f"Snapshot {path.name} changed:\n{diff}\n"
-            f"Run with update=True to accept the new output."
+            f"Snapshot {path.name} changed:\n{diff}\nRun with update=True to accept the new output."
         )
     return rendered

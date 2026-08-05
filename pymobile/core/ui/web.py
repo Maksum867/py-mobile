@@ -224,8 +224,7 @@ def render_html(node: dict[str, Any]) -> str:
         if props.get("vertical"):
             width = props.get("thickness", 1)
             return (
-                f'<div style="width:{width}px;align-self:stretch;'
-                f'background:rgba(0,0,0,.12)"></div>'
+                f'<div style="width:{width}px;align-self:stretch;background:rgba(0,0,0,.12)"></div>'
             )
         return f'<hr class="w" style="{css}">'
 

@@ -442,7 +442,7 @@ def cmd_setup_sdk(args: argparse.Namespace) -> int:
     with_ndk = getattr(args, "with_ndk", False)
     size = "~2.7 GB" if with_ndk else "~800 MB"
 
-    # Перевіряємо, чи існує папка SDK і чи вона не порожня (тобто закешована)
+    # Check whether the SDK directory already exists and has cached content
     already_installed = target_path.exists() and any(target_path.iterdir())
 
     if already_installed:
@@ -597,9 +597,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     build.add_argument("--clean", action="store_true", help="rebuild from scratch")
     build.add_argument("--no-cache", action="store_true", help="ignore the incremental cache")
-    build.add_argument(
-        "--optimize", action="store_true", help="ship bytecode instead of sources"
-    )
+    build.add_argument("--optimize", action="store_true", help="ship bytecode instead of sources")
     build.add_argument(
         "--minimal-stdlib",
         action="store_true",
@@ -645,9 +643,7 @@ def build_parser() -> argparse.ArgumentParser:
         "preview", help="draw the first screen as a desktop picture", parents=[common]
     )
     preview.add_argument("--png", metavar="PATH", help="write a PNG instead of text")
-    preview.add_argument(
-        "--ids", action="store_true", help="annotate widgets with their id"
-    )
+    preview.add_argument("--ids", action="store_true", help="annotate widgets with their id")
     preview.set_defaults(func=cmd_preview)
 
     info = sub.add_parser("info", help="show the resolved configuration", parents=[common])

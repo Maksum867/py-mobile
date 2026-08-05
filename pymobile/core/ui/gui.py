@@ -450,9 +450,7 @@ class GuiPreview:
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
 
-        content.bind(
-            "<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all"))
-        )
+        content.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
         # Keep the inner frame as wide as the viewport, or children packed with
         # fill="x" would collapse to their natural width.
         canvas.bind("<Configure>", lambda event: canvas.itemconfigure(window, width=event.width))

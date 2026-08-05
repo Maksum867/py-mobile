@@ -12,8 +12,6 @@ build; a theme change redraws the visible screen just like a language change.
 
 from __future__ import annotations
 
-from typing import Any
-
 from .style import Color
 
 __all__ = ["Theme"]
@@ -53,7 +51,7 @@ class Theme:
 
     # -- presets -----------------------------------------------------------
     @classmethod
-    def light(cls) -> "Theme":
+    def light(cls) -> Theme:
         """The default light palette (mirrors the built-in ``Color`` values)."""
         return cls(
             "light",
@@ -71,7 +69,7 @@ class Theme:
         )
 
     @classmethod
-    def dark(cls) -> "Theme":
+    def dark(cls) -> Theme:
         """A built-in dark palette (Material-ish dark colours)."""
         return cls(
             "dark",
@@ -106,7 +104,7 @@ class Theme:
             return self._colors[key]
         fallback = getattr(Color, key, None)
         if fallback is not None:
-            return fallback
+            return str(fallback)
         raise ValueError(f"unknown colour {name!r}")
 
     def as_dict(self) -> dict[str, str]:

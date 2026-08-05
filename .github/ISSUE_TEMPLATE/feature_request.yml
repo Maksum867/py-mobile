@@ -1,0 +1,25 @@
+name: Feature request
+description: Propose a focused framework capability
+title: "[Feature]: "
+labels: [enhancement, triage]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed API and example usage
+      description: "Include a small Python API sketch."
+    validations:
+      required: true
+  - type: checkboxes
+    id: parity
+    attributes:
+      label: Renderer scope
+      options:
+        - label: I considered Android native renderer support.
+        - label: I considered Web/GUI/ASCII preview parity or documented why it is not applicable.

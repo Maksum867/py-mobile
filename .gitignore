@@ -57,7 +57,7 @@ cover/
 *.log
 
 # Sphinx documentation
-docs/_build/
+notion/docs/_build/
 
 # PyBuilder
 .pybuilder/
@@ -81,3 +81,5 @@ Thumbs.db
 .DS_Store
 pymobile-demo/
 PYPI_INSTRUCTIONS.md
+notion/
+.pymobile-critical-backup-20260805-174900/

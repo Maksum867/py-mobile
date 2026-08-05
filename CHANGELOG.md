@@ -3,6 +3,32 @@
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project uses [semantic versioning](https://semver.org/).
 
+## [0.6.1] 
+
+### Fixed — 2026-08-05
+
+- Prevented deadlocks when a completion callback cancels its own `JobHandle` or
+  `HttpFuture`; callbacks now always run after internal locks are released.
+- A failed repeating job now completes its handle with the original error.
+- `Storage` now rejects non-string keys as its public contract specifies.
+- `Image` now accepts validated local `file://` URIs.
+- `RatingBar(value=...)` now works as documented.
+- `Dropdown` and `SegmentedButtons` accept documented `on_change` as a
+  compatibility alias for `on_select`.
+- `Validator` now accepts the documented mapping/rule DSL as well as callable
+  validators.
+
+### Added
+
+- `App.dispatch(...)` and `UiDispatcher` for explicitly handing background
+  results into the next safe UI render.
+- Typed serialised UI-tree contract plus a capability registry and parity tests
+  for the built-in renderer implementations.
+- `HttpSecurityPolicy` with opt-in HTTPS-only and hostname allow-list rules.
+- Regression tests for the repaired public contracts.
+- A GitHub Actions quality gate and Android API 34 native-APK emulator smoke
+  test, with an `examples/device-smoke` fixture.
+
 ## [0.6.0] — 2026-08-03
 
 ### Added

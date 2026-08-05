@@ -288,13 +288,25 @@ class Navigator:
 
     def reset(self, screen: ScreenT) -> ScreenT:
         """Clear the stack and start again from ``screen``."""
+        self.dispose()
+        return self.push(screen)
+
+    def dispose(self) -> None:
+        """Hide and unmount every screen, releasing lifecycle resources.
+
+        The visible screen is hidden once, then the stack is unmounted from top
+        to bottom. App shutdown uses the same path as reset so subscriptions
+        and screen-owned resources cannot survive either operation.
+        """
+        current = self.current
+        if current is not None:
+            current.on_hide()
         while self._stack:
             top = self._stack.pop()
             top._mounted = False
             top.on_unmount()
             top._cancel_subscriptions()
             top.app = None
-        return self.push(screen)
 
     def _notify(self) -> None:
         """Tell the app that the visible screen changed."""

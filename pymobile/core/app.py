@@ -19,6 +19,7 @@ from .api.permissions import Permission, PermissionManager
 from .api.storage import Storage
 from .api.vibration import Vibration
 from .bridge import Bridge, get_bridge
+from .dispatcher import UiDispatcher
 from .events import EventBus, Subscription
 from .i18n import translations
 from .jobs import JobHandle, JobManager
@@ -67,6 +68,8 @@ class App:
         self.package = package or "org.pymobile.app"
         self.bridge: Bridge = bridge or get_bridge()
         self.events = EventBus()
+        #: Thread-safe hand-off for state changes produced by jobs/HTTP/timers.
+        self.dispatcher = UiDispatcher()
         self.navigator = Navigator(self, on_change=self._on_screen_change)
         self.notifications = Notifications(self.bridge, channel_name=name)
         self.vibration = Vibration(self.bridge)
@@ -83,7 +86,7 @@ class App:
         self.auto_render = auto_render
         self._render_scheduled = False
         self._render_depth = 0
-        self._render_lock = threading.Lock()
+        self._render_lock = threading.RLock()
         # Rebuild the visible screen when the language changes: t() is called
         # inside build(), so the old text is already baked into the widgets.
         self._unsubscribe_language = translations.subscribe(self._on_language_change)
@@ -216,8 +219,9 @@ class App:
             _log.debug("event for unknown widget %r", widget_id)
             return
 
-        _log.debug("ui event %s on %s (type=%s) value=%r",
-                   kind, widget_id, type(widget).__name__, value)
+        _log.debug(
+            "ui event %s on %s (type=%s) value=%r", kind, widget_id, type(widget).__name__, value
+        )
 
         if kind == "press" and hasattr(widget, "press"):
             widget.press()
@@ -239,10 +243,12 @@ class App:
         """
         global _current
         self._scheduler.cancel_all()
+        self.dispatcher.close()
         if not self._running:
             return
         self._running = False
         self._unsubscribe_language()
+        self.navigator.dispose()
         self.jobs.shutdown()
         _plugin_registry.on_app_stop(self)
         if _current is self:
@@ -259,6 +265,9 @@ class App:
         redraws — but it stays available for the rare case that needs a frame
         pushed out right now.
         """
+        # Drain updates queued by background work before serialising the tree.
+        # Renderer bridges own the final platform-thread hand-off.
+        self.dispatcher.drain()
         screen = self.navigator.current
         if screen is None:
             return None
@@ -316,6 +325,19 @@ class App:
     def pop(self) -> Screen | None:
         """Go back one screen; ``None`` when already at the root."""
         return self.navigator.pop()
+
+    # -- UI dispatch -------------------------------------------------------
+    def dispatch(self, callback: Callable[..., None], *args: Any, **kwargs: Any) -> bool:
+        """Schedule a state update produced by background work.
+
+        Use this instead of mutating widgets directly in a job, timer or HTTP
+        completion callback. The callback runs just before the next widget-tree
+        serialisation; successful posts request that render immediately.
+        """
+        accepted = self.dispatcher.post(callback, *args, **kwargs)
+        if accepted and self._running:
+            self.render()
+        return accepted
 
     # -- timers ------------------------------------------------------------
     def set_interval(

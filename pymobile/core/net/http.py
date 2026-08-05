@@ -22,13 +22,34 @@ from ...errors import NetworkError
 from ...logging import get_logger
 from .cache import HttpCache
 
-__all__ = ["HttpClient", "Response", "HttpFuture", "DEFAULT_TIMEOUT"]
+__all__ = ["HttpClient", "HttpSecurityPolicy", "Response", "HttpFuture", "DEFAULT_TIMEOUT"]
 
 _log = get_logger("http")
 
 DEFAULT_TIMEOUT = 15.0
 _RETRY_STATUSES = frozenset({408, 425, 429, 500, 502, 503, 504})
 Params = Mapping[str, str | int | float | bool | None]
+
+
+@dataclass(frozen=True, slots=True)
+class HttpSecurityPolicy:
+    """Optional production constraints for outbound HTTP requests.
+
+    Defaults preserve the framework's existing local-development behaviour.
+    Set ``require_https=True`` in production; optionally restrict requests to
+    an allow-list of hostnames.
+    """
+
+    require_https: bool = False
+    allowed_hosts: frozenset[str] | None = None
+
+    def validate(self, url: str) -> None:
+        parsed = urllib.parse.urlparse(url)
+        host = (parsed.hostname or "").casefold()
+        if self.require_https and parsed.scheme != "https":
+            raise NetworkError("Insecure HTTP is blocked by the security policy")
+        if self.allowed_hosts is not None and host not in self.allowed_hosts:
+            raise NetworkError(f"Host {host!r} is blocked by the security policy")
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,12 +107,22 @@ class HttpFuture:
     itself continues to completion on its thread).
     """
 
-    __slots__ = ("_client", "_method", "_url", "_kwargs", "_done", "_result",
-                 "_error", "_callbacks", "_lock", "_cancelled")
+    __slots__ = (
+        "_client",
+        "_method",
+        "_url",
+        "_kwargs",
+        "_done",
+        "_result",
+        "_error",
+        "_callbacks",
+        "_lock",
+        "_cancelled",
+    )
 
     def __init__(
         self,
-        client: "HttpClient",
+        client: HttpClient,
         method: str,
         url: str,
         kwargs: dict[str, Any],
@@ -137,24 +168,39 @@ class HttpFuture:
             raise NetworkError("Request did not complete")
         return self._result
 
-    def then(self, on_success: Callable[[Response], None],
-             on_error: Callable[[BaseException], None] | None = None) -> "HttpFuture":
+    def then(
+        self,
+        on_success: Callable[[Response], None],
+        on_error: Callable[[BaseException], None] | None = None,
+    ) -> HttpFuture:
         """Register callbacks to run once the request completes.
 
         ``on_success`` is called with the :class:`Response`; ``on_error`` (if
         given) with the exception. If the request has already finished, the
         relevant callback runs immediately on the calling thread.
         """
+        callback: Callable[[], None] | None = None
         with self._lock:
             if self._cancelled:
                 return self
-            self._callbacks.append(lambda: self._fire(on_success, on_error))
-            if self._done.is_set():
-                cb = self._callbacks.pop()
-                cb()
-            return self
 
-    def _fire(self, on_success, on_error) -> None:
+            def callback() -> None:
+                self._fire(on_success, on_error)
+
+            if not self._done.is_set():
+                self._callbacks.append(callback)
+                return self
+        # Never call user code while holding _lock: callbacks are allowed to
+        # cancel this future or attach another callback.
+        assert callback is not None
+        callback()
+        return self
+
+    def _fire(
+        self,
+        on_success: Callable[[Response], None],
+        on_error: Callable[[BaseException], None] | None,
+    ) -> None:
         if self._error is not None:
             if on_error is not None:
                 on_error(self._error)
@@ -166,11 +212,11 @@ class HttpFuture:
             self._result = result
             self._error = error
             self._done.set()
-            callbacks = list(self._callbacks)
+            callbacks = [] if self._cancelled else list(self._callbacks)
             self._callbacks.clear()
+        # User callbacks intentionally run after releasing _lock.
         for cb in callbacks:
-            if not self._cancelled:
-                cb()
+            cb()
 
 
 @dataclass(slots=True)
@@ -191,6 +237,7 @@ class HttpClient:
     backoff: float = 0.5
     user_agent: str = f"PyMobile/{__import__('pymobile').__version__}"
     cache: HttpCache | None = field(default=None, repr=False)
+    security: HttpSecurityPolicy = field(default_factory=HttpSecurityPolicy)
 
     # -- synchronous verbs -------------------------------------------------
     def get(self, url: str, *, params: Params | None = None, **kwargs: Any) -> Response:
@@ -234,7 +281,7 @@ class HttpClient:
             try:
                 result = self.request(method, url, **kwargs)
                 future._complete(result, None)
-            except BaseException as error:  # noqa: BLE001 - delivered to callbacks
+            except BaseException as error:
                 future._complete(None, error)
 
         threading.Thread(target=run, name=f"pymobile-http-{method}", daemon=True).start()
@@ -390,8 +437,16 @@ class HttpClient:
         if params:
             filtered = {k: str(v) for k, v in params.items() if v is not None}
             if filtered:
-                separator = "&" if urllib.parse.urlparse(full).query else "?"
-                full = f"{full}{separator}{urllib.parse.urlencode(filtered)}"
+                # A fragment is client-side only. Query parameters must be
+                # inserted before ``#fragment`` or servers never receive them.
+                parsed = urllib.parse.urlsplit(full)
+                query = parsed.query
+                encoded = urllib.parse.urlencode(filtered)
+                query = f"{query}&{encoded}" if query else encoded
+                full = urllib.parse.urlunsplit(
+                    (parsed.scheme, parsed.netloc, parsed.path, query, parsed.fragment)
+                )
+        self.security.validate(full)
         return full
 
     @staticmethod

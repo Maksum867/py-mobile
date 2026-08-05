@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 # Published on PyPI as py-mobile; the import name and CLI command stay
 # `pymobile`.
 name = "pymobile-framework"
-version = "0.6.0"
+version = "0.6.1"
 description = "A small, fast and extensible Python framework for building Android applications."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -61,6 +61,7 @@ pymobile = "pymobile.cli:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["pymobile*"]
+exclude = ["pymobile.tests*", "pymobile.resources.__pycache__*"]
 
 [tool.setuptools.package-data]
 pymobile = [
@@ -68,6 +69,9 @@ pymobile = [
     "resources/*",
     "resources/**/*",
 ]
+
+[tool.setuptools.exclude-package-data]
+"*" = ["__pycache__/*", "**/__pycache__/*", "*.py[cod]"]
 
 [tool.pytest.ini_options]
 testpaths = ["pymobile/tests"]
@@ -95,3 +99,6 @@ python_version = "3.10"
 strict = true
 warn_unused_ignores = false
 ignore_missing_imports = true
+# Pytest tests intentionally prioritise readable fixtures; package code is
+# checked strictly. Test correctness is covered by pytest in the CI workflow.
+exclude = '^pymobile/tests/'

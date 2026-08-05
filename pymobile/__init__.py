@@ -18,7 +18,7 @@ Build it with ``pymobile build``.
 
 from __future__ import annotations
 
-__version__ = "0.6.0"
+__version__ = "0.6.1"
 __author__ = "MAKSYM KHLYSTUN"
 __license__ = "MIT"
 
@@ -27,23 +27,20 @@ from .core.api import (
     Permission,
     PermissionManager,
     Storage,
-    default_storage_path,
     Vibration,
+    default_storage_path,
 )
 from .core.app import App
 from .core.config import ProjectConfig, load_config
 from .core.events import Event, EventBus
 from .core.i18n import device_language, t, translations
 from .core.jobs import JobHandle, JobManager
-from .core.net import HttpClient, HttpCache, HttpFuture, Response
+from .core.net import HttpCache, HttpClient, HttpFuture, HttpSecurityPolicy, Response
 from .core.platform import Platform, current_platform, is_android, is_desktop
 from .core.plugins import Plugin, PluginRegistry, plugins
 from .core.scheduler import Scheduler, TimerHandle
-from .core.validation import Validator, ValidationError
-from .logging import get_diagnostics
 from .core.ui import (
     Align,
-    Button,
     Avatar,
     Badge,
     Button,
@@ -86,6 +83,7 @@ from .core.ui import (
     Theme,
     Widget,
 )
+from .core.validation import ValidationError, Validator
 from .errors import (
     BridgeError,
     ConfigError,
@@ -94,6 +92,7 @@ from .errors import (
     PyMobileError,
     ResourceError,
 )
+from .logging import get_diagnostics
 
 __all__ = [
     "__version__",
@@ -121,6 +120,7 @@ __all__ = [
     "HttpClient",
     "HttpCache",
     "HttpFuture",
+    "HttpSecurityPolicy",
     "Response",
     # i18n
     "device_language",
@@ -169,8 +169,6 @@ __all__ = [
     "Grid",
     "SafeArea",
     "Theme",
-    "List",
-    "ListTile",
     # validation
     "Validator",
     "ValidationError",

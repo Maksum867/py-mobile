@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ...core.config import ProjectConfig
-from ...errors import PyMobileError
+from ...errors import PyMobileError, ResourceError
 from ...logging import get_logger
 from ...resources import resource_path
 from ..manifest import build_manifest
@@ -175,7 +175,7 @@ class NativeBackend:
         libdir = self.python_runtime / "lib"
 
         want_source_build = os.environ.get("PYMOBILE_BUILD_JNI") == "1"
-        if not want_source_build or self.toolchain.clang is None:
+        if not want_source_build or self.toolchain.clang_for(self.abi) is None:
             self._use_prebuilt_bridge(output_dir, libdir)
             return output_dir
 
@@ -225,7 +225,7 @@ class NativeBackend:
 
     def _compile_jni_with_ndk(self, workdir: Path, output_dir: Path, libdir: Path) -> Path:
         """Build the JNI bridge from source with the NDK."""
-        clang = self.toolchain.clang
+        clang = self.toolchain.clang_for(self.abi)
         assert clang is not None  # checked by the caller
 
         source = resource_path("android", "jni", "pymobile_jni.c")
@@ -275,8 +275,17 @@ class NativeBackend:
             return self._use_prebuilt_dex(workdir)
 
     def _use_prebuilt_dex(self, workdir: Path) -> Path:
-        """Copy the packaged launcher dex into the work directory."""
-        prebuilt = resource_path("android", "prebuilt", self.abi, "classes.dex")
+        """Copy the packaged launcher dex into the work directory.
+
+        ``classes.dex`` is Dalvik bytecode, not native machine code, so one
+        launcher dex is valid for every ABI. The package currently ships the
+        arm64 resource path; x86_64 builds intentionally reuse it rather than
+        requiring a byte-identical duplicate.
+        """
+        try:
+            prebuilt = resource_path("android", "prebuilt", self.abi, "classes.dex")
+        except ResourceError:
+            prebuilt = resource_path("android", "prebuilt", "arm64-v8a", "classes.dex")
         target = workdir / "dex" / "classes.dex"
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(prebuilt, target)
@@ -301,17 +310,25 @@ class NativeBackend:
         _run(
             [
                 self.toolchain.javac,
-                "-source", "8", "-target", "8",
+                "-source",
+                "8",
+                "-target",
+                "8",
                 # Sources may contain non-ASCII UI strings; javac defaults to
                 # the platform encoding, which is often US-ASCII in containers.
-                "-encoding", "UTF-8",
+                "-encoding",
+                "UTF-8",
                 "-nowarn",
-                "-bootclasspath", self.toolchain.platform_jar,
-                "-classpath", self.toolchain.platform_jar,
-                "-d", classes,
+                "-bootclasspath",
+                self.toolchain.platform_jar,
+                "-classpath",
+                self.toolchain.platform_jar,
+                "-d",
+                classes,
                 *sorted(src.glob("*.java")),
             ],
-            step="javac", java_home=self.toolchain.java_home,
+            step="javac",
+            java_home=self.toolchain.java_home,
         )
 
         # Feed d8 a single jar rather than every .class path: it keeps the
@@ -320,7 +337,8 @@ class NativeBackend:
         archive = workdir / "classes.jar"
         _run(
             [self.toolchain.java_home / "bin" / "jar", "cf", archive, "-C", classes, "."],
-            step="jar", java_home=self.toolchain.java_home,
+            step="jar",
+            java_home=self.toolchain.java_home,
         )
 
         dex_dir = workdir / "dex"
@@ -328,12 +346,16 @@ class NativeBackend:
         _run(
             [
                 self.toolchain.d8,
-                "--min-api", str(self.config.min_sdk),
-                "--lib", self.toolchain.platform_jar,
-                "--output", dex_dir,
+                "--min-api",
+                str(self.config.min_sdk),
+                "--lib",
+                self.toolchain.platform_jar,
+                "--output",
+                dex_dir,
                 archive,
             ],
-            step="d8", java_home=self.toolchain.java_home,
+            step="d8",
+            java_home=self.toolchain.java_home,
         )
         return dex_dir / "classes.dex"
 
@@ -353,7 +375,7 @@ class NativeBackend:
         (values / "strings.xml").write_text(
             '<?xml version="1.0" encoding="utf-8"?>\n'
             "<resources>\n"
-            f"    <string name=\"app_name\">{_xml_escape(self.config.name)}</string>\n"
+            f'    <string name="app_name">{_xml_escape(self.config.name)}</string>\n'
             "</resources>\n",
             encoding="utf-8",
         )
@@ -371,13 +393,19 @@ class NativeBackend:
         base = workdir / "base.apk"
         _run(
             [
-                self.toolchain.aapt2, "link",
-                "-o", base,
-                "-I", self.toolchain.platform_jar,
-                "--manifest", manifest,
+                self.toolchain.aapt2,
+                "link",
+                "-o",
+                base,
+                "-I",
+                self.toolchain.platform_jar,
+                "--manifest",
+                manifest,
                 *sorted(flat.glob("*.flat")),
-                "--min-sdk-version", str(self.config.min_sdk),
-                "--target-sdk-version", str(self.config.target_sdk),
+                "--min-sdk-version",
+                str(self.config.min_sdk),
+                "--target-sdk-version",
+                str(self.config.target_sdk),
                 "--auto-add-overlay",
             ],
             step="aapt2 link",
@@ -489,14 +517,20 @@ class NativeBackend:
         output.parent.mkdir(parents=True, exist_ok=True)
         _run(
             [
-                self.toolchain.apksigner, "sign",
-                "--ks", keystore,
-                "--ks-pass", f"pass:{DEBUG_PASSWORD}",
-                "--key-pass", f"pass:{DEBUG_PASSWORD}",
-                "--out", output,
+                self.toolchain.apksigner,
+                "sign",
+                "--ks",
+                keystore,
+                "--ks-pass",
+                f"pass:{DEBUG_PASSWORD}",
+                "--key-pass",
+                f"pass:{DEBUG_PASSWORD}",
+                "--out",
+                output,
                 aligned,
             ],
-            step="apksigner", java_home=self.toolchain.java_home,
+            step="apksigner",
+            java_home=self.toolchain.java_home,
         )
         return output
 
@@ -508,17 +542,28 @@ class NativeBackend:
         keystore.parent.mkdir(parents=True, exist_ok=True)
         _run(
             [
-                self.toolchain.keytool, "-genkeypair",
-                "-keystore", keystore,
-                "-storepass", DEBUG_PASSWORD,
-                "-keypass", DEBUG_PASSWORD,
-                "-alias", DEBUG_KEY_ALIAS,
-                "-keyalg", "RSA", "-keysize", "2048",
-                "-validity", "10000",
-                "-dname", "CN=PyMobile Debug, OU=PyMobile, O=PyMobile, C=UA",
+                self.toolchain.keytool,
+                "-genkeypair",
+                "-keystore",
+                keystore,
+                "-storepass",
+                DEBUG_PASSWORD,
+                "-keypass",
+                DEBUG_PASSWORD,
+                "-alias",
+                DEBUG_KEY_ALIAS,
+                "-keyalg",
+                "RSA",
+                "-keysize",
+                "2048",
+                "-validity",
+                "10000",
+                "-dname",
+                "CN=PyMobile Debug, OU=PyMobile, O=PyMobile, C=UA",
             ],
             cwd=workdir,
-            step="keytool", java_home=self.toolchain.java_home,
+            step="keytool",
+            java_home=self.toolchain.java_home,
         )
         return keystore
 
@@ -592,9 +637,7 @@ def _export_windows_trust_store(cache_dir: Path | None = None) -> Path | None:
         for der, encoding, trust in entries:
             # `trust` is True for "all purposes" or a set of allowed OIDs;
             # 1.3.6.1.5.5.7.3.1 is TLS server authentication.
-            usable = trust is True or (
-                isinstance(trust, set) and "1.3.6.1.5.5.7.3.1" in trust
-            )
+            usable = trust is True or (isinstance(trust, set) and "1.3.6.1.5.5.7.3.1" in trust)
             if encoding == "x509_asn" and usable:
                 chunks.append(ssl.DER_cert_to_PEM_cert(der))
 

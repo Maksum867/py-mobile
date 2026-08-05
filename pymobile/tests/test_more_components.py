@@ -6,7 +6,6 @@ from __future__ import annotations
 import pytest
 
 from pymobile import (
-    App,
     Avatar,
     DataTable,
     Link,
@@ -15,7 +14,6 @@ from pymobile import (
     RadioGroup,
     SegmentedButtons,
 )
-from pymobile.core.bridge import StubBridge
 from pymobile.core.ui.preview import render_ascii
 
 
@@ -57,8 +55,7 @@ def test_radio_group_rejects_non_radio_child():
 
 def test_radio_group_on_select():
     events = []
-    group = RadioGroup(RadioButton("A"), RadioButton("B"),
-                       on_select=lambda v: events.append(v))
+    group = RadioGroup(RadioButton("A"), RadioButton("B"), on_select=lambda v: events.append(v))
     group.select("B")
     assert events == ["B"]
 
@@ -66,8 +63,9 @@ def test_radio_group_on_select():
 def test_radio_group_value_in_ctor_does_not_fire_callback():
     """A constructor must not report setup as a user edit."""
     events = []
-    group = RadioGroup(RadioButton("A"), RadioButton("B"), value="B",
-                       on_select=lambda v: events.append(v))
+    group = RadioGroup(
+        RadioButton("A"), RadioButton("B"), value="B", on_select=lambda v: events.append(v)
+    )
     assert group.value == "B"
     assert events == []
 

@@ -39,8 +39,16 @@ class JobHandle:
     the job finishes and returns its result (raising the job's error if any).
     """
 
-    __slots__ = ("id", "_cancel_fn", "_done", "_result", "_error", "_lock",
-                 "_cancelled", "_callbacks")
+    __slots__ = (
+        "id",
+        "_cancel_fn",
+        "_done",
+        "_result",
+        "_error",
+        "_lock",
+        "_cancelled",
+        "_callbacks",
+    )
 
     def __init__(self, job_id: str, cancel_fn: Callable[[], None]) -> None:
         self.id = job_id
@@ -70,16 +78,27 @@ class JobHandle:
             self._done.set()
         self._cancel_fn()
 
-    def then(self, on_done: Callable[[Any], None],
-             on_error: Callable[[BaseException], None] | None = None) -> "JobHandle":
+    def then(
+        self,
+        on_done: Callable[[Any], None],
+        on_error: Callable[[BaseException], None] | None = None,
+    ) -> JobHandle:
         """Register callbacks for completion; run immediately if already done."""
+        callback: Callable[[], None] | None = None
         with self._lock:
             if self._cancelled:
                 return self
-            self._callbacks.append(lambda: self._fire(on_done, on_error))
-            if self._done.is_set():
-                cb = self._callbacks.pop()
-                cb()
+
+            def callback() -> None:
+                self._fire(on_done, on_error)
+
+            if not self._done.is_set():
+                self._callbacks.append(callback)
+                return self
+        # Never call application code with _lock held: a callback may cancel
+        # this handle or register another callback.
+        assert callback is not None
+        callback()
         return self
 
     def wait(self, timeout: float | None = None) -> Any:
@@ -89,7 +108,11 @@ class JobHandle:
             raise self._error
         return self._result
 
-    def _fire(self, on_done, on_error) -> None:
+    def _fire(
+        self,
+        on_done: Callable[[Any], None],
+        on_error: Callable[[BaseException], None] | None,
+    ) -> None:
         if self._error is not None:
             if on_error is not None:
                 on_error(self._error)
@@ -98,14 +121,16 @@ class JobHandle:
 
     def _complete(self, result: Any, error: BaseException | None) -> None:
         with self._lock:
+            if self._cancelled:
+                return
             self._result = result
             self._error = error
             self._done.set()
             callbacks = list(self._callbacks)
             self._callbacks.clear()
+        # User callbacks intentionally run after releasing _lock.
         for cb in callbacks:
-            if not self._cancelled:
-                cb()
+            cb()
 
 
 class JobManager:
@@ -139,7 +164,7 @@ class JobManager:
             try:
                 result = fn()
                 handle._complete(result, None)
-            except BaseException as error:  # noqa: BLE001 - delivered via handle
+            except BaseException as error:
                 handle._complete(None, error)
             finally:
                 with self._lock:
@@ -167,6 +192,7 @@ class JobManager:
         stop = threading.Event()
 
         def run() -> None:
+            error: BaseException | None = None
             try:
                 while not stop.is_set():
                     start = time.monotonic()
@@ -175,12 +201,14 @@ class JobManager:
                     remaining = interval_ms - elapsed
                     if remaining > 0:
                         stop.wait(remaining / 1000.0)
-            except BaseException:  # noqa: BLE001
+            except BaseException as exc:  # delivered through the handle
+                error = exc
                 _log.exception("repeating job %r failed; stopping", handle_id)
             finally:
+                stop.set()
+                handle._complete(None, error)
                 with self._lock:
                     self._jobs.pop(handle_id, None)
-                stop.set()
 
         handle = JobHandle(handle_id, cancel_fn=lambda: stop.set())
         with self._lock:

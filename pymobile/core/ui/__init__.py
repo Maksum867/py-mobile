@@ -38,6 +38,7 @@ from .layout import (
     Stack,
 )
 from .list import List, ListTile
+from .registry import WidgetCapability, supported_by, widget_types
 from .screen import Navigator, Screen
 from .style import Align, Color, EdgeInsets, Style
 from .theme import Theme
@@ -86,4 +87,7 @@ __all__ = [
     "Align",
     "EdgeInsets",
     "Theme",
+    "WidgetCapability",
+    "widget_types",
+    "supported_by",
 ]

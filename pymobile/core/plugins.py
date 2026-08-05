@@ -20,9 +20,7 @@ Example::
 
 from __future__ import annotations
 
-import inspect
-from collections.abc import Callable, Iterable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from ..logging import get_logger
 

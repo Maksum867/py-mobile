@@ -182,8 +182,10 @@ class TestGrid:
         from pymobile.core.ui.preview import render_ascii
 
         grid = Grid(
-            Label("Completed"), Label("Focus"),
-            Label("4"), Label("2 h 45 m"),
+            Label("Completed"),
+            Label("Focus"),
+            Label("4"),
+            Label("2 h 45 m"),
             columns=2,
         )
         lines = render_ascii(grid).splitlines()

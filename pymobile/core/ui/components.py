@@ -8,8 +8,11 @@ the application event bus.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Sequence
+from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlparse
 
 from .style import Color
 from .widget import Container, Widget, callback_name
@@ -181,10 +184,6 @@ class TextInput(Widget):
         }
 
 
-from pathlib import Path
-from typing import Any
-import urllib.parse
-
 class Image(Widget):
     """An image loaded from a packaged resource, a file path or a URL."""
 
@@ -207,24 +206,43 @@ class Image(Widget):
         self.fit = fit
 
     def _validate_source(self, source: str) -> None:
-        # 1. Якщо це URL (http://, https://, file://) — пропускаємо перевірку файлової системи
-        parsed = urllib.parse.urlparse(source)
+        """Validate local paths while allowing web and data URLs.
+
+        A ``file://`` URI is intentionally treated as a local path rather than
+        blindly trusted: it remains subject to the same existence/type checks.
+        """
+        parsed = urlparse(source)
         if parsed.scheme in ("http", "https", "data"):
             return
+        if parsed.scheme == "file":
+            if parsed.netloc not in ("", "localhost"):
+                raise ValueError("file image URLs must refer to the local machine")
+            path_text = unquote(parsed.path)
+            # file:///C:/... is parsed as /C:/...; Windows paths must not
+            # retain that URI-leading slash before being given to pathlib.
+            if (
+                os.name == "nt"
+                and len(path_text) >= 3
+                and path_text[0] == "/"
+                and path_text[2] == ":"
+            ):
+                path_text = path_text[1:]
+            path = Path(path_text)
+        elif parsed.scheme:
+            raise ValueError(f"unsupported image URL scheme: {parsed.scheme!r}")
+        else:
+            path = Path(source)
 
-        # 2. Якщо це ресурс або відносний/абсолютний шлях
-        path = Path(source)
-
-        # Перевірка на спроби виходу за межі (Path Traversal на кшталт ../../etc/passwd)
-        # Якщо шлях починається з системного кореня і не існує — це помилка
         if not path.exists():
             raise FileNotFoundError(f"Image resource file does not exist: '{source}'")
-
         if not path.is_file():
-            raise IsADirectoryError(f"Image resource path points to a directory, not a file: '{source}'")
+            raise IsADirectoryError(
+                f"Image resource path points to a directory, not a file: '{source}'"
+            )
 
     def props(self) -> dict[str, Any]:
         return {**super().props(), "source": self.source, "fit": self.fit}
+
 
 class Switch(Widget):
     """A binary on/off toggle."""
@@ -481,18 +499,22 @@ class RatingBar(Widget):
 
     def __init__(
         self,
-        rating: float = 0.0,
+        rating: float | None = None,
         *,
+        value: float | None = None,
         maximum: int = 5,
         on_change: Callable[[float], None] | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
+        if rating is not None and value is not None:
+            raise ValueError("pass either rating or value, not both")
         if maximum < 1:
             raise ValueError("maximum must be >= 1")
         self.maximum = maximum
         self.on_change = on_change
-        self._rating = max(0.0, min(float(rating), float(maximum)))
+        initial: float = rating if rating is not None else (value if value is not None else 0.0)
+        self._rating = max(0.0, min(float(initial), float(maximum)))
 
     @property
     def rating(self) -> float:
@@ -542,15 +564,18 @@ class Dropdown(Widget):
         *,
         value: str | None = None,
         on_select: Callable[[str], None] | None = None,
+        on_change: Callable[[str], None] | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
+        if on_select is not None and on_change is not None:
+            raise ValueError("pass either on_select or on_change, not both")
         if not options:
             raise ValueError("options must not be empty")
         if not all(isinstance(o, str) for o in options):
             raise ValueError("options must be strings")
         self.options = list(options)
-        self.on_select = on_select
+        self.on_select = on_select or on_change
         self._value = value if value is not None else self.options[0]
         if self._value not in self.options:
             self._value = self.options[0]
@@ -953,7 +978,8 @@ class SegmentedButtons(Widget):
     """A horizontal bar of mutually exclusive options (like a tab bar / filter).
 
     ``options`` is the ordered list of choices; ``value`` is the selected one.
-    ``on_select`` fires when the selection changes.
+    ``on_select`` fires when the selection changes. ``on_change`` is a
+    documented compatibility alias.
     """
 
     type_name = "SegmentedButtons"
@@ -965,13 +991,16 @@ class SegmentedButtons(Widget):
         *,
         value: str | None = None,
         on_select: Callable[[str], None] | None = None,
+        on_change: Callable[[str], None] | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
+        if on_select is not None and on_change is not None:
+            raise ValueError("pass either on_select or on_change, not both")
         if not options:
             raise ValueError("options must not be empty")
         self.options = list(options)
-        self.on_select = on_select
+        self.on_select = on_select or on_change
         self._value = value if value is not None else self.options[0]
         if self._value not in self.options:
             self._value = self.options[0]
@@ -1067,7 +1096,9 @@ class ProgressText(Widget):
         if float(shown).is_integer():
             shown = int(shown)
         body = self.format.format(
-            value=shown, percent=self.percent, maximum=self.maximum,
+            value=shown,
+            percent=self.percent,
+            maximum=self.maximum,
             fraction=self.fraction,
         )
         return f"{self.label} {body}".strip() if self.label else body
@@ -1147,9 +1178,7 @@ class DataTable(Widget):
         if not headers:
             raise ValueError("headers must not be empty")
         self.headers = [str(h) for h in headers]
-        self.rows: list[list[str]] = [
-            [str(cell) for cell in row] for row in rows
-        ]
+        self.rows: list[list[str]] = [[str(cell) for cell in row] for row in rows]
 
     def add_row(self, row: Sequence[Any]) -> None:
         """Append a row (missing cells become empty strings)."""

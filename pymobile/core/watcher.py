@@ -113,9 +113,7 @@ class FileWatcher:
         """Return the paths that changed since the last call."""
         current = self._snapshot()
         changed = [
-            path
-            for path, signature in current.items()
-            if self._state.get(path) != signature
+            path for path, signature in current.items() if self._state.get(path) != signature
         ]
         changed.extend(path for path in self._state if path not in current)
         self._state = current

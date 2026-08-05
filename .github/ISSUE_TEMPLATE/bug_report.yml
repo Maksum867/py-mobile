@@ -1,0 +1,39 @@
+name: Bug report
+description: Report a reproducible PyMobile problem
+title: "[Bug]: "
+labels: [bug, triage]
+body:
+  - type: markdown
+    attributes:
+      value: "Do not include API tokens, private APKs, credentials or personal data. For security issues, use SECURITY.md instead."
+  - type: input
+    id: version
+    attributes:
+      label: PyMobile version or commit
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options: [Android device, Android emulator, Windows desktop, macOS desktop, Linux desktop, Web preview]
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction steps
+      placeholder: "1. ...\n2. ...\n3. ..."
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected and actual behaviour
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Sanitised diagnostics / logcat
+      description: "Attach pymobile doctor, get_diagnostics(), and Android API/device model where relevant."

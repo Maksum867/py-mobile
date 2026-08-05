@@ -14,12 +14,13 @@ coalesced.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from itertools import count
 from typing import TYPE_CHECKING, Any
 
+from .contract import SerializedValue, WidgetNode, WidgetProps
 from .style import Style
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -68,6 +69,19 @@ def widget_scope(owner: object = None) -> Iterator[None]:
         _scope.reset(token)
 
 
+def _serialise_value(value: object) -> SerializedValue:
+    """Validate extension props at the public renderer boundary."""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, Mapping):
+        return {str(key): _serialise_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_serialise_value(item) for item in value]
+    raise TypeError(
+        f"widget extension props must contain only JSON-like values (got {type(value).__name__})"
+    )
+
+
 class Widget:
     """Base class for every UI component."""
 
@@ -101,7 +115,9 @@ class Widget:
         self._enabled = enabled
         self._parent: Widget | None = None
         self._screen: Screen | None = None
-        self._props: dict[str, Any] = props
+        self._props: WidgetProps = {}
+        for name, value in props.items():
+            self.set_prop(name, value, invalidate=False)
 
     # -- tree --------------------------------------------------------------
     @property
@@ -171,13 +187,27 @@ class Widget:
             self._enabled = value
             self.invalidate()
 
-    def props(self) -> dict[str, Any]:
+    def set_prop(self, name: str, value: object, *, invalidate: bool = True) -> None:
+        """Set a validated extension prop for a custom widget/renderer.
+
+        Extension props are deliberately JSON-like, so every renderer receives
+        the same portable data rather than a Python callback or host object.
+        """
+        if not name or not name.isidentifier() or name.startswith("_"):
+            raise ValueError("widget extension prop names must be public identifiers")
+        serialised = _serialise_value(value)
+        if self._props.get(name) != serialised:
+            self._props[name] = serialised
+            if invalidate:
+                self.invalidate()
+
+    def props(self) -> WidgetProps:
         """Serialisable properties of this widget; subclasses extend this."""
         return dict(self._props)
 
-    def to_dict(self) -> dict[str, Any]:
-        """Serialise the widget subtree into a plain dictionary."""
-        node: dict[str, Any] = {
+    def to_dict(self) -> WidgetNode:
+        """Serialise the widget subtree into the public renderer contract."""
+        node: WidgetNode = {
             "type": self.type_name,
             "id": self.id,
             "visible": self._visible,
@@ -217,6 +247,14 @@ class Container(Widget):
         """Append a child and return it (so calls can be chained/assigned)."""
         if child is self:
             raise ValueError("a container cannot contain itself")
+        # Reject attaching an ancestor below its own descendant. Without this,
+        # ``root.add(child); child.add(root)`` forms a cycle and recursion in
+        # walk()/to_dict() never terminates.
+        ancestor: Widget | None = self
+        while ancestor is not None:
+            if ancestor is child:
+                raise ValueError("a container cannot contain one of its ancestors")
+            ancestor = ancestor._parent
         if child._parent is not None:
             raise ValueError(f"widget {child.id!r} already has a parent")
         child._parent = self

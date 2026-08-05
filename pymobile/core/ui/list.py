@@ -15,7 +15,7 @@ owning screen's ``refresh``) so the visible window is rebuilt.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from typing import Any
 
 from .widget import Container, Widget, callback_name

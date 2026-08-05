@@ -76,25 +76,31 @@ public class MainActivity extends Activity {
         }, "python-main").start();
     }
 
-    /** Build the tree off the JSON Python sent us and swap it in. */
+
+        /** Build the tree off the JSON Python sent us and swap it in. */
     void renderTree(final String json) {
         ui.post(new Runnable() {
             @Override
             public void run() {
                 try {
                     JSONObject root = new JSONObject(json);
+
                     View existing = container.getChildCount() == 1
-                            ? container.getChildAt(0) : null;
+                            ? container.getChildAt(0)
+                            : null;
+
                     // Patch the live views when the structure is unchanged:
                     // this preserves scroll position and keyboard focus.
                     if (existing != null && builder.update(existing, root)) {
                         return;
                     }
+
                     View view = builder.build(root);
                     container.removeAllViews();
                     container.addView(view, new FrameLayout.LayoutParams(
                             ViewGroup.LayoutParams.MATCH_PARENT,
-                            ViewGroup.LayoutParams.MATCH_PARENT));
+                            ViewGroup.LayoutParams.MATCH_PARENT
+                    ));
                 } catch (Exception error) {
                     Log.e(TAG, "render failed", error);
                     showPlaceholder("Render error:\n" + error);

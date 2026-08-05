@@ -15,6 +15,8 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import threading
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -61,12 +63,15 @@ class Storage:
     :meth:`get`/:meth:`set`; ``in``/``del`` work as expected.
     """
 
-    __slots__ = ("_path", "_data", "_loaded")
+    __slots__ = ("_path", "_data", "_loaded", "_lock")
 
     def __init__(self, path: str | Path | None = None) -> None:
         self._path = Path(path) if path is not None else default_storage_path()
         self._data: dict[str, Any] = {}
         self._loaded = False
+        # A re-entrant lock protects read-modify-write sequences made by jobs,
+        # timers and HTTP callbacks in the same application process.
+        self._lock = threading.RLock()
 
     # -- lifecycle ---------------------------------------------------------
     @property
@@ -75,79 +80,86 @@ class Storage:
         return self._path
 
     def _load(self) -> None:
-        if self._loaded:
-            return
-        self._loaded = True
-        try:
-            data = json.loads(self._path.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                self._data.update(data)
-        except (OSError, ValueError):
-            # Missing or corrupt store = start fresh; the next save rewrites it.
-            self._data = {}
+        with self._lock:
+            if self._loaded:
+                return
+            self._loaded = True
+            try:
+                data = json.loads(self._path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    self._data.update(data)
+            except (OSError, ValueError):
+                # Missing or corrupt store = start fresh; the next save rewrites it.
+                self._data = {}
 
     def save(self) -> None:
-        """Persist the store to disk atomically."""
-        self._load()
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        fd, temp_name = tempfile.mkstemp(
-            dir=str(self._path.parent), suffix=".tmp", prefix=self._path.name
-        )
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                json.dump(self._data, handle, ensure_ascii=False, indent=2)
-            os.replace(temp_name, self._path)
-        except BaseException:
+        """Persist the store to disk atomically and under its process lock."""
+        with self._lock:
+            self._load()
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            fd, temp_name = tempfile.mkstemp(
+                dir=str(self._path.parent), suffix=".tmp", prefix=self._path.name
+            )
             try:
-                os.unlink(temp_name)
-            except OSError:
-                pass
-            raise
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    json.dump(self._data, handle, ensure_ascii=False, indent=2)
+                os.replace(temp_name, self._path)
+            except BaseException:
+                with suppress(OSError):
+                    os.unlink(temp_name)
+                raise
 
     # -- mapping API -------------------------------------------------------
     def get(self, key: str, default: Any = None) -> Any:
         """Return the value for ``key``, or ``default`` when absent."""
-        self._load()
-        return self._data.get(key, default)
+        with self._lock:
+            self._load()
+            return self._data.get(key, default)
 
     def set(self, key: str, value: Any) -> Any:
-        """Set ``key`` to ``value`` (persisting immediately) and return ``value``."""
-        if not key:
+        """Set ``key`` atomically within this process and persist it."""
+        if not isinstance(key, str) or not key:
             raise ValueError("storage key must be a non-empty string")
-        self._load()
-        self._data[key] = value
-        self.save()
-        return value
+        with self._lock:
+            self._load()
+            self._data[key] = value
+            self.save()
+            return value
 
     def delete(self, key: str) -> bool:
         """Remove ``key`` and return whether it existed."""
-        self._load()
-        if key in self._data:
-            del self._data[key]
-            self.save()
-            return True
-        return False
+        with self._lock:
+            self._load()
+            if key in self._data:
+                del self._data[key]
+                self.save()
+                return True
+            return False
 
     def contains(self, key: str) -> bool:
         """Whether ``key`` is present."""
-        self._load()
-        return key in self._data
+        with self._lock:
+            self._load()
+            return key in self._data
 
     def clear(self) -> None:
         """Remove every entry and persist the empty store."""
-        self._data = {}
-        self._loaded = True
-        self.save()
+        with self._lock:
+            self._data = {}
+            self._loaded = True
+            self.save()
 
     def keys(self) -> list[str]:
         """All stored keys."""
-        self._load()
-        return list(self._data.keys())
+        with self._lock:
+            self._load()
+            return list(self._data.keys())
 
     def items(self) -> list[tuple[str, Any]]:
         """All ``(key, value)`` pairs."""
-        self._load()
-        return list(self._data.items())
+        with self._lock:
+            self._load()
+            return list(self._data.items())
 
     def __getitem__(self, key: str) -> Any:
         return self.get(key)

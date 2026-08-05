@@ -5,16 +5,15 @@ from __future__ import annotations
 
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from pathlib import Path
 
 import pytest
 
-from pymobile import App, HttpClient, HttpCache, Label
+from pymobile import App, HttpCache, HttpClient, Label
 from pymobile.core.bridge import StubBridge
 from pymobile.core.ui.preview import assert_snapshot, render_ascii, snapshot_path
 from pymobile.core.validation import (
-    Validator,
     ValidationError,
+    Validator,
     between,
     boolean,
     email,
@@ -70,7 +69,9 @@ def test_between_and_bounds():
     assert between(0, 10)(5) is None
     assert between(0, 10)(20) is not None
     assert between(0, 10)("abc") is not None
-    from pymobile.core.validation import min as vmin, max as vmax
+    from pymobile.core.validation import max as vmax
+    from pymobile.core.validation import min as vmin
+
     assert vmin(5)(7) is None
     assert vmin(5)(3) is not None
     assert vmax(5)(3) is None
@@ -235,8 +236,7 @@ def test_app_info_defaults():
 
 
 def test_app_info_custom():
-    app = App("MyApp", version="2.0.0", package="com.example.x",
-              bridge=StubBridge(verbose=False))
+    app = App("MyApp", version="2.0.0", package="com.example.x", bridge=StubBridge(verbose=False))
     assert app.info["version"] == "2.0.0"
     assert app.info["package"] == "com.example.x"
 

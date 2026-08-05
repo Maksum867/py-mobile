@@ -98,22 +98,30 @@ class Toolchain:
         """Keystore generator, used for the debug key."""
         return self._executable(self.java_home / "bin", "keytool")
 
-    @property
-    def clang(self) -> Path | None:
-        """NDK clang for arm64, or ``None`` when the NDK is absent.
-
-        Not a ``cached_property``: this dataclass uses ``slots=True``, which
-        leaves no ``__dict__`` for the cache to live in.
-        """
+    def clang_for(self, abi: str) -> Path | None:
+        """Return the NDK compiler matching an Android ABI, if installed."""
+        triplets = {
+            "arm64-v8a": "aarch64-linux-android",
+            "x86_64": "x86_64-linux-android",
+        }
+        try:
+            triplet = triplets[abi]
+        except KeyError as error:
+            raise ToolchainError(f"Unsupported ABI for NDK compilation: {abi!r}") from error
         if self.ndk is None:
             return None
         suffix = ".cmd" if platform.system() == "Windows" else ""
-        pattern = f"toolchains/llvm/prebuilt/*/bin/aarch64-linux-android21-clang{suffix}"
+        pattern = f"toolchains/llvm/prebuilt/*/bin/{triplet}21-clang{suffix}"
         return next(iter(sorted(self.ndk.glob(pattern))), None)
 
     @property
+    def clang(self) -> Path | None:
+        """Backward-compatible shorthand for the arm64 NDK compiler."""
+        return self.clang_for("arm64-v8a")
+
+    @property
     def has_ndk(self) -> bool:
-        """Whether the JNI bridge can be compiled."""
+        """Whether the arm64 JNI bridge can be compiled."""
         return self.clang is not None
 
     # -- validation --------------------------------------------------------

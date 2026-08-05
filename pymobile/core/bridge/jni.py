@@ -7,6 +7,7 @@ resolved once and cached, because ``autoclass`` lookups are not free.
 
 from __future__ import annotations
 
+import threading
 from functools import cached_property
 from typing import Any, ClassVar
 
@@ -31,6 +32,11 @@ class JNIBridge(Bridge):
 
     def __init__(self) -> None:
         self._classes: dict[str, Any] = {}
+        # Java owns a Runnable only after its run() method begins. Keep a
+        # strong Python reference until then: otherwise pyjnius may expose a
+        # freed PythonJavaClass to the Android main queue.
+        self._ui_runnables: dict[int, Any] = {}
+        self._ui_runnables_lock = threading.Lock()
 
     # -- plumbing ----------------------------------------------------------
     def _autoclass(self, path: str) -> Any:
@@ -184,6 +190,8 @@ class JNIBridge(Bridge):
     def _run_on_ui(self, action: Any) -> None:  # pragma: no cover - device-only path
         from jnius import PythonJavaClass, java_method  # type: ignore[import-not-found]
 
+        bridge = self
+
         class _Runnable(PythonJavaClass):  # type: ignore[misc]
             # pyjnius reads these class attributes; ClassVar keeps linters happy.
             __javainterfaces__: ClassVar[list[str]] = ["java/lang/Runnable"]
@@ -191,6 +199,21 @@ class JNIBridge(Bridge):
 
             @java_method("()V")  # type: ignore[untyped-decorator]
             def run(self) -> None:
-                action()
+                try:
+                    action()
+                finally:
+                    # Release exactly after Java invokes us, even when the UI
+                    # callback raises. This prevents both premature GC and a
+                    # permanent Python-side Runnable leak.
+                    with bridge._ui_runnables_lock:
+                        bridge._ui_runnables.pop(id(self), None)
 
-        self._activity.runOnUiThread(_Runnable())
+        runnable = _Runnable()
+        with self._ui_runnables_lock:
+            self._ui_runnables[id(runnable)] = runnable
+        try:
+            self._activity.runOnUiThread(runnable)
+        except Exception:
+            with self._ui_runnables_lock:
+                self._ui_runnables.pop(id(runnable), None)
+            raise

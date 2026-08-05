@@ -19,8 +19,20 @@ __all__ = ["SourceSet", "collect_sources"]
 
 _log = get_logger("compiler.collector")
 
-_ALWAYS_EXCLUDED_DIRS = frozenset({"__pycache__", ".git", ".hg", ".svn", ".mypy_cache",
-                                   ".pytest_cache", ".ruff_cache", ".venv", "venv", "node_modules"})
+_ALWAYS_EXCLUDED_DIRS = frozenset(
+    {
+        "__pycache__",
+        ".git",
+        ".hg",
+        ".svn",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".venv",
+        "venv",
+        "node_modules",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
