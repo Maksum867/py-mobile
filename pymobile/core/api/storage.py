@@ -162,7 +162,11 @@ class Storage:
             return list(self._data.items())
 
     def __getitem__(self, key: str) -> Any:
-        return self.get(key)
+        with self._lock:
+            self._load()
+            if key not in self._data:
+                raise KeyError(key)
+            return self._data[key]
 
     def __setitem__(self, key: str, value: Any) -> None:
         self.set(key, value)

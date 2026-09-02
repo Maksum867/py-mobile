@@ -6,8 +6,9 @@ A :class:`Theme` maps the framework's semantic colour names (``PRIMARY``,
 presets ship: :data:`Theme.LIGHT` and :data:`Theme.DARK`.
 
 Give an app a theme and read resolved colours with :meth:`Theme.color` (or the
-shorthand ``app.theme["PRIMARY"]``). Widgets pick up themed defaults when they
-build; a theme change redraws the visible screen just like a language change.
+shorthand ``app.theme["PRIMARY"]``). ``Color.PRIMARY`` itself is a constant;
+pass ``app.theme["PRIMARY"]`` into a ``Style`` to follow the active theme. A
+theme change redraws the visible screen just like a language change.
 """
 
 from __future__ import annotations

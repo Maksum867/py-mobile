@@ -199,17 +199,18 @@ class Image(Widget):
         if fit not in self.FITS:
             raise ValueError(f"fit must be one of {', '.join(self.FITS)}")
 
-        # Перевірка джерела
         self._validate_source(source)
 
         self.source = source
         self.fit = fit
 
     def _validate_source(self, source: str) -> None:
-        """Validate local paths while allowing web and data URLs.
+        """Validate local paths while allowing web, data and packaged assets.
 
         A ``file://`` URI is intentionally treated as a local path rather than
         blindly trusted: it remains subject to the same existence/type checks.
+        Relative paths that do not exist on the desktop are allowed — they are
+        typically assets that only appear inside the APK.
         """
         parsed = urlparse(source)
         if parsed.scheme in ("http", "https", "data"):
@@ -234,6 +235,9 @@ class Image(Widget):
             path = Path(source)
 
         if not path.exists():
+            # Packaged assets are not on the desktop filesystem.
+            if not path.is_absolute() and parsed.scheme == "":
+                return
             raise FileNotFoundError(f"Image resource file does not exist: '{source}'")
         if not path.is_file():
             raise IsADirectoryError(
@@ -885,8 +889,18 @@ class RadioButton(Widget):
             self.invalidate()
 
     def press(self) -> None:
-        """Simulate a tap; ignored while disabled."""
-        if self.enabled and self.on_press is not None:
+        """Simulate a tap; ignored while disabled.
+
+        When this radio lives inside a :class:`RadioGroup`, the group is
+        updated first so Python-layer tests and the web preview actually
+        change the selected value.
+        """
+        if not self.enabled:
+            return
+        parent = self.parent
+        if isinstance(parent, RadioGroup):
+            parent.select(self.text)
+        if self.on_press is not None:
             self.on_press()
 
     def props(self) -> dict[str, Any]:
@@ -1145,8 +1159,17 @@ class Link(Widget):
             self.invalidate()
 
     def press(self) -> None:
-        """Simulate a tap; ignored while disabled."""
-        if self.enabled and self.on_press is not None:
+        """Simulate a tap; ignored while disabled.
+
+        Opens ``url`` through the active platform bridge when one is set.
+        """
+        if not self.enabled:
+            return
+        if self.url:
+            from ...bridge import get_bridge
+
+            get_bridge().open_url(self.url)
+        if self.on_press is not None:
             self.on_press()
 
     def props(self) -> dict[str, Any]:
@@ -1197,8 +1220,27 @@ class DataTable(Widget):
         }
 
 
+def _looks_like_image_source(value: str) -> bool:
+    """Whether ``value`` is a path, URL or filename rather than initials."""
+    if not value:
+        return False
+    parsed = urlparse(value)
+    if parsed.scheme in ("http", "https", "data", "file"):
+        return True
+    if "/" in value or "\\" in value:
+        return True
+    lower = value.lower()
+    return lower.endswith(
+        (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".svg", ".ico")
+    )
+
+
 class Avatar(Widget):
-    """A round image or initial-avatar (e.g. a user's picture or initials)."""
+    """A round image or initial-avatar (e.g. a user's picture or initials).
+
+    ``Avatar("MK")`` is initials (as documented). Pass ``image=`` or a
+    path-like positional for a photo.
+    """
 
     type_name = "Avatar"
     __slots__ = ("source", "text", "size", "color", "background")
@@ -1208,6 +1250,7 @@ class Avatar(Widget):
         source: str = "",
         *,
         text: str = "",
+        image: str | None = None,
         size: int = 48,
         color: str = Color.BACKGROUND,
         background: str = Color.PRIMARY,
@@ -1216,6 +1259,17 @@ class Avatar(Widget):
         super().__init__(**kwargs)
         if size <= 0:
             raise ValueError("size must be positive")
+        # Docs: Avatar("MK") is initials. Avatar("MK", image=...) is a photo
+        # with a fallback glyph. A path-like positional is a source.
+        if image is not None:
+            if source and _looks_like_image_source(source):
+                raise ValueError("pass either source or image, not both")
+            if source and not text:
+                text = source
+            source = image
+        elif source and not text and not _looks_like_image_source(source):
+            text = source
+            source = ""
         if not source and not text:
             raise ValueError("Avatar needs a source or a text")
         self.source = source

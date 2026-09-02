@@ -22,6 +22,8 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
+from ..errors import PyMobileError
+
 __all__ = [
     "Validator",
     "ValidationError",
@@ -49,11 +51,12 @@ ValidatorFn = Callable[[Any], str | None]
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
-class ValidationError(Exception):
+class ValidationError(PyMobileError):
     """Raised by :meth:`Validator.validate_or_raise` when validation fails."""
 
     def __init__(self, errors: Mapping[str, str]) -> None:
-        super().__init__(", ".join(f"{k}: {v}" for k, v in errors.items()))
+        message = ", ".join(f"{k}: {v}" for k, v in errors.items())
+        super().__init__(message)
         self.errors = dict(errors)
 
 

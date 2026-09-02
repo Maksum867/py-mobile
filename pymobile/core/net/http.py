@@ -9,6 +9,7 @@ with backoff, a base URL and default headers.
 from __future__ import annotations
 
 import json as jsonlib
+import ssl
 import threading
 import time
 import urllib.error
@@ -158,10 +159,16 @@ class HttpFuture:
     def get(self, timeout: float | None = None) -> Response:
         """Block until the request finishes and return the :class:`Response`.
 
-        Raises :class:`NetworkError` if the request failed. ``timeout`` bounds
-        the wait (``None`` waits forever).
+        Raises :class:`TimeoutError` when ``timeout`` seconds elapse before the
+        request completes. Raises :class:`NetworkError` if the request failed.
+        ``timeout`` of ``None`` waits forever.
         """
-        self._done.wait(timeout)
+        finished = self._done.wait(timeout)
+        if not finished:
+            raise TimeoutError(
+                f"Request to {self._url} did not complete"
+                + (f" within {timeout} seconds" if timeout is not None else "")
+            )
         if self._error is not None:
             raise self._error
         if self._result is None:
@@ -238,6 +245,15 @@ class HttpClient:
     user_agent: str = f"PyMobile/{__import__('pymobile').__version__}"
     cache: HttpCache | None = field(default=None, repr=False)
     security: HttpSecurityPolicy = field(default_factory=HttpSecurityPolicy)
+
+    def __post_init__(self) -> None:
+        # Docs historically showed ``HttpClient(cache=app.storage)``. Accept a
+        # Storage (or any object with a ``path``) and wrap it in HttpCache.
+        cache = self.cache
+        if cache is None or isinstance(cache, HttpCache):
+            return
+        path = getattr(cache, "path", cache)
+        self.cache = HttpCache(path)
 
     # -- synchronous verbs -------------------------------------------------
     def get(self, url: str, *, params: Params | None = None, **kwargs: Any) -> Response:
@@ -396,7 +412,9 @@ class HttpClient:
             request.add_header(key, value)
         try:
             with urllib.request.urlopen(
-                request, timeout=timeout if timeout is not None else self.timeout
+                request,
+                timeout=timeout if timeout is not None else self.timeout,
+                context=_ssl_context(),
             ) as raw:
                 return self._to_response(raw.geturl(), raw.status, dict(raw.headers), raw.read())
         except urllib.error.HTTPError as exc:  # 4xx/5xx are valid responses here
@@ -485,14 +503,45 @@ class HttpClient:
             time.sleep(self.backoff * (2 ** (attempt - 1)))
 
 
+def _ssl_context() -> ssl.SSLContext:
+    """TLS context that prefers the packaged certifi bundle when available."""
+    try:
+        import certifi
+
+        return ssl.create_default_context(cafile=certifi.where())
+    except ImportError:
+        return ssl.create_default_context()
+
+
+def _decode_cached_body(raw: Any) -> bytes:
+    """Accept base64 (current) and the legacy JSON-array-of-bytes format."""
+    import base64
+
+    if raw is None:
+        return b""
+    if isinstance(raw, bytes):
+        return raw
+    if isinstance(raw, str):
+        try:
+            return base64.b64decode(raw)
+        except (ValueError, TypeError):
+            return raw.encode("utf-8")
+    if isinstance(raw, list):
+        return bytes(raw)
+    return bytes(raw)
+
+
 def _entry_to_response(entry: dict[str, Any], url: str, *, from_cache: bool = True) -> Response:
     """Rebuild a :class:`Response` from a cached entry, marking it as cached."""
-    content = bytes(entry.get("content", []))
+    content = _decode_cached_body(entry.get("content", b""))
+    encoding = entry.get("encoding", "utf-8")
+    if encoding == "base64":
+        encoding = "utf-8"
     return Response(
         status=int(entry.get("status", 0)),
         headers=dict(entry.get("headers", {})),
         content=content,
         url=url,
-        encoding=entry.get("encoding", "utf-8"),
+        encoding=encoding,
         from_cache=from_cache,
     )

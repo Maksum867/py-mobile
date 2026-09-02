@@ -18,7 +18,7 @@ Build it with ``pymobile build``.
 
 from __future__ import annotations
 
-__version__ = "0.6.1"
+__version__ = "0.6.3"
 __author__ = "MAKSYM KHLYSTUN"
 __license__ = "MIT"
 
@@ -88,6 +88,7 @@ from .errors import (
     BridgeError,
     ConfigError,
     NetworkError,
+    PermissionError_,
     PlatformError,
     PyMobileError,
     ResourceError,
@@ -185,6 +186,7 @@ __all__ = [
     "ConfigError",
     "BridgeError",
     "PlatformError",
+    "PermissionError_",
     "NetworkError",
     "ResourceError",
 ]

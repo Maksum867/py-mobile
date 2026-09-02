@@ -3,15 +3,13 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-# Published on PyPI as py-mobile; the import name and CLI command stay
-# `pymobile`.
 name = "pymobile-framework"
-version = "0.6.1"
+version = "0.6.3"
 description = "A small, fast and extensible Python framework for building Android applications."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
-authors = [{ name = "Maksym Khlystun" }]
+authors = [{ name = "Maksym Khlystun", email = "m02956682@gmail.com" }]
 keywords = ["android", "apk", "mobile", "framework", "ui", "compiler"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -25,6 +23,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Software Development :: Build Tools",
     "Topic :: Software Development :: User Interfaces",
     "Typing :: Typed",
@@ -54,6 +53,7 @@ Homepage = "https://github.com/Maksum867/py-mobile"
 Documentation = "https://github.com/Maksum867/py-mobile/blob/main/README.md"
 Source = "https://github.com/Maksum867/py-mobile/tree/main/pymobile"
 Changelog = "https://github.com/Maksum867/py-mobile/blob/main/CHANGELOG.md"
+Issues = "https://github.com/Maksum867/py-mobile/issues"
 
 [project.scripts]
 pymobile = "pymobile.cli:main"
@@ -93,6 +93,8 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "pymobile/tests/*" = ["B018"]  # attribute access is the assertion under test
+# Cyrillic letters in the transliteration table are the point of the file.
+"pymobile/compiler/scaffold.py" = ["RUF001"]
 
 [tool.mypy]
 python_version = "3.10"

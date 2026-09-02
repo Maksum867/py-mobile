@@ -67,6 +67,12 @@ def test_completed_http_callback_can_cancel_without_deadlock() -> None:
     assert future.cancelled
 
 
+def test_job_wait_times_out() -> None:
+    handle = JobHandle("slow", lambda: None)
+    with pytest.raises(TimeoutError, match="did not complete"):
+        handle.wait(timeout=0.01)
+
+
 def test_failed_repeating_job_completes_handle_with_error() -> None:
     manager = JobManager()
 

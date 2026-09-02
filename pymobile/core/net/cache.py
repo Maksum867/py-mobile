@@ -13,6 +13,7 @@ something rather than nothing. Use :class:`HttpCache` directly or hand it to
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import time
 from collections.abc import Mapping
@@ -73,13 +74,18 @@ class HttpCache:
         return (time.time() - float(entry.get("fetched_at", 0))) < ttl
 
     def set(self, url: str, status: int, headers: Mapping[str, str], content: bytes) -> None:
-        """Store a response for ``url``."""
+        """Store a response for ``url``.
+
+        The body is stored as base64 rather than a JSON array of bytes, which
+        used to inflate both disk and CPU for large payloads.
+        """
         self._storage.set(
             self._full_key(url),
             {
                 "status": status,
                 "headers": dict(headers),
-                "content": list(content),
+                "content": base64.b64encode(content).decode("ascii"),
+                "encoding": "base64",
                 "fetched_at": time.time(),
             },
         )

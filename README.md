@@ -117,9 +117,9 @@ device.
 pip install pymobile-framework
 ```
 
-> The distribution is named **`py-mobile`** because `pymobile` on PyPI belongs
-> to an unrelated project. The import name and the CLI command are still
-> `pymobile`.
+> The distribution is named **`pymobile-framework`** because `pymobile` on PyPI belongs
+> to an unrelated 2014 project. The import name and the CLI command are still
+> `pymobile`. The GitHub repository is `py-mobile`.
 
 Then install the Android toolchain, once per machine:
 
@@ -143,7 +143,7 @@ export ANDROID_HOME=~/Android/Sdk          # macOS/Linux
 $env:ANDROID_HOME = "C:\...\Android\Sdk"   # Windows PowerShell
 ```
 
-You need `build-tools;34.0.0` and `platforms;android-34`.
+You need `build-tools;35.0.0` and `platforms;android-35`.
 
 ### If the `pymobile` command is not found
 
@@ -707,8 +707,9 @@ app.theme["PRIMARY"]                 # resolved colour
 Built-in themes: `Theme.light()` and `Theme.dark()`. Custom themes use
 `Theme(name, colors)` with your own palette.
 
-The active theme is available everywhere via `app.theme`. Widgets pick up
-colours automatically when you use `Color.PRIMARY`, `Color.BACKGROUND` etc.
+The active theme is available everywhere via `app.theme`. `Color.PRIMARY` is a
+fixed hex constant (`#3F51B5`); for the live theme use `app.theme["PRIMARY"]`
+(or `app.theme.color("BACKGROUND")`).
 
 ---
 
@@ -762,7 +763,12 @@ Disk-backed cache for GET requests.
 ```python
 from pymobile import HttpClient
 
-client = HttpClient(base_url="https://api.example.com", cache=app.storage)
+from pymobile import HttpCache, HttpClient
+
+client = HttpClient(
+    base_url="https://api.example.com",
+    cache=HttpCache(),          # or HttpCache("http-cache.json")
+)
 
 # Cached request — returns instantly from cache if fresh
 response = client.get_cached("/items", ttl=300)   # 5 minutes
@@ -807,7 +813,7 @@ v = Validator({
 })
 
 errors = v.validate({"email": "bad", "name": ""})
-# {"email": ["invalid email"], "name": ["required"]}
+# {"email": "must be a valid email address", "name": "is required"}
 
 v.validate_or_raise({"email": "bad"})   # raises ValidationError
 ```
@@ -894,34 +900,18 @@ if results.get(Permission.POST_NOTIFICATIONS.value, False):
     self.app.notify("Title", "Body")
 ```
 
-3. **Build with JNI from source** — the prebuilt `libpymobile.so` may not
-   include the notification channel support. Use:
-
-```powershell
-# Windows PowerShell
-$env:JAVA_HOME = "C:\Users\You\.andro\jdk-17.0.13+11"
-$env:PYMOBILE_BUILD_JAVA = "1"
-$env:PYMOBILE_BUILD_JNI = "1"
-pymobile build --native --clean
-```
-
-```bash
-# macOS / Linux
-export JAVA_HOME=~/.andro/jdk-17.0.13+11
-PYMOBILE_BUILD_JAVA=1 PYMOBILE_BUILD_JNI=1 pymobile build --native --clean
-```
-
-> **Note:** `PYMOBILE_BUILD_JNI=1` requires the NDK. Install it with:
-> `pymobile setup-sdk --with-ndk`
-
-4. **Check device settings** — ensure notifications are enabled for the app:
+3. **Check device settings** — ensure notifications are enabled for the app:
    *Settings → Apps → Your App → Notifications*.
+
+A default `pymobile build --native` is enough. `DeviceServices.notify()`
+creates the notification channel on every post, so you do not need to rebuild
+the JNI bridge with `PYMOBILE_BUILD_JNI=1`. That flag is only for changing
+the C source (see [Contributing](#contributing)).
 
 ### Troubleshooting
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
-| No notification appears | Channel not created | Build with `PYMOBILE_BUILD_JNI=1` |
 | Permission dialog doesn't show | Missing from `pymobile.toml` | Add `POST_NOTIFICATIONS` to `permissions` |
 | `notify()` returns ID but nothing shows | System notifications disabled | Enable in device Settings → Apps → Notifications |
 | `SecurityException` in logcat | Permission not granted | Request permission at runtime |
@@ -1178,7 +1168,7 @@ source_dir = "."
 
 # --- Android platform ---
 min_sdk = 21                    # Android 5.0
-target_sdk = 34                 # Android 14
+target_sdk = 35                 # Android 15
 orientation = "portrait"        # portrait | landscape | sensor | user
 
 # Every permission requested at runtime must be listed here.
@@ -1208,13 +1198,13 @@ exclude = ["tests/**", "**/__pycache__/**"]
 | `entrypoint` | `main.py` | module to execute |
 | `source_dir` | `.` | root of your sources |
 | `min_sdk` | `21` | oldest supported Android |
-| `target_sdk` | `34` | Android version you target |
+| `target_sdk` | `35` | Android version you target |
 | `orientation` | `portrait` | screen orientation |
 | `permissions` | `["…INTERNET"]` | manifest permissions |
 | `icon` | *(none)* | path to a square PNG |
 | `abis` | `["arm64-v8a"]` | architectures |
 | `output_dir` | `build` | where the APK is written |
-| `optimize` | `true` | package `.pyc` |
+| `optimize` | `false` in `ProjectConfig`; `true` in the `init` template | package `.pyc` when enabled |
 | `strip_debug` | `true` | compile with `-OO` |
 | `exclude` | see above | glob patterns to skip |
 
@@ -1243,28 +1233,6 @@ pymobile build --native --no-optimize      # ship .py for debugging
 pymobile build --native --minimal-stdlib   # drop desktop-only stdlib
 pymobile build --native --no-ssl           # drop OpenSSL (no HTTPS)
 ```
-
-### Building with notifications support
-
-If your app uses notifications, build with JNI compiled from source. The
-prebuilt `libpymobile.so` may not include the notification channel support:
-
-```powershell
-# Windows PowerShell
-$env:JAVA_HOME = "C:\Users\You\.andro\jdk-17.0.13+11"
-$env:PYMOBILE_BUILD_JAVA = "1"
-$env:PYMOBILE_BUILD_JNI = "1"
-pymobile build --native --clean
-```
-
-```bash
-# macOS / Linux
-export JAVA_HOME=~/.andro/jdk-17.0.13+11
-PYMOBILE_BUILD_JAVA=1 PYMOBILE_BUILD_JNI=1 pymobile build --native --clean
-```
-
-> **Note:** `PYMOBILE_BUILD_JNI=1` requires the NDK. Install it with:
-> `pymobile setup-sdk --with-ndk`
 
 > Without `--native` you get a lightweight structural package used for quick
 > checks. **It does not install on a device.**
@@ -1331,7 +1299,7 @@ five densities (48, 72, 96, 144 and 192 px). Install the `icons` extra for
 high-quality resampling:
 
 ```bash
-pip install "py-mobile[icons]"
+pip install "pymobile-framework[icons]"
 ```
 
 Without it the icon is copied unscaled; the build still succeeds. With no icon
@@ -1528,9 +1496,9 @@ changed, so typing in a field does not lose focus.
 what you want on a remote machine, in a container, or when Tk is unavailable:
 
 ```bash
-pymobile run --web                 # http://127.0.0.1:8765
+pymobile run --web                 # http://0.0.0.0:8765 (reachable in containers/SSH)
 pymobile run --web --port 9000
-pymobile run --web --host 0.0.0.0  # open it from your phone on the same Wi-Fi
+pymobile run --web --host 127.0.0.1  # loopback only
 ```
 
 The page is plain HTML built from the same serialised tree the phone receives,
@@ -1618,8 +1586,9 @@ class Slider(Widget):
 
 ## Limitations
 
-- **arm64-v8a and x86_64 supported.** arm64 covers ~99% of active devices;
-  x86_64 is available for emulators and Chromebooks.
+- **arm64-v8a is the packaged prebuilt ABI.** `x86_64` is accepted in config
+  and reuses the arm64 launcher dex; a native `.so` for emulators still needs
+  `PYMOBILE_BUILD_JNI=1` and the NDK. There is no iOS backend.
 - **APK size is about 16.6 MB** (11.7 MB with `--minimal-stdlib --no-ssl`),
   dominated by the interpreter and standard library.
 - **Android 5.0 (API 21) minimum.**
@@ -1651,9 +1620,9 @@ denied it twice and Android has blocked further prompts. See
 [Permissions](#permissions).
 
 **Why don't notifications appear on the device?**
-Three things must all be true: (1) `POST_NOTIFICATIONS` is in `pymobile.toml`,
-(2) the permission is requested at runtime, and (3) the APK is built with
-`PYMOBILE_BUILD_JNI=1` so the notification channel is created. Also check that
+Two things must both be true: (1) `POST_NOTIFICATIONS` is in `pymobile.toml`,
+and (2) the permission is requested at runtime after the screen is visible.
+The default APK already creates the notification channel. Also check that
 notifications are enabled in *Settings → Apps → Your App → Notifications*.
 See [Notifications](#notifications).
 
@@ -1682,10 +1651,10 @@ No. `pymobile setup-sdk` downloads only the command-line tools it needs.
 
 ```bash
 git clone https://github.com/Maksum867/py-mobile.git
-cd pymobile
+cd py-mobile
 pip install -e ".[dev]"
 
-pytest                  # 331 tests
+pytest                  # unit tests
 ruff check pymobile     # linting
 mypy pymobile           # strict type checking
 ```

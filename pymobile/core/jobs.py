@@ -78,19 +78,40 @@ class JobHandle:
             self._done.set()
         self._cancel_fn()
 
+    @property
+    def result(self) -> Any:
+        """The job's return value, or ``None`` until it finishes successfully."""
+        return self._result
+
+    @property
+    def error(self) -> BaseException | None:
+        """The exception the job raised, if any."""
+        return self._error
+
     def then(
         self,
-        on_done: Callable[[Any], None],
+        on_done: Callable[[Any], None] | None = None,
         on_error: Callable[[BaseException], None] | None = None,
+        *,
+        on_success: Callable[[Any], None] | None = None,
     ) -> JobHandle:
-        """Register callbacks for completion; run immediately if already done."""
+        """Register callbacks for completion; run immediately if already done.
+
+        ``on_success`` is a documented alias of the positional ``on_done``
+        argument so the same keyword works on :class:`~pymobile.core.net.http.HttpFuture`.
+        """
+        if on_done is not None and on_success is not None:
+            raise TypeError("pass either on_done or on_success, not both")
+        done = on_done if on_done is not None else on_success
+        if done is None:
+            raise TypeError("then() requires on_done or on_success")
         callback: Callable[[], None] | None = None
         with self._lock:
             if self._cancelled:
                 return self
 
             def callback() -> None:
-                self._fire(on_done, on_error)
+                self._fire(done, on_error)
 
             if not self._done.is_set():
                 self._callbacks.append(callback)
@@ -102,8 +123,17 @@ class JobHandle:
         return self
 
     def wait(self, timeout: float | None = None) -> Any:
-        """Block until the job finishes and return its result."""
-        self._done.wait(timeout)
+        """Block until the job finishes and return its result.
+
+        Raises :class:`TimeoutError` when ``timeout`` seconds elapse before the
+        job completes. Raises the job's own exception if it failed.
+        """
+        finished = self._done.wait(timeout)
+        if not finished:
+            raise TimeoutError(
+                f"Job {self.id} did not complete"
+                + (f" within {timeout} seconds" if timeout is not None else "")
+            )
         if self._error is not None:
             raise self._error
         return self._result
@@ -160,7 +190,11 @@ class JobManager:
             raise RuntimeError("JobManager has been shut down")
         handle_id = name or job_id()
 
+        cancelled = threading.Event()
+
         def run() -> None:
+            if cancelled.is_set() or handle.cancelled:
+                return
             try:
                 result = fn()
                 handle._complete(result, None)
@@ -170,7 +204,7 @@ class JobManager:
                 with self._lock:
                     self._jobs.pop(handle_id, None)
 
-        handle = JobHandle(handle_id, cancel_fn=lambda: None)
+        handle = JobHandle(handle_id, cancel_fn=cancelled.set)
         with self._lock:
             self._jobs[handle_id] = handle
         threading.Thread(target=run, name=f"pymobile-job-{handle_id}", daemon=True).start()

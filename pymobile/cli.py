@@ -113,7 +113,10 @@ def cmd_build(args: argparse.Namespace) -> int:
         config.icon = args.icon
     if args.output:
         config.output_dir = args.output
-    config.optimize = getattr(args, "optimize", False)
+    if getattr(args, "optimize", False):
+        config.optimize = True
+    if getattr(args, "no_optimize", False):
+        config.optimize = False
     if getattr(args, "minimal_stdlib", False):
         config.minimal_stdlib = True
     if getattr(args, "no_ssl", False):
@@ -131,6 +134,10 @@ def cmd_build(args: argparse.Namespace) -> int:
         use_cache=not args.no_cache and not args.clean,
         native=native,
         on_stage=lambda stage: _out.info(f"{stage}…") if args.verbose else None,
+        keystore=Path(args.keystore) if getattr(args, "keystore", None) else None,
+        keystore_password=getattr(args, "ks_pass", None),
+        key_alias=getattr(args, "key_alias", None),
+        key_password=getattr(args, "key_pass", None),
     )
     result = pipeline.run()
 
@@ -505,6 +512,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
     from .compiler.toolchain import ToolchainError, find_toolchain
 
+    sdk_ok = False
     try:
         toolchain = find_toolchain()
         toolchain.verify()
@@ -514,6 +522,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         else:
             _out.ok("using the prebuilt native bridge (no NDK needed)")
         _out.info(f"native APK builds available: {_invocation()} build --native")
+        sdk_ok = True
     except (ToolchainError, PyMobileError) as exc:
         _out.warn(f"Android SDK not usable — only structural builds are available: {exc}")
         _out.hint("run `pymobile setup-sdk` to install it automatically")
@@ -521,7 +530,11 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     if problems:
         _out.error(f"{problems} problem(s) found")
         return 1
-    _out.ok("everything looks good")
+    if sdk_ok:
+        _out.ok("everything looks good")
+    else:
+        _out.ok("project configuration looks good")
+        _out.warn("Android SDK is not installed — native APK builds are unavailable")
     return 0
 
 
@@ -593,11 +606,23 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument(
         "--native",
         action="store_true",
-        help="build a real, signed, installable APK (needs the Android SDK/NDK)",
+        help=(
+            "build a real, signed, installable APK "
+            "(needs the Android SDK; NDK only to rebuild JNI)"
+        ),
     )
     build.add_argument("--clean", action="store_true", help="rebuild from scratch")
     build.add_argument("--no-cache", action="store_true", help="ignore the incremental cache")
     build.add_argument("--optimize", action="store_true", help="ship bytecode instead of sources")
+    build.add_argument(
+        "--no-optimize",
+        action="store_true",
+        help="ship .py sources even if pymobile.toml has optimize = true",
+    )
+    build.add_argument("--keystore", metavar="PATH", help="release keystore for --native signing")
+    build.add_argument("--ks-pass", metavar="PASS", help="keystore password (do not commit this)")
+    build.add_argument("--key-alias", metavar="ALIAS", help="key alias inside the keystore")
+    build.add_argument("--key-pass", metavar="PASS", help="key password (defaults to --ks-pass)")
     build.add_argument(
         "--minimal-stdlib",
         action="store_true",
@@ -622,7 +647,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="serve a clickable preview in the browser (works over SSH)",
     )
     run.add_argument("--port", type=int, default=8765, help="port for --web (default: 8765)")
-    run.add_argument("--host", default="127.0.0.1", help="interface for --web")
+    run.add_argument(
+        "--host",
+        default="0.0.0.0",
+        help="interface for --web (default: 0.0.0.0, reachable over SSH)",
+    )
     run.set_defaults(func=cmd_run)
 
     watch = sub.add_parser(

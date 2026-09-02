@@ -166,6 +166,20 @@ class TestAssetSelection:
         assert not any("__pycache__" in n for n in names)
         assert not any("/tests/" in n for n in names)
 
+    def test_release_keystore_requires_password(self, tmp_path: Path) -> None:
+        from pymobile.compiler.backends.native import NativeBackend
+
+        config = ProjectConfig(root=tmp_path, package="com.example.a")
+        toolchain = Toolchain(tmp_path, tmp_path, tmp_path / "j.jar", tmp_path / "jdk")
+        backend = NativeBackend(
+            config,
+            toolchain,
+            tmp_path / "runtime",
+            keystore=tmp_path / "release.jks",
+        )
+        assert backend._release_keystore is True
+        assert backend._keystore_password_given is False
+
     def test_stdlib_excludes_are_applied(self) -> None:
         from pymobile.compiler.backends.native import STDLIB_EXCLUDES
 
@@ -610,6 +624,13 @@ class TestJdkArchives:
 
         assert set(_JDK_ARCHIVES) == {"Linux", "Windows", "Darwin"}
 
+    def test_darwin_cmdline_tools_are_pinned(self) -> None:
+        from pymobile.compiler.sdk_installer import _CMDLINE_TOOLS, _CMDLINE_TOOLS_ARM
+
+        assert "Darwin" in _CMDLINE_TOOLS
+        assert "Darwin" in _CMDLINE_TOOLS_ARM
+        assert "Linux" in _CMDLINE_TOOLS_ARM
+
     def test_windows_archive_is_a_zip(self) -> None:
         from pymobile.compiler.sdk_installer import _JDK_ARCHIVES
 
@@ -882,7 +903,7 @@ class TestBuildRobustness:
 
         runtime = tmp_path / "runtime"
         (runtime / "lib").mkdir(parents=True, exist_ok=True)
-        # Гарантуємо наявність пребілт бібліотеки під час фолбеку
+        # Ensure the prebuilt library is present for the fallback path.
         (runtime / "lib" / "libpymobile.so").write_text("", encoding="utf-8")
 
         toolchain = Toolchain(
@@ -1091,6 +1112,12 @@ class TestDeviceFixes:
         assert "SSL_CERT_FILE" in source
         assert "etc', 'ssl', 'cert.pem'" in source
 
+    def test_python_runtime_reextracts_on_version_change(self) -> None:
+        source = self._java("PythonRuntime.java")
+        assert "currentVersionStamp" in source
+        assert "getLongVersionCode" in source
+        assert "readStamp" in source
+
     # -- scroll / keyboard -------------------------------------------------
     def test_renderer_updates_in_place(self) -> None:
         """Rebuilding every render reset scroll and closed the keyboard."""
@@ -1150,6 +1177,18 @@ class TestDeviceFixes:
 
     def test_waveforms_specify_amplitudes(self) -> None:
         assert "createWaveform(pattern, amplitudes, repeat)" in self._java("DeviceServices.java")
+
+    def test_notify_creates_the_channel_without_a_jni_rebuild(self) -> None:
+        """Java notify() must open the channel itself.
+
+        That is what lets a default `pymobile build --native` post
+        notifications without `PYMOBILE_BUILD_JNI=1`.
+        """
+        notify = _method_body(self._java("DeviceServices.java"), "static void notify(Context")
+        assert "ensureChannel(" in notify
+        jni = self._jni()
+        assert '{"notify", py_notify' in jni
+        assert '{"ensure_channel", py_ensure_channel' in jni
 
     def test_short_presets_are_perceptible(self) -> None:
         from pymobile.core.api.vibration import PRESETS

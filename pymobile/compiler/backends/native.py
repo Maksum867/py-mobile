@@ -149,12 +149,22 @@ class NativeBackend:
         python_runtime: Path,
         *,
         keystore: Path | None = None,
+        keystore_password: str | None = None,
+        key_alias: str | None = None,
+        key_password: str | None = None,
         abi: str = "arm64-v8a",
     ) -> None:
         self.config = config
         self.toolchain = toolchain
         self.python_runtime = python_runtime
+        #: True when the caller supplied a keystore path (release signing).
+        self._release_keystore = keystore is not None
+        #: True when a password was given; never silently reuse the debug one.
+        self._keystore_password_given = keystore_password is not None
         self.keystore = keystore
+        self.keystore_password = keystore_password or DEBUG_PASSWORD
+        self.key_alias = key_alias or DEBUG_KEY_ALIAS
+        self.key_password = key_password or keystore_password or DEBUG_PASSWORD
         #: The target ABI (e.g. "arm64-v8a" or "x86_64").
         self.abi = abi
         #: Non-fatal problems worth surfacing to the user.
@@ -514,6 +524,14 @@ class NativeBackend:
         )
 
         keystore = self.keystore or self._ensure_debug_keystore(workdir)
+        if self._release_keystore and not self._keystore_password_given:
+            raise PyMobileError(
+                "A release keystore was given without --ks-pass",
+                hint=(
+                    "Pass --ks-pass (and --key-alias / --key-pass). "
+                    "The debug password is not used."
+                ),
+            )
         output.parent.mkdir(parents=True, exist_ok=True)
         _run(
             [
@@ -521,10 +539,12 @@ class NativeBackend:
                 "sign",
                 "--ks",
                 keystore,
+                "--ks-key-alias",
+                self.key_alias,
                 "--ks-pass",
-                f"pass:{DEBUG_PASSWORD}",
+                f"pass:{self.keystore_password}",
                 "--key-pass",
-                f"pass:{DEBUG_PASSWORD}",
+                f"pass:{self.key_password}",
                 "--out",
                 output,
                 aligned,

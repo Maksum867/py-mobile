@@ -233,6 +233,8 @@ class App:
             widget.increment()
         elif kind == "decrement" and hasattr(widget, "decrement"):
             widget.decrement()
+        elif kind == "search" and hasattr(widget, "submit"):
+            widget.submit()
         self.events.emit(f"ui:{kind}", source=widget_id, value=value)
 
     def stop(self) -> None:

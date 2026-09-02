@@ -38,9 +38,67 @@ class ScaffoldResult:
     files: tuple[Path, ...]
 
 
+#: Ukrainian/Russian letters so non-Latin app names do not all collapse to "app".
+_CYRILLIC = str.maketrans(
+    {
+        "а": "a",
+        "б": "b",
+        "в": "v",
+        "г": "h",
+        "ґ": "g",
+        "д": "d",
+        "е": "e",
+        "є": "ie",
+        "ж": "zh",
+        "з": "z",
+        "и": "y",
+        "і": "i",
+        "ї": "i",
+        "й": "i",
+        "к": "k",
+        "л": "l",
+        "м": "m",
+        "н": "n",
+        "о": "o",
+        "п": "p",
+        "р": "r",
+        "с": "s",
+        "т": "t",
+        "у": "u",
+        "ф": "f",
+        "х": "kh",
+        "ц": "ts",
+        "ч": "ch",
+        "ш": "sh",
+        "щ": "shch",
+        "ь": "",
+        "ю": "iu",
+        "я": "ia",
+        "ъ": "",
+        "ы": "y",
+        "э": "e",
+    }
+)
+
+
 def slugify(name: str) -> str:
-    """Turn a display name into a lowercase identifier fragment."""
-    slug = re.sub(r"[^a-z0-9]+", "", name.lower())
+    """Turn a display name into a lowercase identifier fragment.
+
+    ASCII names keep their letters and digits only (``My Cool App!`` →
+    ``mycoolapp``). Names written in another script are transliterated so
+    ``Скарбничка`` becomes ``skarbnychka`` instead of the generic ``app``.
+    """
+    import unicodedata
+
+    lowered = name.lower()
+    slug = re.sub(r"[^a-z0-9]+", "", lowered)
+    if slug:
+        return slug
+    transliterated = unicodedata.normalize("NFKD", lowered).translate(_CYRILLIC)
+    ascii_only = unicodedata.normalize("NFKD", transliterated).encode("ascii", "ignore").decode(
+        "ascii"
+    )
+    slug = re.sub(r"[^a-z0-9]+", "", ascii_only)
     return slug or "app"
 
 

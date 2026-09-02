@@ -36,7 +36,7 @@ class TestManifest:
         sdk = ET.fromstring(build_manifest(project)).find("uses-sdk")
         assert sdk is not None
         assert sdk.get(f"{ANDROID}minSdkVersion") == "21"
-        assert sdk.get(f"{ANDROID}targetSdkVersion") == "34"
+        assert sdk.get(f"{ANDROID}targetSdkVersion") == "35"
 
     def test_permissions_deduplicated(self, tmp_path: Path) -> None:
         config = ProjectConfig(
@@ -469,6 +469,7 @@ class TestScaffold:
     def test_slugify_and_package(self) -> None:
         assert slugify("My Cool App!") == "mycoolapp"
         assert slugify("!!!") == "app"
+        assert slugify("Скарбничка") == "skarbnychka"
         assert default_package("My App") == "org.pymobile.myapp"
 
     def test_render_keeps_unknown_placeholders(self) -> None:

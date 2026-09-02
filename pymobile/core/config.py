@@ -43,7 +43,7 @@ class ProjectConfig:
 
     # -- android -----------------------------------------------------------
     min_sdk: int = 21
-    target_sdk: int = 34
+    target_sdk: int = 35
     orientation: str = "portrait"
     permissions: list[str] = field(default_factory=lambda: ["android.permission.INTERNET"])
     icon: str | None = None

@@ -35,30 +35,37 @@ _PAGE = """<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{title}</title>
 <style>
-  :root {{ color-scheme: light; }}
+  :root {{ color-scheme: {color_scheme}; }}
   * {{ box-sizing: border-box; }}
-  body {{ margin: 0; background: #eceff1; font: 15px/1.45 system-ui, sans-serif; }}
-  .phone {{ max-width: 420px; margin: 24px auto; background: #fff; min-height: 80vh;
+  body {{ margin: 0; background: {page_bg}; color: {text}; font: 15px/1.45 system-ui, sans-serif; }}
+  .phone {{ max-width: 420px; margin: 24px auto; background: {phone_bg}; min-height: 80vh;
            border-radius: 22px; box-shadow: 0 6px 32px rgba(0,0,0,.18); overflow: hidden;
-           display: flex; flex-direction: column; }}
-  .bar {{ background: #f7f8fa; border-bottom: 1px solid #e3e7ea; padding: 10px 16px;
+           display: flex; flex-direction: column; color: {text}; }}
+  .bar {{ background: {bar_bg}; border-bottom: 1px solid {line}; padding: 10px 16px;
           display: flex; align-items: center; gap: 12px; font-weight: 600; }}
   .bar button {{ font: inherit; font-weight: 500; border: 0; background: none;
-                 color: #3F51B5; cursor: pointer; padding: 0; }}
+                 color: {primary}; cursor: pointer; padding: 0; }}
   .screen {{ padding: 16px; flex: 1; }}
-  .status {{ background: #f7f8fa; border-top: 1px solid #e3e7ea; padding: 6px 16px;
-             min-height: 28px; color: #607d8b; font-size: 13px; }}
+  .status {{ background: {bar_bg}; border-top: 1px solid {line}; padding: 6px 16px;
+             min-height: 28px; color: {muted}; font-size: 13px; }}
   .row {{ display: flex; }}
   .col {{ display: flex; flex-direction: column; }}
   .grid {{ display: grid; }}
   button.w {{ font: inherit; padding: 9px 14px; border-radius: 8px; cursor: pointer;
-              border: 1px solid #c8ccd0; background: #fafbfc; width: 100%; }}
+              border: 1px solid {line}; background: {bar_bg}; color: {text}; width: 100%; }}
   button.w:disabled {{ opacity: .45; cursor: not-allowed; }}
-  input.w {{ font: inherit; padding: 8px 10px; border: 1px solid #c8ccd0;
-             border-radius: 8px; width: 100%; }}
+  input.w, textarea.w, select.w {{ font: inherit; padding: 8px 10px; border: 1px solid {line};
+             border-radius: 8px; width: 100%; background: {phone_bg}; color: {text}; }}
   progress.w {{ width: 100%; height: 10px; }}
-  hr.w {{ border: 0; border-top: 1px solid rgba(0,0,0,.12); margin: 8px 0; width: 100%; }}
-  .muted {{ color: #78909c; }}
+  hr.w {{ border: 0; border-top: 1px solid {line}; margin: 8px 0; width: 100%; }}
+  .muted {{ color: {muted}; }}
+  table.w {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
+  table.w th, table.w td {{ border: 1px solid {line}; padding: 6px 8px; text-align: left; }}
+  a.w {{ color: {primary}; }}
+  .avatar {{ display: inline-flex; align-items: center; justify-content: center;
+             border-radius: 50%; font-weight: 600; }}
+  .seg {{ display: flex; gap: 0; }}
+  .seg button {{ flex: 1; border-radius: 0; }}
 </style>
 </head>
 <body>
@@ -181,7 +188,7 @@ def render_html(node: dict[str, Any]) -> str:
     children = node.get("children", ())
     inner = "".join(render_html(child) for child in children)
 
-    if kind in ("Column", "Container", "SafeArea", "Stack"):
+    if kind in ("Column", "Container", "SafeArea", "Stack", "RadioGroup", "List"):
         gap = props.get("spacing", 0)
         align = _alignment(props.get("cross_align"))
         extra = f"gap:{gap}px;align-items:{align};{css}"
@@ -245,6 +252,13 @@ def render_html(node: dict[str, Any]) -> str:
         value = escape(str(props.get("value", "")), quote=True)
         placeholder = escape(str(props.get("placeholder", "")), quote=True)
         kind_attr = "password" if props.get("password") else "text"
+        if props.get("multiline"):
+            body = escape(str(props.get("value", "")))
+            return (
+                f'<textarea class="w" data-wid="{widget_id}" placeholder="{placeholder}"'
+                f'{disabled} style="{css}" '
+                f"oninput=\"send('{widget_id}','change',this.value)\">{body}</textarea>"
+            )
         return (
             f'<input class="w" type="{kind_attr}" data-wid="{widget_id}" value="{value}" '
             f'placeholder="{placeholder}"{disabled} style="{css}" '
@@ -273,13 +287,172 @@ def render_html(node: dict[str, Any]) -> str:
     if kind == "Spacer":
         return f'<div style="height:{props.get("size", 8)}px;flex:0 0 auto"></div>'
 
+    if kind == "Slider":
+        minimum = props.get("minimum", 0)
+        maximum = props.get("maximum", 100)
+        value = props.get("value", 0)
+        return (
+            f'<input class="w" type="range" data-wid="{widget_id}" min="{minimum}" '
+            f'max="{maximum}" value="{value}"{disabled} style="{css}" '
+            f"oninput=\"send('{widget_id}','change',this.value)\">"
+        )
+
+    if kind == "Checkbox":
+        checked = " checked" if props.get("checked") else ""
+        return (
+            f'<label style="display:flex;gap:8px;align-items:center;{css}">'
+            f'<input type="checkbox" data-wid="{widget_id}"{checked}{disabled} '
+            f"onchange=\"send('{widget_id}','toggle',this.checked?'true':'false')\">"
+            f"</label>"
+        )
+
+    if kind == "RatingBar":
+        rating = props.get("rating", 0)
+        maximum = int(props.get("maximum", 5) or 5)
+        stars = "".join(
+            f'<button type="button" data-wid="{widget_id}"{disabled} '
+            f"onclick=\"send('{widget_id}','change','{i}')\">"
+            f"{'★' if i <= float(rating or 0) else '☆'}</button>"
+            for i in range(1, maximum + 1)
+        )
+        return f'<div style="display:flex;gap:2px;{css}">{stars}</div>'
+
+    if kind == "Dropdown":
+        options = props.get("options") or []
+        selected = str(props.get("value", ""))
+        items = "".join(
+            f'<option value="{escape(str(opt), quote=True)}"'
+            f'{" selected" if str(opt) == selected else ""}>{escape(str(opt))}</option>'
+            for opt in options
+        )
+        return (
+            f'<select class="w" data-wid="{widget_id}"{disabled} style="{css}" '
+            f"onchange=\"send('{widget_id}','change',this.value)\">{items}</select>"
+        )
+
+    if kind == "Chip":
+        label = escape(str(props.get("text", "")))
+        selected = " font-weight:700;" if props.get("selected") else ""
+        return (
+            f'<button class="w" data-wid="{widget_id}"{disabled} '
+            f'style="border-radius:999px;{selected}{css}" '
+            f"onclick=\"send('{widget_id}','press','')\">{label}</button>"
+        )
+
+    if kind == "Badge":
+        label = escape(str(props.get("text", "")))
+        bg = _css_colour(str(props.get("background", "#3F51B5")))
+        fg = _css_colour(str(props.get("color", "#FFFFFF")))
+        return (
+            f'<span data-wid="{widget_id}" style="display:inline-block;padding:2px 8px;'
+            f'border-radius:999px;background:{bg};color:{fg};font-size:12px;{css}">'
+            f"{label}</span>"
+        )
+
+    if kind == "Stepper":
+        value = escape(str(props.get("value", 0)))
+        return (
+            f'<div data-wid="{widget_id}" style="display:flex;gap:8px;align-items:center;{css}">'
+            f'<button class="w" style="width:auto"{disabled} '
+            f"onclick=\"send('{widget_id}','decrement','')\">-</button>"
+            f"<span>{value}</span>"
+            f'<button class="w" style="width:auto"{disabled} '
+            f"onclick=\"send('{widget_id}','increment','')\">+</button>"
+            f"</div>"
+        )
+
+    if kind == "SearchBar":
+        value = escape(str(props.get("value", "")), quote=True)
+        placeholder = escape(str(props.get("placeholder", "")), quote=True)
+        return (
+            f'<input class="w" type="search" data-wid="{widget_id}" value="{value}" '
+            f'placeholder="{placeholder}"{disabled} style="{css}" '
+            f"oninput=\"send('{widget_id}','change',this.value)\" "
+            f"onkeydown=\"if(event.key==='Enter')send('{widget_id}','search',this.value)\">"
+        )
+
+    if kind == "RadioButton":
+        checked = " checked" if props.get("selected") else ""
+        label = escape(str(props.get("text", "")))
+        return (
+            f'<label style="display:flex;gap:8px;align-items:center;{css}">'
+            f'<input type="radio" data-wid="{widget_id}"{checked}{disabled} '
+            f"onchange=\"send('{widget_id}','press','')\">"
+            f"<span>{label}</span></label>"
+        )
+
+    if kind == "SegmentedButtons":
+        options = props.get("options") or []
+        selected = str(props.get("value", ""))
+        buttons = "".join(
+            f'<button class="w" data-wid="{widget_id}"{disabled} '
+            f'style="{"font-weight:700;" if str(opt) == selected else ""}" '
+            f"onclick=\"send('{widget_id}','change','{escape(str(opt), quote=True)}')\">"
+            f"{escape(str(opt))}</button>"
+            for opt in options
+        )
+        return f'<div class="seg" style="{css}">{buttons}</div>'
+
+    if kind == "ProgressText":
+        text = escape(str(props.get("text", "")))
+        maximum = props.get("maximum", 100) or 100
+        value = props.get("value", 0)
+        return (
+            f'<div data-wid="{widget_id}" style="{css}">'
+            f'<progress class="w" max="{maximum}" value="{value}"></progress>'
+            f'<div class="muted">{text}</div></div>'
+        )
+
+    if kind == "Link":
+        label = escape(str(props.get("text", "")))
+        url = escape(str(props.get("url", "")), quote=True)
+        return (
+            f'<a class="w" data-wid="{widget_id}" href="{url or "#"}" '
+            f'style="{css}" '
+            f"onclick=\"event.preventDefault();send('{widget_id}','press','')\">{label}</a>"
+        )
+
+    if kind == "DataTable":
+        headers = "".join(f"<th>{escape(str(h))}</th>" for h in (props.get("headers") or []))
+        rows = "".join(
+            "<tr>" + "".join(f"<td>{escape(str(c))}</td>" for c in row) + "</tr>"
+            for row in (props.get("rows") or [])
+        )
+        return (
+            f'<table class="w" data-wid="{widget_id}" style="{css}">'
+            f"<thead><tr>{headers}</tr></thead><tbody>{rows}</tbody></table>"
+        )
+
+    if kind == "Avatar":
+        text = escape(str(props.get("text", "") or "?"))
+        size = int(props.get("size", 48) or 48)
+        bg = _css_colour(str(props.get("background", "#3F51B5")))
+        fg = _css_colour(str(props.get("color", "#FFFFFF")))
+        return (
+            f'<div class="avatar" data-wid="{widget_id}" '
+            f'style="width:{size}px;height:{size}px;background:{bg};color:{fg};{css}">'
+            f"{text}</div>"
+        )
+
+    if kind == "ListTile":
+        title = escape(str(props.get("title", "")))
+        subtitle = escape(str(props.get("subtitle", "")))
+        trailing = escape(str(props.get("trailing", "")))
+        return (
+            f'<button class="w" data-wid="{widget_id}"{disabled} style="text-align:left;{css}" '
+            f"onclick=\"send('{widget_id}','press','')\">"
+            f"<div>{title}</div>"
+            f'<div class="muted">{subtitle}</div>'
+            f'<div class="muted">{trailing}</div></button>'
+        )
+
     return f'<div class="muted">&lt;{escape(kind)}&gt;</div>'
 
 
 class WebPreview:
     """Serves an application to a browser and feeds interactions back."""
 
-    def __init__(self, app: App, *, host: str = "127.0.0.1", port: int = 8765) -> None:
+    def __init__(self, app: App, *, host: str = "0.0.0.0", port: int = 8765) -> None:
         self.app = app
         self.host = host
         self.port = port
@@ -316,6 +489,31 @@ class WebPreview:
             "status": status,
         }
 
+    def _theme_vars(self) -> dict[str, str]:
+        """Chrome colours that follow ``App(theme=...)``."""
+        theme = getattr(self.app, "theme", None)
+        dark = bool(getattr(theme, "is_dark", False))
+        colour = getattr(theme, "color", None)
+
+        def pick(name: str, light: str, dark_value: str) -> str:
+            if colour is not None:
+                try:
+                    return str(colour(name))
+                except Exception:
+                    pass
+            return dark_value if dark else light
+
+        return {
+            "color_scheme": "dark" if dark else "light",
+            "page_bg": "#121212" if dark else "#eceff1",
+            "phone_bg": pick("BACKGROUND", "#fff", "#121212"),
+            "bar_bg": pick("SURFACE", "#f7f8fa", "#1e1e1e"),
+            "text": pick("TEXT", "#212121", "#EEEEEE"),
+            "muted": pick("TEXT_MUTED", "#607d8b", "#9e9e9e"),
+            "primary": pick("PRIMARY", "#3F51B5", "#9fa8da"),
+            "line": "#333" if dark else "#e3e7ea",
+        }
+
     def page(self) -> str:
         """The full HTML document."""
         state = self.state()
@@ -323,6 +521,7 @@ class WebPreview:
             title=escape(state["title"]),
             body=state["body"],
             version=state["version"],
+            **self._theme_vars(),
         )
 
     def dispatch(self, widget_id: str, kind: str, value: str) -> None:
@@ -405,7 +604,7 @@ class WebPreview:
         return server
 
 
-def serve(app: App, *, host: str = "127.0.0.1", port: int = 8765) -> WebPreview:
+def serve(app: App, *, host: str = "0.0.0.0", port: int = 8765) -> WebPreview:
     """Serve ``app`` in a browser, blocking until interrupted."""
     preview = WebPreview(app, host=host, port=port)
     preview.serve_forever()

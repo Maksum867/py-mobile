@@ -3,6 +3,55 @@
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project uses [semantic versioning](https://semver.org/).
 
+## [0.6.3] — 2026-09-02
+
+### Fixed
+
+- CPython Android runtime archives are now pinned by SHA-256 before extract,
+  matching the JDK and SDK command-line tools.
+- `notify()` creates the notification channel in Java, so a default
+  `pymobile build --native` is enough. `PYMOBILE_BUILD_JNI=1` is no longer
+  documented as a requirement for notifications.
+
+### Changed
+
+- Package metadata includes an author email and an Issues URL.
+
+## [0.6.2] — 2026-08-31
+
+### Fixed
+
+- App updates now re-extract Python assets: `PythonRuntime` stamps `.extracted`
+  with the installed `versionCode` instead of unpacking only once.
+- CI quality gate no longer imports a non-existent `notion.tools.release_audit`
+  module. `tools/release_audit.py` and `examples/device-smoke` ship in the repo.
+- `JobHandle.then(on_success=...)` works (alias of `on_done`).
+- `JobHandle.wait(timeout=)` and `HttpFuture.get(timeout=)` raise `TimeoutError`.
+- Cancelling a one-shot job skips `fn` if it has not started.
+- `Storage.__getitem__` raises `KeyError` for missing keys (matching `del`).
+- `ValidationError` subclasses `PyMobileError`; `PermissionError_` is exported.
+- `Avatar("MK")` is initials; `image=` is accepted as an alias of `source`.
+- `RadioButton.press()` updates the parent `RadioGroup`.
+- Web preview renders the 0.6.0 widgets, dark theme chrome, multiline
+  `TextInput` as `<textarea>`, and binds `--host 0.0.0.0` by default.
+- `pymobile build --no-optimize` exists; `--optimize` no longer blindly
+  overwrites `pymobile.toml`.
+- `pymobile build --keystore` / `--ks-pass` / `--key-alias` / `--key-pass`
+  sign with a release keystore.
+- `setup-sdk` downloads command-line tools on macOS (Intel and Apple Silicon)
+  and Temurin JDK 17 for Linux/macOS aarch64.
+- `slugify` transliterates Cyrillic so `Скарбничка` is not `app`.
+- `doctor` no longer claims "everything looks good" when the Android SDK is
+  missing.
+- HTTP cache stores bodies as base64; `HttpClient` builds an SSL context with
+  certifi; `cache=` accepts a `Storage` for the documented example.
+- Default `target_sdk` is 35. Docs name the PyPI package `pymobile-framework`.
+
+### Added
+
+- Trusted Publishing workflow (`.github/workflows/publish.yml`).
+- Python 3.14 classifier.
+
 ## [0.6.1] 
 
 ### Fixed — 2026-08-05

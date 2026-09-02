@@ -27,8 +27,8 @@ _log = get_logger("compiler.sdk")
 
 #: Everything needed to build an APK using the prebuilt JNI bridge (~450 MB).
 MINIMAL_PACKAGES = (
-    "platforms;android-34",
-    "build-tools;34.0.0",
+    "platforms;android-35",
+    "build-tools;35.0.0",
 )
 
 #: Adds the NDK, needed only to rebuild the native bridge from source (~2 GB).
@@ -36,6 +36,9 @@ REQUIRED_PACKAGES = (*MINIMAL_PACKAGES, "ndk;27.3.13750724")
 
 # URL plus a pinned SHA-256. A host without a pinned hash is deliberately
 # refused instead of extracting an unauthenticated developer toolchain.
+# Linux/Windows keep the 11076708 pin; Darwin uses the current command-line
+# tools (Homebrew android-commandlinetools 15859902) because 11076708 was
+# never checksummed for macOS in this project.
 _CMDLINE_TOOLS = {
     "Linux": (
         "https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip",
@@ -45,10 +48,26 @@ _CMDLINE_TOOLS = {
         "https://dl.google.com/android/repository/commandlinetools-win-11076708_latest.zip",
         "4d6931209eebb1bfb7c7e8b240a6a3cb3ab24479ea294f3539429574b1eec862",
     ),
+    "Darwin": (
+        "https://dl.google.com/android/repository/commandlinetools-mac_x86_64-15859902_latest.zip",
+        "c5a6378ab5cf7e0d5701921405115befff13e9ff7417fb588389338f8bd050f3",
+    ),
+}
+
+_CMDLINE_TOOLS_ARM = {
+    "Darwin": (
+        "https://dl.google.com/android/repository/commandlinetools-mac_arm64-15859902_latest.zip",
+        "835b62a26162b229b441d1f6d4680383815a270809eb33522c0d480fa5002c4e",
+    ),
+    "Linux": (
+        "https://dl.google.com/android/repository/commandlinetools-linux-15859902_latest.zip",
+        "4e4c464f145a7512b57d088ac6c278c03c9eea610886b35a5e0804e74eedf583",
+    ),
 }
 
 _JDK_BASE = "https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.13%2B11/"
-#: host system -> (archive name, is_zip)
+#: host system -> (archive name, is_zip, sha256). x64 defaults; ARM is in
+#: ``_JDK_ARCHIVES_ARM``. Tests assert these three keys exist.
 _JDK_ARCHIVES = {
     "Linux": (
         "OpenJDK17U-jdk_x64_linux_hotspot_17.0.13_11.tar.gz",
@@ -66,6 +85,37 @@ _JDK_ARCHIVES = {
         "840535070200a944a6b582d258ee84608bd25c9f2b5d1cdddb58dfadb019675a",
     ),
 }
+
+_JDK_ARCHIVES_ARM = {
+    "Linux": (
+        "OpenJDK17U-jdk_aarch64_linux_hotspot_17.0.13_11.tar.gz",
+        False,
+        "0c17fa4f14c0d2cc9e9334f996fccdddc5da4459d768f3105c7ff0283c47bf62",
+    ),
+    "Darwin": (
+        "OpenJDK17U-jdk_aarch64_mac_hotspot_17.0.13_11.tar.gz",
+        False,
+        "d8b2f77f755d06e81a540834c5be22ed86f3c8a51a20396606c074303f8f9e2d",
+    ),
+}
+
+
+def _is_arm() -> bool:
+    return platform.machine().lower() in {"arm64", "aarch64"}
+
+
+def _cmdline_tools_entry() -> tuple[str, str] | None:
+    system = platform.system()
+    if _is_arm() and system in _CMDLINE_TOOLS_ARM:
+        return _CMDLINE_TOOLS_ARM[system]
+    return _CMDLINE_TOOLS.get(system)
+
+
+def _jdk_archive_for_host() -> tuple[str, bool, str] | None:
+    system = platform.system()
+    if _is_arm() and system in _JDK_ARCHIVES_ARM:
+        return _JDK_ARCHIVES_ARM[system]
+    return _JDK_ARCHIVES.get(system)
 
 
 def default_sdk_home() -> Path:
@@ -123,10 +173,10 @@ def _ensure_jdk(home: Path) -> Path:
     if java_home and (Path(java_home) / "bin" / "javac").exists():
         return Path(java_home)
 
-    entry = _JDK_ARCHIVES.get(platform.system())
+    entry = _jdk_archive_for_host()
     if entry is None:
         raise PyMobileError(
-            f"No automatic JDK download for {platform.system()}",
+            f"No automatic JDK download for {platform.system()} {platform.machine()}",
             hint="Install Temurin/OpenJDK 17 and set JAVA_HOME.",
         )
     filename, is_zip, checksum = entry
@@ -175,7 +225,7 @@ def install_sdk(
     script = "sdkmanager.bat" if platform.system() == "Windows" else "sdkmanager"
     sdkmanager = tools_bin / script
     if not sdkmanager.exists():
-        entry = _CMDLINE_TOOLS.get(platform.system())
+        entry = _cmdline_tools_entry()
         if entry is None:
             raise PyMobileError(
                 f"No pinned command-line-tools checksum for {platform.system()}",

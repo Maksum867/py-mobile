@@ -13,7 +13,7 @@ source_dir = "."
 
 # Android platform settings.
 min_sdk = 21
-target_sdk = 34
+target_sdk = 35
 orientation = "portrait"
 
 permissions = [

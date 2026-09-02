@@ -60,6 +60,14 @@ def test_radio_group_on_select():
     assert events == ["B"]
 
 
+def test_radio_button_press_selects_in_group():
+    group = RadioGroup(RadioButton("A"), RadioButton("B"))
+    group._radios["B"].press()
+    assert group.value == "B"
+    assert group._radios["B"].selected
+    assert not group._radios["A"].selected
+
+
 def test_radio_group_value_in_ctor_does_not_fire_callback():
     """A constructor must not report setup as a user edit."""
     events = []
@@ -188,6 +196,18 @@ def test_avatar_text():
     av = Avatar(text="OK")
     assert av.text == "OK"
     assert av.size == 48
+
+
+def test_avatar_positional_initials():
+    av = Avatar("MK")
+    assert av.text == "MK"
+    assert av.source == ""
+
+
+def test_avatar_image_keyword():
+    av = Avatar("MK", image="assets/photo.png")
+    assert av.text == "MK"
+    assert av.source == "assets/photo.png"
 
 
 def test_avatar_requires_source_or_text():

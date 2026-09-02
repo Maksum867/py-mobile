@@ -89,11 +89,19 @@ class BuildPipeline:
         use_cache: bool = True,
         native: bool = False,
         on_stage: Callable[[str], None] | None = None,
+        keystore: Path | None = None,
+        keystore_password: str | None = None,
+        key_alias: str | None = None,
+        key_password: str | None = None,
     ) -> None:
         self.config = config
         self.use_cache = use_cache
         self.native = native
         self.on_stage = on_stage
+        self.keystore = keystore
+        self.keystore_password = keystore_password
+        self.key_alias = key_alias
+        self.key_password = key_password
         self.warnings: list[str] = []
         self._timings: list[StageTiming] = []
 

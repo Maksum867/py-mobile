@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from notion.tools.release_audit import audit
+from tools.release_audit import audit
 
 
 def wheel(path: Path, *names: str) -> None:

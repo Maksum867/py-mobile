@@ -162,7 +162,7 @@ class TestInfoCleanDoctor:
     ) -> None:
         create_project(tmp_path, "Healthy")
         assert main(["-c", str(tmp_path), "doctor"]) == 0
-        assert "everything looks good" in capsys.readouterr().out
+        assert "looks good" in capsys.readouterr().out
 
     def test_doctor_detects_missing_entrypoint(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -404,9 +404,24 @@ class TestWatch:
         assert args.ids is True
 
 
+class TestBuildFlags:
+    def test_no_optimize_and_keystore_flags_exist(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(
+            ["build", "--no-optimize", "--keystore", "release.jks", "--ks-pass", "secret"]
+        )
+        assert args.no_optimize is True
+        assert args.keystore == "release.jks"
+        assert args.ks_pass == "secret"
+
+
 class TestRunGui:
     def test_gui_flag_exists(self) -> None:
         assert build_parser().parse_args(["run", "--gui"]).gui is True
+
+    def test_web_host_defaults_to_all_interfaces(self) -> None:
+        args = build_parser().parse_args(["run", "--web"])
+        assert args.host == "0.0.0.0"
 
     def test_missing_tkinter_is_explained(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch

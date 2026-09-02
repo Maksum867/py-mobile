@@ -381,6 +381,187 @@ class GuiPreview:
             tk.Frame(parent, height=int(props.get("size", 8)), bg=background).pack()
             return
 
+        if kind in ("Checkbox",):
+            variable = tk.BooleanVar(value=bool(props.get("checked")))
+            box = tk.Checkbutton(
+                parent,
+                variable=variable,
+                bg=background,
+                state="normal" if enabled else "disabled",
+                command=lambda: self._dispatch(
+                    widget_id, "toggle", "true" if variable.get() else "false"
+                ),
+            )
+            box.pack(fill="x", pady=pad)
+            self._widgets[widget_id] = box
+            self._variables[widget_id] = variable
+            return
+
+        if kind == "Slider":
+            variable = tk.DoubleVar(value=float(props.get("value", 0)))
+            scale = tk.Scale(
+                parent,
+                from_=float(props.get("minimum", 0)),
+                to=float(props.get("maximum", 100)),
+                orient="horizontal",
+                variable=variable,
+                command=lambda v: self._dispatch(widget_id, "change", str(v)),
+            )
+            scale.pack(fill="x", pady=pad)
+            self._widgets[widget_id] = scale
+            self._variables[widget_id] = variable
+            return
+
+        if kind == "RatingBar":
+            tk.Label(
+                parent,
+                text="★" * int(float(props.get("rating", 0) or 0)),
+                bg=background,
+                fg=self._colour(style.get("color"), _PALETTE["text"]),
+                anchor="w",
+            ).pack(fill="x", pady=pad)
+            return
+
+        if kind == "Dropdown":
+            options = [str(o) for o in (props.get("options") or [])]
+            variable = tk.StringVar(value=str(props.get("value", options[0] if options else "")))
+            menu = tk.OptionMenu(
+                parent,
+                variable,
+                *(options or [""]),
+                command=lambda v: self._dispatch(widget_id, "change", str(v)),
+            )
+            menu.pack(fill="x", pady=pad)
+            self._widgets[widget_id] = menu
+            self._variables[widget_id] = variable
+            return
+
+        if kind in ("Chip", "Badge"):
+            tk.Label(
+                parent,
+                text=str(props.get("text", "")),
+                bg=background,
+                fg=self._colour(style.get("color"), _PALETTE["text"]),
+                anchor="w",
+            ).pack(fill="x", pady=pad)
+            return
+
+        if kind == "Stepper":
+            frame = tk.Frame(parent, bg=background)
+            frame.pack(fill="x", pady=pad)
+            tk.Button(
+                frame,
+                text="-",
+                command=lambda: self._dispatch(widget_id, "decrement", ""),
+            ).pack(side="left")
+            tk.Label(frame, text=str(props.get("value", 0)), bg=background).pack(
+                side="left", padx=8
+            )
+            tk.Button(
+                frame,
+                text="+",
+                command=lambda: self._dispatch(widget_id, "increment", ""),
+            ).pack(side="left")
+            return
+
+        if kind == "SearchBar":
+            variable = tk.StringVar(value=str(props.get("value", "")))
+            entry = tk.Entry(parent, textvariable=variable)
+            entry.pack(fill="x", pady=pad)
+            variable.trace_add(
+                "write", lambda *_: self._dispatch(widget_id, "change", variable.get())
+            )
+            self._widgets[widget_id] = entry
+            return
+
+        if kind == "RadioButton":
+            tk.Radiobutton(
+                parent,
+                text=str(props.get("text", "")),
+                value=str(props.get("text", "")),
+                bg=background,
+                command=lambda: self._dispatch(widget_id, "press", ""),
+            ).pack(anchor="w")
+            return
+
+        if kind == "RadioGroup":
+            frame = tk.Frame(parent, bg=background)
+            frame.pack(fill="x", pady=pad)
+            self._build_children(frame, node, background)
+            return
+
+        if kind == "SegmentedButtons":
+            frame = tk.Frame(parent, bg=background)
+            frame.pack(fill="x", pady=pad)
+            selected = str(props.get("value", ""))
+            for option in props.get("options") or []:
+                tk.Button(
+                    frame,
+                    text=str(option),
+                    relief="sunken" if str(option) == selected else "raised",
+                    command=lambda v=str(option): self._dispatch(widget_id, "change", v),
+                ).pack(side="left", expand=True, fill="x")
+            return
+
+        if kind == "ProgressText":
+            tk.Label(parent, text=str(props.get("text", "")), bg=background, anchor="w").pack(
+                fill="x", pady=pad
+            )
+            return
+
+        if kind == "Link":
+            tk.Button(
+                parent,
+                text=str(props.get("text", "")),
+                fg="#3F51B5",
+                relief="flat",
+                command=lambda: self._dispatch(widget_id, "press", ""),
+            ).pack(anchor="w")
+            return
+
+        if kind == "DataTable":
+            headers = " | ".join(str(h) for h in (props.get("headers") or []))
+            tk.Label(
+                parent,
+                text=headers,
+                bg=background,
+                anchor="w",
+                font=("TkDefaultFont", 9, "bold"),
+            ).pack(fill="x")
+            for row in props.get("rows") or []:
+                tk.Label(
+                    parent,
+                    text=" | ".join(str(c) for c in row),
+                    bg=background,
+                    anchor="w",
+                ).pack(fill="x")
+            return
+
+        if kind == "Avatar":
+            tk.Label(
+                parent,
+                text=str(props.get("text", "?")),
+                bg=self._colour(props.get("background"), "#3F51B5"),
+                fg=self._colour(props.get("color"), "#FFFFFF"),
+                width=4,
+                height=2,
+            ).pack(pady=pad)
+            return
+
+        if kind in ("List", "ListTile"):
+            if kind == "List":
+                frame = tk.Frame(parent, bg=background)
+                frame.pack(fill="both", expand=True, pady=pad)
+                self._build_children(frame, node, background)
+                return
+            tk.Button(
+                parent,
+                text=str(props.get("title", "")),
+                command=lambda: self._dispatch(widget_id, "press", ""),
+                anchor="w",
+            ).pack(fill="x", pady=pad)
+            return
+
         tk.Label(parent, text=f"<{kind}>", fg=_PALETTE["muted"], bg=background).pack(anchor="w")
 
     def _build_children(self, frame: tk.Misc, node: dict[str, Any], background: str) -> None:
