@@ -79,9 +79,27 @@ jobs:
             adb install -r examples/device-smoke/build/pymobile-device-smoke-0.1.0.apk
             adb logcat -c
             adb shell am start -W -n org.pymobile.devicesmoke/org.pymobile.app.MainActivity
-            sleep 12
-            adb logcat -d -s pymobile.stdout pymobile.stderr pymobile | tee device-logcat.txt
-            grep -q PYMOBILE_DEVICE_SMOKE_BOOT device-logcat.txt
+            # The first launch unpacks CPython and the standard library out of
+            # the APK. On an emulator that takes far longer than the twelve
+            # seconds this step used to sleep, so poll for the marker instead
+            # of guessing.
+            found=0
+            for attempt in $(seq 1 36); do
+              adb logcat -d -s pymobile pymobile.stdout pymobile.stderr > device-logcat.txt || true
+              if grep -q PYMOBILE_DEVICE_SMOKE_BOOT device-logcat.txt; then
+                echo "boot marker seen after $((attempt * 5))s"
+                found=1
+                break
+              fi
+              sleep 5
+            done
+            echo '----- pymobile logcat -----'
+            cat device-logcat.txt
+            if [ "$found" -ne 1 ]; then
+              echo '----- full logcat, last 400 lines -----'
+              adb logcat -d | tail -n 400 | tee device-logcat-full.txt
+              exit 1
+            fi
       - name: Upload Android diagnostics
         if: always()
         uses: actions/upload-artifact@v4
@@ -89,5 +107,6 @@ jobs:
           name: android-device-smoke-diagnostics
           path: |
             device-logcat.txt
+            device-logcat-full.txt
             examples/device-smoke/build/*.apk
           if-no-files-found: warn

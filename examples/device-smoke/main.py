@@ -50,6 +50,9 @@ class SmokeScreen(Screen):
 
 
 def main() -> None:
+    # Printed before the UI exists: if the run fails, this line separates
+    # "the interpreter never started" from "the screen never rendered".
+    print("PYMOBILE_DEVICE_SMOKE_PY_START")
     app = App(
         "PyMobile Device Smoke",
         package="org.pymobile.devicesmoke",
