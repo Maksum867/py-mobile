@@ -1,0 +1,29 @@
+# Smoke-test app built and launched by .github/workflows/quality.yml.
+# The job installs the APK on an API 34 x86_64 emulator and greps logcat for
+# the boot marker printed by main.py, so the identity below must stay in sync
+# with the workflow.
+
+[app]
+name = "PyMobile Device Smoke"
+package = "org.pymobile.devicesmoke"
+version = "0.1.0"
+version_code = 1
+
+entrypoint = "main.py"
+source_dir = "."
+
+min_sdk = 21
+target_sdk = 35
+orientation = "portrait"
+
+permissions = [
+    "android.permission.INTERNET",
+]
+
+# The emulator used in CI is x86_64; the arm64 slice keeps the same project
+# usable on a real phone.
+abis = ["x86_64", "arm64-v8a"]
+output_dir = "build"
+optimize = true
+strip_debug = true
+exclude = ["build/**", "**/__pycache__/**"]
