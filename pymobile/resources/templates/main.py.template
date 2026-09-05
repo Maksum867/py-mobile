@@ -2,8 +2,18 @@
 
 from __future__ import annotations
 
-from pymobile import App, Button, Column, EdgeInsets, Label, Screen, Style, Widget
-from pymobile.core.ui import Align, Color
+from pymobile import (
+    Align,
+    App,
+    Button,
+    Color,
+    Column,
+    EdgeInsets,
+    Label,
+    Screen,
+    Style,
+    Widget,
+)
 
 
 class HomeScreen(Screen):

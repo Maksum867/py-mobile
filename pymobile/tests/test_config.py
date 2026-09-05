@@ -157,7 +157,10 @@ class TestLoading:
 
 def test_version_matches_pyproject() -> None:
     """Guard against the package version drifting from pyproject.toml."""
-    import tomllib
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # Python 3.10
+        import tomli as tomllib  # type: ignore[no-redef]
 
     import pymobile
 

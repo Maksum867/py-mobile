@@ -7,16 +7,19 @@ but it owns none of their logic, so each part stays independently testable.
 
 from __future__ import annotations
 
+import re
+import shutil
 import threading
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
+from pathlib import Path
 from typing import Any
 
 from ..errors import PyMobileError
 from ..logging import configure, get_logger
 from .api.notifications import Notifications
 from .api.permissions import Permission, PermissionManager
-from .api.storage import Storage
+from .api.storage import Storage, default_storage_path
 from .api.vibration import Vibration
 from .bridge import Bridge, get_bridge
 from .dispatcher import UiDispatcher
@@ -38,6 +41,30 @@ _log = get_logger("app")
 #: interactive preview, the reloader) needs a handle on the running app
 #: without dictating where the author keeps theirs.
 _current: App | None = None
+
+
+def _app_store_path(package: str) -> Path:
+    """Where this application keeps its store when nothing was configured.
+
+    On a device each app already owns a private directory, but on a desktop
+    every PyMobile project used to share a single ``pymobile_store.json`` —
+    two projects open at once would overwrite each other's settings while you
+    developed them. The file is named after the application id instead.
+
+    A store written by an older version is adopted once, so upgrading does not
+    look like the user's data disappeared.
+    """
+    slug = re.sub(r"[^a-z0-9]+", "-", package.lower()).strip("-") or "app"
+    path = default_storage_path(f"{slug}.json")
+    if not path.exists():
+        legacy = default_storage_path()
+        if legacy.exists() and legacy != path:
+            with suppress(OSError):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(legacy, path)
+                _log.debug("adopted the shared store %s for %s", legacy, package)
+    return path
+
 
 
 class App:
@@ -75,7 +102,11 @@ class App:
         self.vibration = Vibration(self.bridge)
         self.permissions = PermissionManager(self.bridge)
         self.http = HttpClient(base_url=base_url)
-        self.storage = Storage(storage_path) if storage_path is not None else Storage()
+        self.storage = (
+            Storage(storage_path)
+            if storage_path is not None
+            else Storage(_app_store_path(self.package))
+        )
         self._theme = self._resolve_theme(theme)
         self._scheduler = Scheduler()
         self.jobs = JobManager()
@@ -223,18 +254,36 @@ class App:
             "ui event %s on %s (type=%s) value=%r", kind, widget_id, type(widget).__name__, value
         )
 
-        if kind == "press" and hasattr(widget, "press"):
-            widget.press()
-        elif kind == "change" and hasattr(widget, "set_value"):
-            widget.set_value(value)
-        elif kind == "toggle" and hasattr(widget, "set_checked"):
-            widget.set_checked(value == "true")
-        elif kind == "increment" and hasattr(widget, "increment"):
-            widget.increment()
-        elif kind == "decrement" and hasattr(widget, "decrement"):
-            widget.decrement()
-        elif kind == "search" and hasattr(widget, "submit"):
-            widget.submit()
+        # A handler that raises must not take the application down with it, and
+        # a malformed value from a front end (Stepper ← "abc") must not either.
+        # Event-bus handlers and timer callbacks are already protected this way;
+        # widget callbacks now match, so the contract holds everywhere.
+        try:
+            if kind == "press" and hasattr(widget, "press"):
+                widget.press()
+            elif kind == "long_press" and hasattr(widget, "long_press"):
+                widget.long_press()
+            elif kind == "change" and hasattr(widget, "set_value"):
+                widget.set_value(value)
+            elif kind == "toggle" and hasattr(widget, "set_checked"):
+                widget.set_checked(value == "true")
+            elif kind == "increment" and hasattr(widget, "increment"):
+                widget.increment()
+            elif kind == "decrement" and hasattr(widget, "decrement"):
+                widget.decrement()
+            elif kind == "search" and hasattr(widget, "submit"):
+                widget.submit()
+        except (TypeError, ValueError) as exc:
+            _log.warning(
+                "ignoring %s event for %s: value %r is not valid for a %s (%s)",
+                kind,
+                widget_id,
+                value,
+                type(widget).__name__,
+                exc,
+            )
+        except Exception:
+            _log.exception("handler for %s event on %s failed", kind, widget_id)
         self.events.emit(f"ui:{kind}", source=widget_id, value=value)
 
     def stop(self) -> None:

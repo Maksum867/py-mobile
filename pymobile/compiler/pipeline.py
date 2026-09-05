@@ -391,6 +391,12 @@ class BuildPipeline:
         The configuration part uses blake2b rather than the built-in ``hash``:
         string hashing is salted per interpreter process, which would make the
         fingerprint differ on every run and defeat the cache entirely.
+
+        The build **mode** is part of the key as well. A structural package and
+        a native APK are produced from identical sources and configuration, but
+        only one of them installs on a device; without the mode in the key,
+        ``build`` followed by ``build --native`` would report "up to date" and
+        hand back the structural artifact.
         """
         paths = list(sources.files)
         icon = self.config.icon_path
@@ -399,7 +405,8 @@ class BuildPipeline:
         config_digest = hashlib.blake2b(
             repr(sorted(self.config.to_dict().items())).encode("utf-8"), digest_size=8
         ).hexdigest()
-        return f"{fingerprint_files(paths)}:{config_digest}"
+        mode = "native" if self.native else "structural"
+        return f"{mode}:{fingerprint_files(paths)}:{config_digest}"
 
 
 def build_apk(

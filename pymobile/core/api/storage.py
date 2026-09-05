@@ -16,10 +16,12 @@ import json
 import os
 import tempfile
 import threading
-from contextlib import suppress
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Any
 
+from ...errors import ResourceError
 from ...logging import get_logger
 
 __all__ = ["Storage", "default_storage_path"]
@@ -27,7 +29,10 @@ __all__ = ["Storage", "default_storage_path"]
 _log = get_logger("api.storage")
 
 
-def default_storage_path(filename: str = "pymobile_store.json") -> Path:
+DEFAULT_STORE_FILENAME = "pymobile_store.json"
+
+
+def default_storage_path(filename: str = DEFAULT_STORE_FILENAME) -> Path:
     """Return a sensible default location for the store file.
 
     * Android: the app's private files dir (set via ``PYMOBILE_STORAGE_DIR``
@@ -50,27 +55,55 @@ def default_storage_path(filename: str = "pymobile_store.json") -> Path:
     return base / filename
 
 
+def _resolve_store_path(path: str | Path | None) -> Path:
+    """Turn a user-supplied location into the path of the store *file*.
+
+    ``storage_path`` is routinely read as "the folder to keep my data in" —
+    the environment override ``PYMOBILE_STORAGE_DIR`` really is a directory —
+    so a directory is accepted here and gets the default filename appended
+    instead of failing with ``IsADirectoryError`` from inside :meth:`save`.
+    """
+    if path is None:
+        return default_storage_path()
+    text = str(path)
+    resolved = Path(text)
+    looks_like_dir = text.endswith(("/", os.sep)) or (os.altsep and text.endswith(os.altsep))
+    if resolved.is_dir() or looks_like_dir:
+        return resolved / DEFAULT_STORE_FILENAME
+    return resolved
+
+
 class Storage:
     """A JSON-backed key/value store.
 
     Example::
 
         store = Storage()
-        store["taps"] = store.get("taps", 0) + 1
-        store.save()
+        store.increment("taps")          # atomic; safe from jobs and timers
+
+    ``path`` may be either the store **file** or a **directory** to keep it in;
+    a directory (existing, or a path ending in a separator) gets the default
+    filename appended, so both spellings below do the same thing::
+
+        Storage("/tmp/my-app/store.json")
+        Storage("/tmp/my-app")
 
     Keys must be non-empty strings. ``__getitem__``/``__setitem__`` map to
     :meth:`get`/:meth:`set`; ``in``/``del`` work as expected.
+
+    Individual operations are atomic. A read-modify-write **sequence** written
+    by hand is not — use :meth:`update`, :meth:`increment` or the
+    :meth:`transaction` context manager when several steps must be one unit.
     """
 
     __slots__ = ("_path", "_data", "_loaded", "_lock")
 
     def __init__(self, path: str | Path | None = None) -> None:
-        self._path = Path(path) if path is not None else default_storage_path()
+        self._path = _resolve_store_path(path)
         self._data: dict[str, Any] = {}
         self._loaded = False
-        # A re-entrant lock protects read-modify-write sequences made by jobs,
-        # timers and HTTP callbacks in the same application process.
+        # A re-entrant lock makes every single operation atomic, and backs the
+        # explicit `transaction()` block for multi-step sequences.
         self._lock = threading.RLock()
 
     # -- lifecycle ---------------------------------------------------------
@@ -96,14 +129,31 @@ class Storage:
         """Persist the store to disk atomically and under its process lock."""
         with self._lock:
             self._load()
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-            fd, temp_name = tempfile.mkstemp(
-                dir=str(self._path.parent), suffix=".tmp", prefix=self._path.name
-            )
+            try:
+                self._path.parent.mkdir(parents=True, exist_ok=True)
+                fd, temp_name = tempfile.mkstemp(
+                    dir=str(self._path.parent), suffix=".tmp", prefix=self._path.name
+                )
+            except OSError as exc:
+                raise ResourceError(
+                    f"Could not open the storage directory {self._path.parent}: {exc}",
+                    hint="Check that the path is writable and is not a file.",
+                ) from exc
             try:
                 with os.fdopen(fd, "w", encoding="utf-8") as handle:
                     json.dump(self._data, handle, ensure_ascii=False, indent=2)
                 os.replace(temp_name, self._path)
+            except IsADirectoryError as exc:
+                with suppress(OSError):
+                    os.unlink(temp_name)
+                raise ResourceError(
+                    f"The storage path {self._path} is a directory, not a file.",
+                    hint=(
+                        "Pass a file such as "
+                        f"{self._path / DEFAULT_STORE_FILENAME}, or a directory that "
+                        "does not yet exist; PYMOBILE_STORAGE_DIR takes the directory."
+                    ),
+                ) from exc
             except BaseException:
                 with suppress(OSError):
                     os.unlink(temp_name)
@@ -148,6 +198,59 @@ class Storage:
             self._data = {}
             self._loaded = True
             self.save()
+
+    # -- atomic sequences --------------------------------------------------
+    @contextmanager
+    def transaction(self) -> Iterator[Storage]:
+        """Hold the store lock for a multi-step read-modify-write.
+
+        Single operations are already atomic; this is for sequences that must
+        not interleave with a job, a timer or an HTTP callback::
+
+            with app.storage.transaction() as store:
+                cart = store.get("cart", [])
+                cart.append(item)
+                store["cart"] = cart
+
+        Writes inside the block persist as they happen, and the whole block is
+        serialised against other threads in this process.
+        """
+        with self._lock:
+            self._load()
+            yield self
+
+    def update(self, key: str, function: Callable[[Any], Any], default: Any = None) -> Any:
+        """Atomically replace ``key`` with ``function(current_value)``.
+
+        ``store.update("cart", lambda items: [*items, new], default=[])`` is
+        race-free where ``store["cart"] = store.get("cart", []) + [new]`` is
+        not: the read and the write happen under one lock.
+        """
+        with self._lock:
+            self._load()
+            new_value = function(self._data.get(key, default))
+            self.set(key, new_value)
+            return new_value
+
+    def increment(self, key: str, amount: float = 1) -> float:
+        """Atomically add ``amount`` to a numeric entry and return the result.
+
+        Missing or non-numeric entries start from zero.
+        """
+        def bump(current: Any) -> float:
+            numeric = isinstance(current, (int, float)) and not isinstance(current, bool)
+            return (current if numeric else 0) + amount
+
+        return float(self.update(key, bump, default=0))
+
+    def setdefault(self, key: str, default: Any) -> Any:
+        """Return ``key``, storing and returning ``default`` when it is absent."""
+        with self._lock:
+            self._load()
+            if key in self._data:
+                return self._data[key]
+            self.set(key, default)
+            return default
 
     def keys(self) -> list[str]:
         """All stored keys."""

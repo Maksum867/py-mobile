@@ -13,7 +13,12 @@ from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
-import tomllib
+# tomllib is standard from Python 3.11 on; 3.10 gets the same parser from the
+# tomli backport, which is where tomllib came from in the first place.
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - exercised on Python 3.10 only
+    import tomli as tomllib  # type: ignore[no-redef]
 
 from ..errors import ConfigError
 

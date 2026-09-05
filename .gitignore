@@ -5,6 +5,9 @@ __pycache__/
 
 # C extensions
 *.so
+# ...but the prebuilt JNI bridge is a shipped artifact: without it a clone
+# cannot run `pymobile build --native` at all.
+!pymobile/resources/android/prebuilt/**/*.so
 
 # Distribution / packaging
 .Python
@@ -82,8 +85,8 @@ Thumbs.db
 pymobile-demo/
 PYPI_INSTRUCTIONS.md
 notion/
-.pymobile-critical-backup-20260805-174900/
 tools/
 examples/
-.pymobile-audit-backup-20260902-194158/
-.pymobile-063-backup-20260902-204140/
+.pymobile-fix-backup-20260905-193825
+.pymobile-064-backup-20260905-224856
+MANIFEST.in

@@ -554,12 +554,19 @@ class GuiPreview:
                 frame.pack(fill="both", expand=True, pady=pad)
                 self._build_children(frame, node, background)
                 return
-            tk.Button(
+            tile = tk.Button(
                 parent,
                 text=str(props.get("title", "")),
                 command=lambda: self._dispatch(widget_id, "press", ""),
                 anchor="w",
-            ).pack(fill="x", pady=pad)
+            )
+            tile.pack(fill="x", pady=pad)
+            if props.get("long_pressable"):
+                # Right click stands in for touch-and-hold in the Tk window.
+                tile.bind(
+                    "<Button-3>",
+                    lambda _event, wid=widget_id: self._dispatch(wid, "long_press", ""),
+                )
             return
 
         tk.Label(parent, text=f"<{kind}>", fg=_PALETTE["muted"], bg=background).pack(anchor="w")

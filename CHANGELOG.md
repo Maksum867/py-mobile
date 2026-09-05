@@ -3,6 +3,65 @@
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project uses [semantic versioning](https://semver.org/).
 
+## [0.6.4] — 2026-09-05
+
+### Fixed
+
+- **The package could not be imported on Python 3.10 at all.** `core/config.py`
+  imported `tomllib`, which is standard only from 3.11, while the metadata
+  advertised `requires-python = ">=3.10"` and a 3.10 classifier. The import now
+  falls back to the `tomli` backport, which is declared as a conditional
+  dependency for 3.10 only.
+- **`.gitignore` swallowed the prebuilt JNI bridge.** A blanket `*.so` rule kept
+  `resources/android/prebuilt/arm64-v8a/libpymobile.so` out of git, so a fresh
+  clone could not run `pymobile build --native`. The path is now excluded from
+  the rule.
+- **`pytest` failed at collection on a fresh clone.** `test_release_audit.py`
+  imported `tools.release_audit`, and `tools/` is gitignored; the import is now
+  skipped when unavailable instead of breaking the whole run.
+
+- **The build mode is part of the cache key.** `pymobile build` followed by
+  `pymobile build --native` reported "up to date" and handed back the
+  structural package — a 52 KB artifact that cannot be installed on a device,
+  presented as a finished APK. The two modes are now cached separately.
+- **`storage_path` accepts a directory.** The environment override
+  `PYMOBILE_STORAGE_DIR` is a directory, so `App(storage_path=...)` was read as
+  one too and failed with a bare `IsADirectoryError` from inside `save()`.
+  Directories now get the default filename appended, and the remaining disk
+  errors are raised as `ResourceError` with a hint.
+- **Desktop stores are per application.** Every project shared
+  `~/.pymobile/pymobile_store.json` and overwrote its neighbours' settings; the
+  file is now named after the application id. An existing shared store is
+  adopted once so no data appears to vanish.
+- **`preview --png` renders non-Latin text.** Pillow's ASCII-only default font
+  turned Cyrillic and Greek interfaces into rows of boxes; a Unicode TrueType
+  face is located on the system instead, overridable with
+  `PYMOBILE_PREVIEW_FONT`.
+- **One broken widget no longer takes down a desktop render.** Failing widgets
+  are replaced by red error text everywhere, as the device renderer already
+  did, and exceptions raised by widget callbacks are logged rather than
+  propagated out of the event loop.
+- **Malformed values from a front end are ignored, not fatal.** A `Stepper`
+  receiving `"abc"` logs a warning instead of raising `ValueError` out of
+  `handle_ui_event`.
+- **Builds no longer embed the wall clock.** Entries added to the native APK
+  kept their source mtime, so two identical builds differed; every entry now
+  uses the fixed timestamp already used by the structural packager.
+- `Dropdown` and `SegmentedButtons` raise `ValueError` when constructed with a
+  `value` that is not among the options, instead of silently selecting the
+  first one — matching `set_value()` and the rest of the fail-fast API.
+- The `pymobile init` template imports `Align` and `Color` from `pymobile`
+  rather than the internal `pymobile.core.ui`.
+
+### Added
+
+- `Storage.transaction()`, `Storage.update()`, `Storage.increment()` and
+  `Storage.setdefault()` for read-modify-write sequences that must not race
+  with jobs, timers or HTTP callbacks.
+- `ListTile(on_long_press=...)` — a second per-row action, wired through the
+  Android renderer (with haptic feedback), the Tk window and the browser
+  preview.
+
 ## [0.6.3] — 2026-09-02
 
 ### Fixed

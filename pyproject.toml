@@ -1,21 +1,21 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "pymobile-framework"
-version = "0.6.3"
+version = "0.6.4"
 description = "A small, fast and extensible Python framework for building Android applications."
 readme = "README.md"
 requires-python = ">=3.10"
-license = { file = "LICENSE" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "Maksym Khlystun", email = "m02956682@gmail.com" }]
 keywords = ["android", "apk", "mobile", "framework", "ui", "compiler"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
@@ -33,7 +33,11 @@ classifiers = [
 # extra dependency costs APK size and build time. certifi is the one exception
 # — Android ships no OpenSSL cert file, so a CA bundle must be packaged or
 # every HTTPS request fails. It is a build-time input, not shipped as code.
-dependencies = ["certifi>=2024.2.2"]
+# tomli is only pulled in on Python 3.10, which predates stdlib tomllib.
+dependencies = [
+    "certifi>=2024.2.2",
+    "tomli>=2.0; python_version < '3.11'",
+]
 
 [project.optional-dependencies]
 icons = ["Pillow>=10.0"]

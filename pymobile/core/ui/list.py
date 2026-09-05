@@ -99,10 +99,18 @@ class ListTile(Widget):
     """A simple row with a title and optional subtitle/trailing text.
 
     A convenience building block for :class:`List` (and usable standalone).
+
+    ``on_long_press`` gives a row a second action — delete, archive, "edit
+    this one" — which a list otherwise cannot offer without a permanent button
+    on every row::
+
+        ListTile(title=item.name, on_press=self.toggle, on_long_press=self.delete)
+
+    The device vibrates on the long press, as Android users expect.
     """
 
     type_name = "ListTile"
-    __slots__ = ("_title", "subtitle", "trailing", "on_press")
+    __slots__ = ("_title", "subtitle", "trailing", "on_press", "on_long_press")
 
     def __init__(
         self,
@@ -111,6 +119,7 @@ class ListTile(Widget):
         subtitle: str = "",
         trailing: str = "",
         on_press: Callable[[], None] | None = None,
+        on_long_press: Callable[[], None] | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
@@ -118,6 +127,7 @@ class ListTile(Widget):
         self.subtitle = subtitle
         self.trailing = trailing
         self.on_press = on_press
+        self.on_long_press = on_long_press
 
     @property
     def title(self) -> str:
@@ -139,6 +149,11 @@ class ListTile(Widget):
         if self.enabled and self.on_press is not None:
             self.on_press()
 
+    def long_press(self) -> None:
+        """Simulate a long press; ignored while disabled."""
+        if self.enabled and self.on_long_press is not None:
+            self.on_long_press()
+
     def props(self) -> dict[str, Any]:
         return {
             **super().props(),
@@ -146,4 +161,6 @@ class ListTile(Widget):
             "subtitle": self.subtitle,
             "trailing": self.trailing,
             "on_press": callback_name(self.on_press),
+            "on_long_press": callback_name(self.on_long_press),
+            "long_pressable": self.on_long_press is not None,
         }

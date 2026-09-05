@@ -20,6 +20,7 @@ from contextvars import ContextVar
 from itertools import count
 from typing import TYPE_CHECKING, Any
 
+from ...logging import get_logger
 from .contract import SerializedValue, WidgetNode, WidgetProps
 from .style import Style
 
@@ -27,6 +28,20 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from .screen import Screen
 
 __all__ = ["Widget", "Container", "auto_id", "reset_id_counter", "widget_scope"]
+
+_log = get_logger("ui.widget")
+
+
+def _error_node(widget_id: str, type_name: str, exc: BaseException) -> WidgetNode:
+    """A red placeholder standing in for a widget that failed to render."""
+    return {
+        "type": "Label",
+        "id": widget_id or "error",
+        "visible": True,
+        "enabled": False,
+        "props": {"text": f"⚠ {type_name}: {type(exc).__name__}: {exc}"},
+        "style": {"color": "#F44336"},
+    }
 
 #: Fallback counter, used when no screen scope is active.
 _ids = count(1)
@@ -206,18 +221,39 @@ class Widget:
         return dict(self._props)
 
     def to_dict(self) -> WidgetNode:
-        """Serialise the widget subtree into the public renderer contract."""
+        """Serialise the widget subtree into the public renderer contract.
+
+        A widget that raises while serialising is replaced by red error text
+        naming the failure, and its siblings keep rendering. The device
+        renderer already behaves this way; doing it here means the desktop
+        preview, the browser preview and the snapshot tests agree with the
+        phone instead of losing the whole screen to one broken widget.
+        """
+        try:
+            props = self.props()
+        except Exception as exc:
+            _log.exception("widget %s (%s) failed to serialise", self.id, self.type_name)
+            return _error_node(self.id, self.type_name, exc)
         node: WidgetNode = {
             "type": self.type_name,
             "id": self.id,
             "visible": self._visible,
             "enabled": self._enabled,
-            "props": self.props(),
+            "props": props,
         }
-        style = self.style.to_dict()
+        try:
+            style = self.style.to_dict()
+        except Exception:  # pragma: no cover - defensive
+            style = {}
         if style:
             node["style"] = style
-        children = [child.to_dict() for child in self.children]
+        children = []
+        for child in self.children:
+            try:
+                children.append(child.to_dict())
+            except Exception as exc:  # a child that cannot even report its own failure
+                _log.exception("child of %s failed to serialise", self.id)
+                children.append(_error_node(getattr(child, "id", "?"), "Widget", exc))
         if children:
             node["children"] = children
         return node

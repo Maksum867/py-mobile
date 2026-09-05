@@ -580,9 +580,14 @@ class Dropdown(Widget):
             raise ValueError("options must be strings")
         self.options = list(options)
         self.on_select = on_select or on_change
+        # Fail fast, the way Style() does for a bad colour: silently swapping an
+        # unknown value for the first option hides a typo until someone notices
+        # the wrong row is selected on a phone.
+        if value is not None and value not in self.options:
+            raise ValueError(
+                f"value {value!r} is not one of the options {self.options!r}"
+            )
         self._value = value if value is not None else self.options[0]
-        if self._value not in self.options:
-            self._value = self.options[0]
 
     @property
     def value(self) -> str:
@@ -1015,9 +1020,14 @@ class SegmentedButtons(Widget):
             raise ValueError("options must not be empty")
         self.options = list(options)
         self.on_select = on_select or on_change
+        # Fail fast, the way Style() does for a bad colour: silently swapping an
+        # unknown value for the first option hides a typo until someone notices
+        # the wrong row is selected on a phone.
+        if value is not None and value not in self.options:
+            raise ValueError(
+                f"value {value!r} is not one of the options {self.options!r}"
+            )
         self._value = value if value is not None else self.options[0]
-        if self._value not in self.options:
-            self._value = self.options[0]
 
     @property
     def value(self) -> str:

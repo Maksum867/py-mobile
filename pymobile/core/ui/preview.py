@@ -15,6 +15,7 @@ notebooks.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +47,44 @@ def ascii_picture(widget_or_tree: Any, **kwargs: Any) -> str:  # alias
     return render_ascii(widget_or_tree, **kwargs)
 
 
+#: TrueType faces that ship with common systems and cover Latin, Cyrillic and
+#: Greek. Pillow's built-in bitmap font is ASCII-only, which turns every
+#: non-English interface into a row of boxes.
+_FONT_CANDIDATES = (
+    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
+    "/usr/share/fonts/liberation/LiberationMono-Regular.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
+    "/usr/share/fonts/truetype/freefont/FreeMono.ttf",
+    "/usr/share/fonts/google-noto/NotoSansMono-Regular.ttf",
+    "/Library/Fonts/Arial Unicode.ttf",
+    "/System/Library/Fonts/Menlo.ttc",
+    "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+    "C:/Windows/Fonts/consola.ttf",
+    "C:/Windows/Fonts/arial.ttf",
+)
+
+
+def _preview_font(image_font: Any, scale: int) -> Any:
+    """Return a Unicode-capable font, falling back to Pillow's default.
+
+    ``PYMOBILE_PREVIEW_FONT`` overrides the search with an explicit .ttf path.
+    """
+    override = os.environ.get("PYMOBILE_PREVIEW_FONT")
+    candidates = (override, *_FONT_CANDIDATES) if override else _FONT_CANDIDATES
+    for candidate in candidates:
+        if candidate and os.path.exists(candidate):
+            try:
+                return image_font.truetype(candidate, scale + 2)
+            except Exception:  # pragma: no cover - unreadable/odd font file
+                continue
+    try:  # last resort: ASCII-only, but better than no picture at all
+        return image_font.load_default()
+    except Exception:  # pragma: no cover - very old Pillow
+        return None
+
+
 def render_png(widget_or_tree: Any, path: str, *, scale: int = 12) -> str:
     """Draw the tree to ``path`` as PNG using Pillow.
 
@@ -62,10 +101,7 @@ def render_png(widget_or_tree: Any, path: str, *, scale: int = 12) -> str:
     lines = _node_lines(_as_node(widget_or_tree), show_ids=False)
     if not lines:
         lines = ["<empty screen>"]
-    try:
-        font = ImageFont.load_default()
-    except Exception:  # pragma: no cover - very old Pillow
-        font = None
+    font = _preview_font(ImageFont, scale)
     line_height = scale + 6
     width = max(len(line) for line in lines) * (scale // 2 + 1) + 24
     height = len(lines) * line_height + 24

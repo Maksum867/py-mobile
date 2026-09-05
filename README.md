@@ -8,9 +8,25 @@ Write a declarative UI, run one command, install the APK on your phone.
 
 [![PyPI](https://img.shields.io/pypi/v/pymobile-framework.svg)](https://pypi.org/project/pymobile-framework/)
 [![Python](https://img.shields.io/pypi/pyversions/pymobile-framework.svg)](https://pypi.org/project/pymobile-framework/)
+[![Status](https://img.shields.io/badge/status-alpha-orange.svg)](https://github.com/Maksum867/py-mobile/issues)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](https://github.com/Maksum867/py-mobile/blob/main/LICENSE)
 
 </div>
+
+> ### ⚠️ Alpha software — known bugs, actively being fixed
+>
+> PyMobile is at **0.6.x** and is still in alpha. It builds and signs real,
+> installable APKs today, but the API can change between minor releases and
+> there are known bugs. The team is actively working on them: fixes ship in
+> every release — see the
+> [changelog](https://github.com/Maksum867/py-mobile/blob/main/CHANGELOG.md)
+> for what has already landed and
+> [Issues](https://github.com/Maksum867/py-mobile/issues) for what is still
+> open.
+>
+> Good fit for personal apps, internal tools, prototypes and learning. If you
+> depend on it, pin an exact version (`pymobile-framework==0.6.4`) and read the
+> changelog before upgrading. Bug reports are genuinely welcome.
 
 ---
 
@@ -102,7 +118,7 @@ device. No Java, no Gradle, no Android Studio.
 | **Fast** | About five seconds per build. An unchanged rebuild is instant. |
 | **Small setup** | ~800 MB of tooling, downloaded automatically. The NDK is not required. |
 | **Testable** | Your whole app runs and is unit-testable on a desktop, with no emulator. |
-| **No dependencies** | The runtime uses only the standard library, which keeps APKs small. |
+| **No dependencies** | Nothing but the standard library runs on the device, which keeps APKs small. The desktop package pulls in `certifi` only to bundle CA certificates at build time. |
 
 Verified on a physical device running Android 14.
 
@@ -425,9 +441,14 @@ List(
         title=f"Item {index}",
         subtitle=f"Description {index}",
         on_press=lambda: print(f"tapped {index}"),
+        on_long_press=lambda: delete(index),   # touch and hold
     ),
 )
 ```
+
+`on_long_press` gives a row a second action — delete, archive, rename —
+without a permanent button on every row. The device vibrates on the hold; the
+Tk and browser previews map it to a right click.
 
 ### Spacer
 
@@ -728,10 +749,30 @@ app.storage.clear()                  # wipe everything
 ```
 
 Data persists across app restarts. On Android it uses the app's private files
-directory; on desktop `~/.pymobile/`. Override with `PYMOBILE_STORAGE_DIR`.
+directory; on desktop `~/.pymobile/<your.package.id>.json`, so two projects
+open side by side never overwrite each other's data. Override the directory
+for every app with `PYMOBILE_STORAGE_DIR`.
 
 ```python
-App("My App", storage_path="/custom/path")
+App("My App", storage_path="/custom/dir")         # a directory
+App("My App", storage_path="/custom/store.json")  # or an explicit file
+```
+
+### Atomic sequences
+
+Every single operation is atomic. A read-modify-write **sequence** you write
+by hand is not — two jobs incrementing the same counter can lose an update.
+Use these instead:
+
+```python
+app.storage.increment("taps")                       # atomic +1
+app.storage.update("cart", lambda items: [*items, new], default=[])
+app.storage.setdefault("device_id", make_id())
+
+with app.storage.transaction() as store:            # multi-step
+    balance = store.get("balance", 0)
+    store["balance"] = balance - price
+    store["history"] = [*store.get("history", []), price]
 ```
 
 ---
@@ -1258,9 +1299,12 @@ res/mipmap-*/icon.png        icons, five densities
 META-INF/                    signature (v1+v2+v3)
 ```
 
-Builds are reproducible: identical inputs produce a byte-identical APK. The
-file is written to a temporary path and moved into place, so an interrupted
-build never leaves a corrupt artifact.
+Builds are reproducible: identical inputs produce an identical APK payload.
+Every zip entry carries a fixed timestamp, so the archive does not change with
+the clock; the signature block itself (`META-INF/*.RSA`) is produced by
+`apksigner` and is the one part that may differ between two runs. The file is
+written to a temporary path and moved into place, so an interrupted build never
+leaves a corrupt artifact.
 
 ### Size
 
@@ -1338,7 +1382,10 @@ adb logcat -s pymobile pymobile.stdout pymobile.stderr
 | `pymobile.stderr` | exceptions and tracebacks |
 
 If a single widget fails to render, it is replaced by red text naming the
-error while the rest of the screen keeps working.
+error while the rest of the screen keeps working — on the device and in every
+desktop preview alike. The same applies to a callback that raises: the failure
+is logged with its traceback and the app stays alive, so one bad handler cannot
+close the window.
 
 ### Diagnostics
 
@@ -1450,6 +1497,10 @@ pymobile preview            # text picture in the terminal
 pymobile preview --ids      # annotate each widget with its id
 pymobile preview --png ui.png   # save a raster image (needs Pillow)
 ```
+
+The PNG uses the first Unicode TrueType face it finds on the system, so
+Cyrillic, Greek and accented text render as text rather than boxes. Point
+`PYMOBILE_PREVIEW_FONT` at a `.ttf` to choose your own.
 
 The text picture shows the real layout — `Row` children sit side by side,
 `ProgressBar` is drawn as a filled bar, `Switch` shows its state:

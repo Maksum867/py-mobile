@@ -438,9 +438,17 @@ def render_html(node: dict[str, Any]) -> str:
         title = escape(str(props.get("title", "")))
         subtitle = escape(str(props.get("subtitle", "")))
         trailing = escape(str(props.get("trailing", "")))
+        # A long press has no mouse equivalent, so the browser preview maps it
+        # to the context menu (right click / touch-and-hold), which is what a
+        # desktop tester reaches for anyway.
+        long_press = (
+            f" oncontextmenu=\"send('{widget_id}','long_press','');return false\""
+            if props.get("long_pressable")
+            else ""
+        )
         return (
             f'<button class="w" data-wid="{widget_id}"{disabled} style="text-align:left;{css}" '
-            f"onclick=\"send('{widget_id}','press','')\">"
+            f"onclick=\"send('{widget_id}','press','')\"{long_press}>"
             f"<div>{title}</div>"
             f'<div class="muted">{subtitle}</div>'
             f'<div class="muted">{trailing}</div></button>'

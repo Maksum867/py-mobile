@@ -9,6 +9,7 @@ import android.text.InputType;
 import android.text.TextWatcher;
 import android.util.TypedValue;
 import android.view.Gravity;
+import android.view.HapticFeedbackConstants;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
@@ -1056,6 +1057,16 @@ final class ViewBuilder {
                 Native.dispatchEvent(id, "press", "");
             }
         });
+        if (props.optBoolean("long_pressable", false)) {
+            row.setOnLongClickListener(new View.OnLongClickListener() {
+                @Override
+                public boolean onLongClick(View v) {
+                    v.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS);
+                    Native.dispatchEvent(id, "long_press", "");
+                    return true;
+                }
+            });
+        }
         return row;
     }
 

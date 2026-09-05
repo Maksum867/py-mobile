@@ -8,7 +8,9 @@ from pathlib import Path
 
 import pytest
 
-from tools.release_audit import audit
+# tools/ is not part of the published repository; skip rather than break
+# collection for everyone who clones it.
+audit = pytest.importorskip("tools.release_audit").audit
 
 
 def wheel(path: Path, *names: str) -> None:

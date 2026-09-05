@@ -19,7 +19,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - run: python -m pip install --upgrade pip build
+      - run: python -m pip install --upgrade pip build twine
       - run: python -m build
+      # Never push an artifact whose metadata PyPI would reject anyway.
+      - run: python -m twine check --strict dist/*
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1

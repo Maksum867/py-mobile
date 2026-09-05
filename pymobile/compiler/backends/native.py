@@ -28,6 +28,7 @@ from ...errors import PyMobileError, ResourceError
 from ...logging import get_logger
 from ...resources import resource_path
 from ..manifest import build_manifest
+from ..packager import FIXED_TIMESTAMP
 from ..toolchain import Toolchain
 
 __all__ = ["NativeBackend", "NativeBuildResult"]
@@ -501,21 +502,42 @@ class NativeBackend:
         output: Path,
         workdir: Path,
     ) -> Path:
-        """Add dex, native libs and assets, then align and sign."""
-        staged = workdir / "unsigned.apk"
-        shutil.copy2(base_apk, staged)
+        """Add dex, native libs and assets, then align and sign.
 
-        with zipfile.ZipFile(staged, "a", compression=zipfile.ZIP_DEFLATED) as archive:
-            archive.write(dex, "classes.dex")
+        Every entry is written with a fixed timestamp, and the resources APK
+        produced by ``aapt2`` is copied entry by entry rather than appended to,
+        so the same sources always yield the same bytes. Without this the zip
+        carried the wall-clock time of the build and two identical builds
+        differed.
+        """
+        staged = workdir / "unsigned.apk"
+
+        def entry(name: str, *, stored: bool = False, mode: int | None = None) -> zipfile.ZipInfo:
+            info = zipfile.ZipInfo(name, date_time=FIXED_TIMESTAMP)
+            info.compress_type = zipfile.ZIP_STORED if stored else zipfile.ZIP_DEFLATED
+            if mode is not None:
+                info.external_attr = mode << 16
+            return info
+
+        with zipfile.ZipFile(base_apk) as resources:
+            base_entries = [(i, resources.read(i.filename)) for i in resources.infolist()]
+
+        with zipfile.ZipFile(staged, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for info, data in base_entries:
+                archive.writestr(
+                    entry(info.filename, stored=info.compress_type == zipfile.ZIP_STORED),
+                    data,
+                )
+            archive.writestr(entry("classes.dex"), dex.read_bytes())
             for library in sorted(native_dir.glob("*.so")):
                 # Native libraries must be stored uncompressed and page-aligned
                 # so Android can load them directly from the APK.
-                info = zipfile.ZipInfo(f"lib/{self.abi}/{library.name}")
-                info.compress_type = zipfile.ZIP_STORED
-                info.external_attr = 0o755 << 16
-                archive.writestr(info, library.read_bytes())
+                archive.writestr(
+                    entry(f"lib/{self.abi}/{library.name}", stored=True, mode=0o755),
+                    library.read_bytes(),
+                )
             for name, path in sorted(assets.items()):
-                archive.write(path, name)
+                archive.writestr(entry(name), path.read_bytes())
 
         aligned = workdir / "aligned.apk"
         _run(
