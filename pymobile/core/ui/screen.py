@@ -148,6 +148,8 @@ class Screen:
         """
         if self._root is not None:
             self._root._screen = None
+            for node in self._root.walk():
+                node._parent = None
         self._root = None
         if self.app is not None and self.app.navigator.current is self:
             self.app.render()

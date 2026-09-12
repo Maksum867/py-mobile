@@ -11,8 +11,8 @@ appending to the list — no existing stage has to change.
 
 from __future__ import annotations
 
-import compileall
 import hashlib
+import py_compile
 import shutil
 import tempfile
 import time
@@ -223,15 +223,21 @@ class BuildPipeline:
         if not self.config.optimize or self.native:
             return entries
 
-        quiet = 2
         optimize_level = 2 if self.config.strip_debug else 1
-        compileall.compile_dir(
-            str(staged),
-            quiet=quiet,
-            optimize=optimize_level,
-            legacy=True,
-            force=True,
-        )
+        for name, path in entries:
+            if path.suffix != ".py":
+                continue
+            try:
+                py_compile.compile(
+                    str(path),
+                    cfile=str(path.with_suffix(".pyc")),
+                    dfile=f"app/{name}",
+                    doraise=True,
+                    optimize=optimize_level,
+                    invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH,
+                )
+            except py_compile.PyCompileError as exc:
+                _log.debug("byte-compilation of %s failed: %s", name, exc)
 
         compiled: list[tuple[str, Path]] = []
         for name, path in entries:

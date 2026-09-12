@@ -9,13 +9,18 @@ the application event bus.
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
 
+from ...logging import get_logger
 from .style import Color
 from .widget import Container, Widget, callback_name
+
+_log = get_logger("ui.components")
+_warned_missing_sources: set[str] = set()
 
 __all__ = [
     "Label",
@@ -42,6 +47,7 @@ __all__ = [
     "Avatar",
 ]
 
+_WINDOWS_DRIVE_PATH = re.compile(r"^[A-Za-z]:[\\/]")
 
 class Label(Widget):
     """Non-interactive text.
@@ -213,9 +219,16 @@ class Image(Widget):
         typically assets that only appear inside the APK.
         """
         parsed = urlparse(source)
-        if parsed.scheme in ("http", "https", "data"):
+        if _WINDOWS_DRIVE_PATH.match(source):
+            # A drive path is a filename, not a URI: ``urlparse`` split
+            # ``C:\\photos\\me.png`` into scheme 'c' and path '\\photos\\me.png',
+            # and the rejection below then made the most natural Windows form
+            # unusable. Checked on every platform, because the parse is the same
+            # everywhere and the result is still just a local path.
+            path = Path(source)
+        elif parsed.scheme in ("http", "https", "data"):
             return
-        if parsed.scheme == "file":
+        elif parsed.scheme == "file":
             if parsed.netloc not in ("", "localhost"):
                 raise ValueError("file image URLs must refer to the local machine")
             path_text = unquote(parsed.path)
@@ -235,8 +248,15 @@ class Image(Widget):
             path = Path(source)
 
         if not path.exists():
-            # Packaged assets are not on the desktop filesystem.
             if not path.is_absolute() and parsed.scheme == "":
+                if source not in _warned_missing_sources:
+                    _warned_missing_sources.add(source)
+                    _log.warning(
+                        "image source %r was not found on this machine (checked %s); "
+                        "assuming it is a packaged asset shipped in the APK",
+                        source,
+                        path,
+                    )
                 return
             raise FileNotFoundError(f"Image resource file does not exist: '{source}'")
         if not path.is_file():

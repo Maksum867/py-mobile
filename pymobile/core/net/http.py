@@ -8,6 +8,7 @@ with backoff, a base URL and default headers.
 
 from __future__ import annotations
 
+import http.client
 import json as jsonlib
 import ssl
 import threading
@@ -331,7 +332,7 @@ class HttpClient:
             if entry is not None:
                 return _entry_to_response(entry, final_url, from_cache=True)
         try:
-            response = self.get(final_url, params=params, **kwargs)
+            response = self.get(final_url, **kwargs)
         except NetworkError:
             stale = self.cache.get_stale(final_url, ttl)
             if stale is not None:
@@ -427,6 +428,11 @@ class HttpClient:
             ) from exc
         except TimeoutError as exc:
             raise NetworkError(f"Request to {url} timed out") from exc
+        except (http.client.HTTPException, OSError) as exc:
+            raise NetworkError(
+                f"Could not read {url}: {exc}",
+                hint="Check connectivity and the INTERNET permission in your project config.",
+            ) from exc
 
     @staticmethod
     def _to_response(url: str, status: int, headers: Mapping[str, str], content: bytes) -> Response:

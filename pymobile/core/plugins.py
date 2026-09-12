@@ -33,11 +33,10 @@ _log = get_logger("plugins")
 
 
 class Plugin:
-    """Base class for a plugin.
-
-    Subclasses set ``name`` and may implement ``activate(app)`` plus optional
+    """    Subclasses set ``name`` and may implement ``activate(app)`` plus optional
     ``on_app_start(app)`` / ``on_app_stop(app)`` hooks. ``activate`` runs once
-    when the plugin is registered or when the registry activates everything.
+    for every application the plugin is activated against — including a second
+    app created later in the same process.
     """
 
     #: Unique plugin name.
@@ -66,7 +65,7 @@ class PluginRegistry:
 
     def __init__(self) -> None:
         self._plugins: dict[str, Plugin] = {}
-        self._activated: set[str] = set()
+        self._activated: dict[str, App] = {}
 
     @property
     def names(self) -> tuple[str, ...]:
@@ -84,16 +83,17 @@ class PluginRegistry:
 
     def unregister(self, name: str) -> bool:
         """Remove a plugin by name; returns whether it was present."""
+        self._activated.pop(name, None)
         return self._plugins.pop(name, None) is not None
 
     def activate_all(self, app: App) -> None:
-        """Run ``activate`` on every plugin that has not been activated yet."""
+        """Run ``activate`` on every plugin that has not been activated for ``app``."""
         for name, plugin in self._plugins.items():
-            if name in self._activated:
+            if self._activated.get(name) is app:
                 continue
             try:
                 plugin.activate(app)
-                self._activated.add(name)
+                self._activated[name] = app
             except Exception:
                 _log.exception("plugin %r failed to activate", name)
 

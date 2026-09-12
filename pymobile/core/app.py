@@ -113,7 +113,7 @@ class App:
         self._log_level = log_level
         self._log_file = log_file
         self._running = False
-        #: When true (the default) a widget change redraws the screen by itself.
+        self._ever_started = False
         self.auto_render = auto_render
         self._render_scheduled = False
         self._render_depth = 0
@@ -165,9 +165,7 @@ class App:
             return
         self._theme = resolved
         self.events.emit("app:theme", source=resolved.name)
-        screen = self.navigator.current
-        if screen is not None and self._running:
-            screen.refresh()
+        self._refresh_screens()
 
     @staticmethod
     def _resolve_theme(theme: str | Theme | None) -> Theme:
@@ -195,6 +193,7 @@ class App:
         configure(self._log_level, log_file=self._log_file)
         _log.info("starting %s on %s (bridge=%s)", self.name, self.platform, self.bridge.name)
         self._running = True
+        self._ever_started = True
         _current = self
         _plugin_registry.activate_all(self)
         _plugin_registry.on_app_start(self)
@@ -470,18 +469,30 @@ class App:
 
     # -- internals ---------------------------------------------------------
     def _on_language_change(self, language: str) -> None:
-        """Rebuild the visible screen so new translations are picked up."""
-        screen = self.navigator.current
-        if screen is None or not self._running:
+        if self.navigator.current is None or not self._running:
             return
         self.events.emit("app:language", source=language)
-        screen.refresh()
+        self._refresh_screens()
+
+    def _refresh_screens(self) -> None:
+        if not self._running:
+            return
+        for screen in self.navigator.stack:
+            screen.refresh()
 
     def _on_screen_change(self, screen: Screen | None) -> None:
         """Re-render whenever the navigator changes the visible screen."""
         if screen is None:
             return
         if not self._running:
+            if self._ever_started:
+                raise PyMobileError(
+                    "The application has already been stopped",
+                    hint=(
+                        "Navigation is not available after app.stop(). Create a new App if "
+                        "the application should run again."
+                    ),
+                )
             raise PyMobileError(
                 "Navigation happened before App.run()",
                 hint="Call app.run(FirstScreen()) to start the application.",

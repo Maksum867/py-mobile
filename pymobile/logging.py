@@ -102,13 +102,17 @@ def get_diagnostics() -> dict[str, object]:
     attached and the configured level. Safe to call from anywhere.
     """
     logger = logging.getLogger(LOGGER_NAME)
-    from .core.platform import current_platform  # local import avoids a cycle
+    from . import __version__
+    from .core.platform import current_platform
 
+    level = logging.getLevelName(logger.level)
     return {
         "framework": "pymobile",
+        "framework_version": __version__,
         "platform": str(current_platform()),
         "python": sys.version.split()[0],
-        "level": logging.getLevelName(logger.level),
+        "level": level,
+        "log_level": level.lower(),
         "handlers": [type(h).__name__ for h in logger.handlers],
     }
 

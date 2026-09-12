@@ -859,9 +859,15 @@ errors = v.validate({"email": "bad", "name": ""})
 v.validate_or_raise({"email": "bad"})   # raises ValidationError
 ```
 
-Validators: `required`, `optional`, `email`, `length`, `min_length`,
-`max_length`, `integer`, `number`, `between`, `min`, `max`, `matches`,
-`one_of`, `regex`, `boolean`.
+Validators come in two forms:
+
+* **bare strings** — `required`, `optional`, `email`, `integer`, `number`,
+  `boolean`. Use them as-is: `["required", "email"]`.
+* **rules with an argument** — `length`, `min_length`, `max_length`,
+  `between`, `min`, `max`, `matches`, `one_of`, `regex`. These always need a
+  value, so write them as a one-key mapping: `{"min_length": 2}`,
+  `{"between": [1, 120]}`. A bare `"min_length"` is an error — there is no
+  sensible default length.
 
 ---
 
@@ -1732,7 +1738,6 @@ Issues and pull requests are welcome.
 
 ## Documentation
 
-- **[GUIDE.md](https://github.com/Maksum867/py-mobile/blob/main/GUIDE.md)** — extended guide with worked examples
 - **[CHANGELOG.md](https://github.com/Maksum867/py-mobile/blob/main/CHANGELOG.md)** — release history
 
 ## License

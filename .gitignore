@@ -84,13 +84,7 @@ Thumbs.db
 .DS_Store
 pymobile-demo/
 PYPI_INSTRUCTIONS.md
-notion/
 tools/
-# Exclude the contents of examples/, not the directory itself: git never
-# descends into an excluded directory, so a negation inside one is ignored.
-examples/*
-# The smoke-test app is built by CI, so it must be in the repository.
-!examples/device-smoke/
 .pymobile-fix-backup-20260905-193825
 .pymobile-064-backup-20260905-224856
 MANIFEST.in

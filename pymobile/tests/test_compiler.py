@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import time
 import zipfile
 from pathlib import Path
 from xml.etree import ElementTree as ET
@@ -320,6 +322,29 @@ class TestPipeline:
     def test_cache_can_be_disabled(self, project: ProjectConfig) -> None:
         build_apk(project)
         assert not build_apk(project, use_cache=False).cached
+
+    def test_build_is_reproducible(self, project: ProjectConfig) -> None:
+        """Regression: two identical builds produced different APKs.
+
+        The staged copy lives in a fresh ``pymobile-build-XXXX`` temp directory,
+        so the bytecode recorded that absolute path, and the default TIMESTAMP
+        invalidation also baked the copy's mtime into the ``.pyc`` header.
+        """
+        project.optimize = True
+        first = hashlib.sha256(build_apk(project, use_cache=False).apk.read_bytes()).hexdigest()
+        time.sleep(1.1)  # a later second → a different source mtime
+        second = hashlib.sha256(build_apk(project, use_cache=False).apk.read_bytes()).hexdigest()
+        assert first == second, "дві однакові збірки дали різні APK"
+
+    def test_bytecode_leaks_no_build_paths(self, project: ProjectConfig) -> None:
+        """A shipped ``.pyc`` must not name the machine that built it."""
+        project.optimize = True
+        result = build_apk(project, use_cache=False)
+        with zipfile.ZipFile(result.apk) as archive:
+            payload = archive.read("assets/app/main.pyc")
+        assert b"pymobile-build-" not in payload
+        assert b"/tmp/" not in payload
+        assert b"app/main.py" in payload, "очікували відносний шлях app/main.py"
 
     def test_fingerprint_is_stable_across_processes(self, project: ProjectConfig) -> None:
         """Regression: PYTHONHASHSEED randomisation must not defeat the cache."""

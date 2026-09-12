@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import sys
+import threading
 import time
 
 import pytest
@@ -230,34 +230,51 @@ class TestScheduler:
         handle.cancel()
         assert len(calls) >= 2
 
-    import sys
-
-    def test_ticks_do_not_drift(self) -> None:
+    def test_ticks_do_not_drift(self, monkeypatch) -> None:  # type: ignore[no-untyped-def]
         """A slow callback must not push the next tick further out.
 
-        Without correction a 30 ms interval whose callback takes 15 ms fires
-        every ~45 ms, and an hour later the clock is minutes slow.
+        Deterministic on purpose: both the clock and the timer are replaced, so
+        the arithmetic is checked rather than the platform's timer. The previous
+        wall-clock version compared the *n*-th callback with the *n*-th slot on a
+        fixed timeline — but the scheduler skips missed slots by design (see the
+        docstring of ``set_interval``), so on Windows, where a wait is rounded up
+        to ~15 ms, a 30 ms interval with a 15 ms callback drifted out of phase
+        and the check failed for the wrong reason.
         """
-        scheduler = Scheduler()
-        stamps: list[float] = []
-        started = time.monotonic()
+        from pymobile.core import scheduler as scheduler_module
 
-        def tick() -> None:
-            stamps.append(time.monotonic() - started)
-            time.sleep(0.015)
+        virtual = {"now": 0.0}
+        fired: list[float] = []
 
-        handle = scheduler.set_interval(30, tick)
-        time.sleep(0.5)
-        handle.cancel()
+        class FakeTime:
+            @staticmethod
+            def monotonic() -> float:
+                return virtual["now"]
 
-        assert len(stamps) >= 8
+        class VirtualScheduler(scheduler_module.Scheduler):
+            """Arms timers without starting them and drives the loop by hand."""
 
-        # Windows timer granularity requires a slightly wider threshold (~35 ms)
-        tolerance = 0.065 if sys.platform == "win32" else 0.020
+            def _arm_seconds(self, handle, delay, target):  # type: ignore[no-untyped-def]
+                timer = threading.Timer(delay, target)
+                timer.daemon = True
+                handle._set_timer(timer)
+                virtual["now"] += delay
+                if len(fired) < 20:  # stop before the fake clock runs away
+                    target()
 
-        # Each tick sits near its slot on the fixed timeline, not at n*45 ms.
-        for index, stamp in enumerate(stamps[:8], start=1):
-            assert abs(stamp - index * 0.030) < tolerance, stamps
+        monkeypatch.setattr(scheduler_module, "time", FakeTime)
+
+        def callback() -> None:
+            fired.append(virtual["now"])
+            virtual["now"] += 0.06  # the callback itself takes 60 ms
+
+        VirtualScheduler().set_interval(100, callback)
+
+        assert len(fired) >= 10
+        # Every callback lands on its own slot of the fixed timeline: 0.100,
+        # 0.200, 0.300 — not on the 0.16, 0.32, 0.48 a pause produces.
+        for index, stamp in enumerate(fired, start=1):
+            assert stamp == pytest.approx(index * 0.100, abs=1e-9), fired
 
     def test_drift_correction_can_be_disabled(self) -> None:
         scheduler = Scheduler()

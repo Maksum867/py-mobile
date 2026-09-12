@@ -3,6 +3,76 @@
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project uses [semantic versioning](https://semver.org/).
 
+## [0.6.5] — 2026-09-12
+
+### Fixed
+
+- **`get_cached()` sent every query parameter twice.** The URL was built with
+  `params` and then `params` was passed to `get()` again, so page 2 arrived as
+  `/items?page=2&page=2`. The doubled URL was also the cache key, so a plain
+  `get()` with the same params could never reuse what `get_cached()` stored.
+- **A dropped connection escaped as a raw `http.client` error.** `_send()`
+  caught only `URLError` and `TimeoutError`, so `IncompleteRead`,
+  `ConnectionResetError` and `RemoteDisconnected` propagated untouched. Two
+  documented behaviours depend on those being `NetworkError`: `retries` never
+  retried, and `get_cached()` never fell back to a stale copy, because both
+  catch only `NetworkError`. Truncated and malformed replies are now
+  `NetworkError` too.
+- **Two builds of the same project produced different APKs.** The staging copy
+  lives in a fresh `pymobile-build-XXXX` temp directory and its absolute path
+  was written into every `.pyc`; the default `TIMESTAMP` invalidation also put
+  the copy's mtime in the `.pyc` header, and `shutil.copyfile` stamps the copy
+  with the build time. Bytecode is now compiled with `ddir="app"` and
+  `UNCHECKED_HASH`, so identical sources give an identical APK byte for byte —
+  as the README always claimed.
+- **A language or theme change only reached the visible screen.** Screens below
+  the top kept the tree they had already built, because `Screen._root` is
+  cached and handed back unchanged on `pop()`. Both now rebuild the whole
+  stack; only the visible screen re-renders, so the cost is nil.
+- **`Screen.refresh()` broke the documented stored-widget pattern.**
+  `self.counter = Label("0")` — the pattern the docs recommend, and the reason
+  `_name_widgets()` exists — raised `ValueError: widget 'counter' already has a
+  parent` on the second `build()`. The discarded tree is now detached first.
+- **`Image` rejected Windows paths.** `urlparse(r"C:\photos\me.png")` reports
+  the drive letter as a URL scheme, so the most natural form of a local path
+  failed with `unsupported image URL scheme: 'c'` before the file was touched.
+- **`get_diagnostics()` did not return the documented keys.** The README
+  example reads `framework_version` and `log_level`, but the function returned
+  `framework` and `level` and never reported the framework version at all. The
+  documented keys are present now; the old ones are kept for compatibility.
+- **A plugin was activated once per process, not once per app.** `_activated`
+  was a set of names that was never reset, so a second `App` in the same
+  process — a test, a preview restart — silently got no `activate()` call.
+- **Navigating after `app.stop()` blamed `App.run()`.** The error said
+  "Navigation happened before App.run()" and told the caller to call `run()`,
+  which had already been called. A stopped app now says that it was stopped.
+- **`Image` with a missing relative path failed silently.** Absolute paths and
+  `file://` URIs raised, but a relative path that exists nowhere — a typo, or a
+  packaged asset — produced an empty box and no diagnostic. It is logged once
+  per source now.
+
+### Changed
+
+- **`Container.add()` raises `PyMobileError` instead of `ValueError`** when a
+  widget already has a parent, so the error can carry an actionable `hint`.
+  `PyMobileError` is not a `ValueError`: code that wrapped widget construction
+  in `except ValueError` needs `except PyMobileError`.
+
+### Removed
+
+- **`GUIDE.md` and `examples/` left the repository.** The guide had drifted
+  behind the API — nothing added after 0.5 (`get_diagnostics`, `HttpCache`,
+  `JobHandle`, plugins, `set_theme`) was ever documented there, while the
+  README covers all of it. The `device-smoke` app was the fixture for the
+  `android-emulator-smoke` CI job, and that job goes with it.
+
+### Repository
+
+- **`MANIFEST.in` is tracked again.** It was listed in `.gitignore` even though
+  it ships inside the sdist, so a fresh clone built a different source
+  distribution than the published one — without `CHANGELOG.md` and without the
+  test suite.
+
 ## [0.6.4] — 2026-09-05
 
 ### Fixed

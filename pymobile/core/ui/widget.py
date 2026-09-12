@@ -20,6 +20,7 @@ from contextvars import ContextVar
 from itertools import count
 from typing import TYPE_CHECKING, Any
 
+from ...errors import PyMobileError
 from ...logging import get_logger
 from .contract import SerializedValue, WidgetNode, WidgetProps
 from .style import Style
@@ -292,7 +293,14 @@ class Container(Widget):
                 raise ValueError("a container cannot contain one of its ancestors")
             ancestor = ancestor._parent
         if child._parent is not None:
-            raise ValueError(f"widget {child.id!r} already has a parent")
+            raise PyMobileError(
+                f"widget {child.id!r} already has a parent",
+                hint=(
+                    "A widget can only live in one place. Build the tree from scratch in "
+                    "Screen.build(); widgets stored on the screen are detached for you by "
+                    "Screen.refresh(). Use parent.remove(child) to detach one by hand."
+                ),
+            )
         child._parent = self
         self._children.append(child)
         self.invalidate()

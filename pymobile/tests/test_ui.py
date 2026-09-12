@@ -117,7 +117,7 @@ class TestContainers:
     def test_double_parent_is_rejected(self) -> None:
         child = Label("x")
         Column(child)
-        with pytest.raises(ValueError, match="already has a parent"):
+        with pytest.raises(PyMobileError, match="already has a parent"):
             Row(child)
 
     def test_self_nesting_is_rejected(self) -> None:
