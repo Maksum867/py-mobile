@@ -1,0 +1,9 @@
+# The wheel is built from [tool.setuptools] in pyproject.toml; this file only
+# widens the *source* distribution, which should be self-contained enough to
+# read the history and run the test suite from an unpacked tarball.
+include CHANGELOG.md
+include MANIFEST.in
+recursive-include pymobile/tests *.py
+recursive-include pymobile/tests/snapshots *.txt
+global-exclude __pycache__/*
+global-exclude *.py[cod]
