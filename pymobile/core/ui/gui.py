@@ -569,6 +569,37 @@ class GuiPreview:
                 )
             return
 
+        if kind == "BottomNavigation":
+            bar = tk.Frame(parent, bg=background)
+            bar.pack(fill="x", pady=pad)
+            for option in props.get("options", ()):
+                selected = option == props.get("value")
+                tk.Button(
+                    bar,
+                    text=str(option),
+                    relief="sunken" if selected else "raised",
+                    command=lambda option=str(option): self._dispatch(widget_id, "change", option),
+                ).pack(side="left", expand=True, fill="x")
+            return
+
+        if kind == "Dialog":
+            box = tk.LabelFrame(
+                parent, text=str(props.get("title", "")), bg=background, padx=8, pady=8
+            )
+            box.pack(fill="x", pady=pad, side="bottom" if props.get("sheet") else "top")
+            self._build_children(box, node, background)
+            return
+
+        if kind in ("DatePicker", "TimePicker"):
+            entry = tk.Entry(parent, width=14)
+            entry.insert(0, str(props.get("value", "")))
+            entry.bind(
+                "<Return>",
+                lambda _event, entry=entry: self._dispatch(widget_id, "change", entry.get()),
+            )
+            entry.pack(anchor="w", pady=pad)
+            return
+
         tk.Label(parent, text=f"<{kind}>", fg=_PALETTE["muted"], bg=background).pack(anchor="w")
 
     def _build_children(self, frame: tk.Misc, node: dict[str, Any], background: str) -> None:

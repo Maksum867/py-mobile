@@ -3,6 +3,58 @@
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project uses [semantic versioning](https://semver.org/).
 
+## [0.7.0] — 2026-09-20
+
+### Added
+
+- **`BottomNavigation`** — the bottom-tab navigation pattern: a persistent bar
+  of equal-width tabs with `value`/`select()`/`on_select`, rendered natively
+  (horizontal tab bar), in the browser preview (pinned bottom bar), in the Tk
+  window and in the ascii picture.
+- **Dialogs and sheets** — `Dialog`, `AlertDialog`, `ConfirmDialog` and
+  `BottomSheet`: framed, elevated modal surfaces with `open()`/`close()`
+  (`visible`-based, so reactive and free while hidden). Button callbacks fire
+  only after the dialog has closed, so handlers never race the overlay.
+- **`DatePicker` and `TimePicker`** — ISO-string values with optional
+  `minimum`/`maximum` clamping and fail-fast validation; native
+  `DatePickerDialog`/`TimePickerDialog` on Android, real `<input type="date">`
+  / `<input type="time">` controls in the browser preview.
+- **StubBridge call-name reference in the README.** The testing section now
+  lists every name recorded in `bridge.calls` (`notify`,
+  `cancel_notification`, `vibrate`, `vibrate_pattern`, `cancel_vibration`,
+  `toast`, `request_permissions`, `render`), including the gotcha that
+  `vibration.preset(...)` records `vibrate_pattern`, not `vibrate`.
+- **The README now states which widget attributes are reactive.** `text`,
+  `value`, `checked`, `visible` and `enabled` schedule a redraw; `style` is a
+  plain attribute, and the documented way to restyle a live widget is a new
+  `Style` plus `invalidate()` (or `refresh()` when the tree changed).
+
+### Fixed
+
+- **`run --web` told users to open `http://0.0.0.0:8765`.** `0.0.0.0` is a bind
+  address, not a destination: Windows browsers reject it with
+  `ERR_ADDRESS_INVALID`, so the banner looked like a broken server. The CLI
+  and the server log now print a loopback URL (`browser_url()`) and explain
+  that the wildcard bind is what serves containers, SSH tunnels and LAN
+  devices.
+- **`preview --png` clipped the tail of long lines.** `render_png()` sized the
+  canvas from a guessed constant (`scale // 2 + 1` pixels per character) while
+  the face itself was loaded at `scale + 2` pixels, whose monospace advance is
+  ~0.6 em — so every line past ~45 characters lost its tail (amounts, dates).
+  The canvas is now measured with the real glyph advances
+  (`font.getlength`), per character and per face.
+- **`preview --png` drew tofu boxes for uncovered glyphs without a word.**
+  Emoji and symbols missing from the chosen face now fall back, glyph by
+  glyph, to a symbol face (Symbola, Segoe UI Symbol, Apple Symbols, Noto Sans
+  Symbols 2) when one is installed; whatever remains uncovered is logged once
+  with an actionable hint (`PYMOBILE_PREVIEW_FONT`) instead of failing
+  silently.
+- **A bare argument-rule read "unknown validation rule".**
+  `Validator({"name": ["min_length"]})` raised `unknown validation rule:
+  'min_length'` although the rule exists — it merely requires an argument.
+  The message now says exactly that and shows the one-key mapping spelling
+  plus the list of rules that do work bare.
+
 ## [0.6.5] — 2026-09-12
 
 ### Fixed

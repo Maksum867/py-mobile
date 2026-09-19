@@ -50,6 +50,12 @@ ValidatorFn = Callable[[Any], str | None]
 #: Well-known regex for email addresses (pragmatic, not RFC-perfect).
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
+#: Rules that only exist with an argument; a bare string spelling of one of
+#: these is a mistake we can name precisely instead of "unknown rule".
+_ARGUMENT_RULES = frozenset(
+    {"length", "min_length", "max_length", "between", "min", "max", "matches", "one_of", "regex"}
+)
+
 
 class ValidationError(PyMobileError):
     """Raised by :meth:`Validator.validate_or_raise` when validation fails."""
@@ -257,6 +263,12 @@ class Validator:
             try:
                 return lookup[rule]
             except KeyError as exc:
+                if rule in _ARGUMENT_RULES:
+                    raise ValueError(
+                        f"validation rule {rule!r} requires an argument; write it as a "
+                        f"one-key mapping like {{{rule!r}: value}} — bare strings only "
+                        f"work for: {', '.join(sorted(lookup))}"
+                    ) from exc
                 raise ValueError(f"unknown validation rule: {rule!r}") from exc
         if not isinstance(rule, Mapping) or len(rule) != 1:
             raise ValueError("a validation rule must be a callable, string, or one-key mapping")

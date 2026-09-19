@@ -450,6 +450,57 @@ List(
 without a permanent button on every row. The device vibrates on the hold; the
 Tk and browser previews map it to a right click.
 
+### BottomNavigation
+
+The app's primary navigation — a persistent bar of equal-width tabs
+(Android's bottom-navigation pattern). Unlike `SegmentedButtons` (a content
+filter), renderers pin it: bottom bar in the browser preview, tab row in the
+Tk window, horizontal tab bar on the device.
+
+```python
+tabs = BottomNavigation(
+    ["Home", "Stats", "Settings"],
+    value="Home",
+    on_select=self.show_tab,      # fires only on a real change
+)
+tabs.select("Stats")              # programmatic switch redraws the bar
+```
+
+### Dialog, AlertDialog, ConfirmDialog, BottomSheet
+
+Modal surfaces drawn as a framed, elevated card (a `LabelFrame` in Tk, a
+bordered `<section>` in the browser, a card with elevation on Android).
+`open()`/`close()` flip `visible`, so a closed dialog costs nothing::
+
+```python
+self.ask = ConfirmDialog(
+    "Delete entry?", "This cannot be undone.",
+    on_confirm=self.delete, confirm_text="Delete",
+)
+...
+self.ask.open()                   # shown = True, the screen redraws
+```
+
+Whichever button the user taps closes the dialog **first** and only then
+fires `on_confirm`/`on_cancel`/`on_acknowledge`, so a handler never runs
+while the dialog still covers the screen. `AlertDialog` is a message plus one
+button; `BottomSheet(title=...)` anchors the same surface to the bottom edge
+with rounded top corners.
+
+### DatePicker / TimePicker
+
+ISO-string values (`"2026-09-19"`, `"14:30"`) that serialise to JSON untouched.
+The browser preview renders real `<input type="date">` / `<input type="time">`
+controls, the device opens the native `DatePickerDialog` / `TimePickerDialog`.
+Out-of-range values clamp to `minimum`/`maximum`; malformed ones raise
+`ValueError` immediately.
+
+```python
+DatePicker(value="2026-09-19", minimum="2026-01-01",
+           on_change=lambda iso: print(iso))
+TimePicker(value="14:30", on_change=self.on_time)
+```
+
 ### Spacer
 
 ```python
@@ -680,7 +731,15 @@ class Home(Screen):
 
 `self.counter.text = ...` and `self.counter.set_text(...)` do the same thing.
 Every stateful property works this way: `text`, `value`, `checked`, `visible`
-and `enabled`.
+and `enabled`. Those five are properties; anything else on a widget (notably
+`style`) is a plain attribute and does **not** schedule a redraw by itself.
+To restyle a live widget, assign the new style and say so:
+
+```python
+label.style = Style(color=Color.ERROR, bold=True)
+label.invalidate()          # one widget changed
+# self.refresh()           # when the tree itself changed instead
+```
 
 Redraws are coalesced, so a handler that updates six widgets still produces a
 single frame. Assigning a value that has not changed renders nothing at all,
@@ -1460,6 +1519,24 @@ def test_permission_denial_is_handled():
 Useful members: `calls`, `calls_named(name)`, `notifications`, `granted`,
 `reset()`, and the `grant_permissions=False` constructor flag.
 
+Every platform call is recorded in `bridge.calls` under one of these names,
+so assertions never guess:
+
+| Recorded name | Written by |
+| --- | --- |
+| `notify` | `app.notify(...)` |
+| `cancel_notification` | `app.notifications.cancel(...)` |
+| `vibrate` | `app.vibrate(...)` |
+| `vibrate_pattern` | `app.vibration.pattern(...)` — and every `preset(...)`, presets being patterns |
+| `cancel_vibration` | `app.vibration.cancel()` |
+| `toast` | `bridge.toast(...)` |
+| `request_permissions` | `app.permissions.request(...)` |
+| `render` | every frame pushed to the platform |
+
+Note the fourth row: a haptic assertion is
+`bridge.calls_named("vibrate_pattern")`, **not** `"vibrate"` — `preset("success")`
+plays a pattern.
+
 ---
 
 ## Error handling
@@ -1506,7 +1583,12 @@ pymobile preview --png ui.png   # save a raster image (needs Pillow)
 
 The PNG uses the first Unicode TrueType face it finds on the system, so
 Cyrillic, Greek and accented text render as text rather than boxes. Point
-`PYMOBILE_PREVIEW_FONT` at a `.ttf` to choose your own.
+`PYMOBILE_PREVIEW_FONT` at a `.ttf` to choose your own. The canvas is measured
+with the real glyph advances of that face, so long lines are never clipped.
+Glyphs the chosen face lacks (emoji on a bare Linux container, for instance)
+are patched in from a symbol face such as Symbola or Segoe UI Symbol when one
+is installed; anything still uncovered is logged once with a hint instead of
+failing silently.
 
 The text picture shows the real layout — `Row` children sit side by side,
 `ProgressBar` is drawn as a filled bar, `Switch` shows its state:
@@ -1553,7 +1635,9 @@ changed, so typing in a field does not lose focus.
 what you want on a remote machine, in a container, or when Tk is unavailable:
 
 ```bash
-pymobile run --web                 # http://0.0.0.0:8765 (reachable in containers/SSH)
+pymobile run --web                 # banner prints http://127.0.0.1:8765 to open;
+                                   # the server itself listens on all interfaces
+                                   # (containers, SSH tunnels, LAN devices)
 pymobile run --web --port 9000
 pymobile run --web --host 127.0.0.1  # loopback only
 ```

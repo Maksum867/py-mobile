@@ -18,7 +18,7 @@ Build it with ``pymobile build``.
 
 from __future__ import annotations
 
-__version__ = "0.6.5"
+__version__ = "0.7.0"
 __author__ = "MAKSYM KHLYSTUN"
 __license__ = "MIT"
 
@@ -40,16 +40,22 @@ from .core.platform import Platform, current_platform, is_android, is_desktop
 from .core.plugins import Plugin, PluginRegistry, plugins
 from .core.scheduler import Scheduler, TimerHandle
 from .core.ui import (
+    AlertDialog,
     Align,
     Avatar,
     Badge,
+    BottomNavigation,
+    BottomSheet,
     Button,
     Checkbox,
     Chip,
     Color,
     Column,
+    ConfirmDialog,
     Container,
     DataTable,
+    DatePicker,
+    Dialog,
     Divider,
     Dropdown,
     EdgeInsets,
@@ -81,6 +87,7 @@ from .core.ui import (
     Switch,
     TextInput,
     Theme,
+    TimePicker,
     Widget,
 )
 from .core.validation import ValidationError, Validator
@@ -154,6 +161,13 @@ __all__ = [
     "Avatar",
     "List",
     "ListTile",
+    "BottomNavigation",
+    "Dialog",
+    "AlertDialog",
+    "ConfirmDialog",
+    "BottomSheet",
+    "DatePicker",
+    "TimePicker",
     "Column",
     "Row",
     "ScrollView",

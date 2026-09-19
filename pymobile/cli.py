@@ -235,7 +235,7 @@ def _run_web(config: ProjectConfig, entry: Path, args: argparse.Namespace) -> in
     """Serve the app to a browser."""
     from .core.app import App
     from .core.bridge import WebBridge, set_bridge
-    from .core.ui.web import WebPreview
+    from .core.ui.web import WebPreview, browser_url
 
     bridge = WebBridge(verbose=False)
     set_bridge(bridge)
@@ -249,7 +249,12 @@ def _run_web(config: ProjectConfig, entry: Path, args: argparse.Namespace) -> in
 
     preview = WebPreview(app, host=args.host, port=args.port)
     bridge.attach(preview)
-    _out.ok(f"{config.name} is running at http://{args.host}:{preview.port}")
+    _out.ok(f"{config.name} is running at {browser_url(args.host, preview.port)}")
+    if args.host in ("0.0.0.0", "::", "[::]"):
+        _out.info(
+            f"listening on all interfaces ({args.host}); open the loopback "
+            "address above in this machine's browser, or the LAN IP from other devices"
+        )
     _out.info("press Ctrl+C to stop")
     with contextlib.suppress(KeyboardInterrupt):  # Ctrl+C is how you stop it
         preview.serve_forever()

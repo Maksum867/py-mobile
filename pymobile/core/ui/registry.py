@@ -61,6 +61,10 @@ WIDGET_CAPABILITIES: tuple[WidgetCapability, ...] = (
     WidgetCapability("Avatar", web=True, gui=True),
     WidgetCapability("List", web=True, gui=True),
     WidgetCapability("ListTile", web=True, gui=True),
+    WidgetCapability("BottomNavigation", web=True, gui=True),
+    WidgetCapability("Dialog", web=True, gui=True),
+    WidgetCapability("DatePicker", web=True, gui=True),
+    WidgetCapability("TimePicker", web=True, gui=True),
 )
 
 

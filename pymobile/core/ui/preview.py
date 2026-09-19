@@ -19,7 +19,11 @@ import os
 from pathlib import Path
 from typing import Any
 
+from ...logging import get_logger
+
 __all__ = ["render_ascii", "render_png", "ascii_picture", "snapshot_path", "assert_snapshot"]
+
+_log = get_logger("ui.preview")
 
 _BAR_WIDTH = 16
 _DIVIDER_WIDTH = 24
@@ -65,6 +69,24 @@ _FONT_CANDIDATES = (
     "C:/Windows/Fonts/arial.ttf",
 )
 
+#: Monochrome symbol faces consulted as a *fallback* when the primary preview
+#: font lacks a glyph (emoji, dingbats, box supplements). They are never used
+#: as the primary face — only to patch holes in the coverage.
+_SYMBOL_CANDIDATES = (
+    "/usr/share/fonts/truetype/ancient-scripts/Symbola_hint.ttf",
+    "/usr/share/fonts/truetype/Symbola.ttf",
+    "/usr/share/fonts/truetype/noto/NotoSansSymbols2-Regular.ttf",
+    "/usr/share/fonts/noto/NotoSansSymbols2-Regular.ttf",
+    "/System/Library/Fonts/Apple Symbols.ttf",
+    "C:/Windows/Fonts/seguisym.ttf",
+)
+
+#: A plane-16 noncharacter: no font may define it, so rendering it always
+#: yields the face's ``.notdef`` glyph — our probe for "has no glyph for ch".
+_NOTDEF_PROBE = "\U0010FFFE"
+
+_glyph_cache: dict[tuple[Any, Any, str], bool | bytes] = {}
+
 
 def _preview_font(image_font: Any, scale: int) -> Any:
     """Return a Unicode-capable font, falling back to Pillow's default.
@@ -85,11 +107,105 @@ def _preview_font(image_font: Any, scale: int) -> Any:
         return None
 
 
+def _glyph_signature(font: Any, ch: str) -> bytes:
+    """Raster bytes of one glyph, identical for every char a font lacks.
+
+    Pillow draws the face's ``.notdef`` (a tofu box, or nothing) for anything
+    absent from the charmap, so two characters produce the same signature
+    exactly when neither is really covered. ``Image.tobytes`` is used because
+    the mask object ``getmask`` returns has no bytes protocol of its own.
+    """
+    from PIL import Image, ImageDraw  # type: ignore
+
+    bbox = font.getbbox(ch)
+    width = max(bbox[2], 1) + 2
+    height = max(bbox[3], 1) + 2
+    canvas = Image.new("L", (width, height), 0)
+    ImageDraw.Draw(canvas).text((1, 1), ch, fill=255, font=font)
+    return canvas.tobytes()
+
+
+def _has_glyph(font: Any, ch: str) -> bool:
+    """Whether ``font`` really defines ``ch`` (and not just its ``.notdef``)."""
+    if ch.isspace():
+        return True
+    key = (getattr(font, "path", None), getattr(font, "size", None), ch)
+    probe_key = (key[0], key[1], _NOTDEF_PROBE)
+    probe = _glyph_cache.get(probe_key)
+    if probe is None:
+        probe = _glyph_signature(font, _NOTDEF_PROBE)
+        _glyph_cache[probe_key] = probe
+    hit = _glyph_cache.get(key)
+    if hit is None:
+        hit = _glyph_signature(font, ch) != probe
+        _glyph_cache[key] = hit
+    return bool(hit)
+
+
+def _missing_glyphs(font: Any, lines: list[str]) -> set[str]:
+    """Every character of the picture that ``font`` cannot draw."""
+    return {ch for line in lines for ch in line if not _has_glyph(font, ch)}
+
+
+def _fallback_font(image_font: Any, scale: int, missing: set[str], primary: Any) -> Any:
+    """Best symbol face covering ``missing``, or ``None`` when none helps."""
+    primary_path = getattr(primary, "path", None)
+    best: Any = None
+    best_score = 0
+    for candidate in (*_FONT_CANDIDATES, *_SYMBOL_CANDIDATES):
+        if not candidate or not os.path.exists(candidate) or candidate == primary_path:
+            continue
+        try:
+            font = image_font.truetype(candidate, scale + 2)
+        except Exception:  # pragma: no cover - unreadable/odd font file
+            continue
+        score = sum(1 for ch in missing if _has_glyph(font, ch))
+        if score > best_score:
+            best, best_score = font, score
+        if score == len(missing):
+            break
+    return best
+
+
+def _font_for(ch: str, primary: Any, fallback: Any) -> Any:
+    if _has_glyph(primary, ch):
+        return primary
+    if fallback is not None and _has_glyph(fallback, ch):
+        return fallback
+    return primary
+
+
+def _char_advance(font: Any, ch: str) -> float:
+    try:
+        return float(font.getlength(ch))
+    except AttributeError:  # pragma: no cover - Pillow's bitmap default font
+        return float(font.getsize(ch)[0])
+
+
+def _line_advance(line: str, primary: Any, fallback: Any) -> float:
+    return sum(_char_advance(_font_for(ch, primary, fallback), ch) for ch in line)
+
+
+def _draw_line(
+    draw: Any, x: float, y: int, line: str, primary: Any, fallback: Any, fill: str
+) -> None:
+    """Draw ``line`` glyph by glyph so holes fall back to the symbol face."""
+    for ch in line:
+        font = _font_for(ch, primary, fallback)
+        draw.text((x, y), ch, fill=fill, font=font)
+        x += _char_advance(font, ch)
+
+
 def render_png(widget_or_tree: Any, path: str, *, scale: int = 12) -> str:
     """Draw the tree to ``path`` as PNG using Pillow.
 
     Raises :class:`RuntimeError` with an install hint when Pillow is missing,
     so callers can fall back to :func:`render_ascii`.
+
+    The canvas is measured with the real glyph advances of the chosen font
+    (never a guessed pixels-per-character constant), and characters the font
+    lacks — emoji on a bare system, say — are patched from a symbol face when
+    one is installed; anything still uncovered is logged once with a hint.
     """
     try:
         from PIL import Image, ImageDraw, ImageFont  # type: ignore
@@ -102,14 +218,30 @@ def render_png(widget_or_tree: Any, path: str, *, scale: int = 12) -> str:
     if not lines:
         lines = ["<empty screen>"]
     font = _preview_font(ImageFont, scale)
+
+    fallback: Any = None
+    missing = _missing_glyphs(font, lines)
+    if missing:
+        fallback = _fallback_font(ImageFont, scale, missing, font)
+        still = sorted(ch for ch in missing if not _has_glyph(_font_for(ch, font, fallback), ch))
+        if still:
+            shown = "".join(still[:8]) + ("…" if len(still) > 8 else "")
+            _log.warning(
+                "no preview font covers %d glyph(s): %s — they render as boxes; "
+                "hint: install a symbol/emoji font or point PYMOBILE_PREVIEW_FONT "
+                "at a .ttf that covers them",
+                len(still),
+                shown,
+            )
+
     line_height = scale + 6
-    width = max(len(line) for line in lines) * (scale // 2 + 1) + 24
+    width = int(max(_line_advance(line, font, fallback) for line in lines)) + 24
     height = len(lines) * line_height + 24
     image = Image.new("RGB", (width, height), "#101418")
     draw = ImageDraw.Draw(image)
     y = 12
     for line in lines:
-        draw.text((12, y), line, fill="#e6e6e6", font=font)
+        _draw_line(draw, 12, y, line, font, fallback, "#e6e6e6")
         y += line_height
     image.save(path)
     return path
@@ -153,7 +285,7 @@ def _node_lines(node: dict[str, Any], *, show_ids: bool = False) -> list[str]:
     ):
         rows = _join_vertical([_node_lines(child, show_ids=show_ids) for child in children])
     else:
-        rows = _leaf_lines(node)
+        rows = _leaf_lines(node, show_ids=show_ids)
 
     if show_ids and rows:
         tag = f"({node.get('id', '?')}) "
@@ -213,7 +345,7 @@ def _join_horizontal(blocks: list[list[str]]) -> list[str]:
     return out
 
 
-def _leaf_lines(node: dict[str, Any]) -> list[str]:
+def _leaf_lines(node: dict[str, Any], show_ids: bool = False) -> list[str]:
     node_type = node.get("type", "")
     props = node.get("props", {})
     disabled = not node.get("enabled", True)
@@ -343,6 +475,35 @@ def _leaf_lines(node: dict[str, Any]) -> list[str]:
         if trailing:
             base += f"  {trailing}"
         return [f"▸ {base}" if not disabled else f"  {base}"]
+
+    if node_type == "BottomNavigation":
+        options = [str(option) for option in props.get("options", ())]
+        value = props.get("value")
+        tabs = " ".join(f"[{option}]" if option == value else f" {option} " for option in options)
+        bar = "─" * (len(tabs) + 2)
+        return [bar, tabs, bar]
+
+    if node_type == "Dialog":
+        title = str(props.get("title", ""))
+        inner: list[str] = []
+        for child in node.get("children", ()):
+            inner.extend(_node_lines(child, show_ids=show_ids))
+        width = max([len(title) + 1, 18] + [len(line) for line in inner])
+        if title:
+            head = f"┌─ {title} " + "─" * (width - len(title) - 1) + "┐"
+        else:
+            head = "┌" + "─" * (width + 2) + "┐"
+        body = [f"│ {line.ljust(width)} │" for line in inner] or [f"│ {' ' * width} │"]
+        foot = "└" + "─" * (width + 2) + "┘"
+        if props.get("sheet"):
+            return ["▔" * (width + 4), *body, foot]
+        return [head, *body, foot]
+
+    if node_type == "DatePicker":
+        return [f"[📅 {props.get('value', '')}]"]
+
+    if node_type == "TimePicker":
+        return [f"[🕒 {props.get('value', '')}]"]
 
     return [f"<{node_type}>"]
 

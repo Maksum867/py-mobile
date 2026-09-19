@@ -1,5 +1,7 @@
 package org.pymobile.app;
 
+import android.app.DatePickerDialog;
+import android.app.TimePickerDialog;
 import android.content.Context;
 import android.graphics.Color;
 import android.graphics.Typeface;
@@ -174,6 +176,18 @@ final class ViewBuilder {
                 break;
             case "ListTile":
                 view = buildListTile(id, props);
+                break;
+            case "BottomNavigation":
+                view = buildBottomNavigation(id, props);
+                break;
+            case "Dialog":
+                view = buildDialog(node, props);
+                break;
+            case "DatePicker":
+                view = buildDatePicker(id, props);
+                break;
+            case "TimePicker":
+                view = buildTimePicker(id, props);
                 break;
             case "Label":
             default:
@@ -618,6 +632,127 @@ final class ViewBuilder {
     }
 
     // -- leaves -----------------------------------------------------------
+
+    private View buildBottomNavigation(final String id, JSONObject props) throws JSONException {
+        LinearLayout bar = new LinearLayout(context);
+        bar.setOrientation(LinearLayout.HORIZONTAL);
+        JSONArray options = props.optJSONArray("options");
+        final String value = props.optString("value", "");
+        if (options != null) {
+            for (int i = 0; i < options.length(); i++) {
+                final String label = options.optString(i, "");
+                Button tab = new Button(context);
+                tab.setText(label);
+                tab.setAllCaps(false);
+                tab.setLayoutParams(new LinearLayout.LayoutParams(
+                        0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+                if (label.equals(value)) {
+                    tab.setBackgroundColor(Color.parseColor("#3F51B5"));
+                    tab.setTextColor(Color.WHITE);
+                }
+                tab.setOnClickListener(new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        Native.dispatchEvent(id, "change", label);
+                    }
+                });
+                bar.addView(tab);
+            }
+        }
+        return bar;
+    }
+
+    private View buildDialog(JSONObject node, JSONObject props) throws JSONException {
+        LinearLayout box = new LinearLayout(context);
+        box.setOrientation(LinearLayout.VERTICAL);
+        int pad = dp(12);
+        box.setPadding(pad, pad, pad, pad);
+        GradientDrawable surface = new GradientDrawable();
+        surface.setColor(Color.parseColor("#FFFFFF"));
+        surface.setCornerRadius(dp(12));
+        box.setBackground(surface);
+        box.setElevation(dp(6));
+        String title = props.optString("title", "");
+        if (!title.isEmpty()) {
+            TextView head = new TextView(context);
+            head.setText(title);
+            head.setTypeface(null, Typeface.BOLD);
+            head.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
+            box.addView(head, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        }
+        JSONArray children = node.optJSONArray("children");
+        if (children != null) {
+            for (int i = 0; i < children.length(); i++) {
+                box.addView(buildChild(children.getJSONObject(i)), new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            }
+        }
+        return box;
+    }
+
+    private View buildDatePicker(final String id, JSONObject props) {
+        final String current = props.optString("value", "");
+        int year = 2000, month = 0, day = 1;
+        if (current.length() == 10) {
+            year = Integer.parseInt(current.substring(0, 4));
+            month = Integer.parseInt(current.substring(5, 7)) - 1;
+            day = Integer.parseInt(current.substring(8, 10));
+        }
+        final int y = year, m = month, d = day;
+        final Button button = new Button(context);
+        button.setAllCaps(false);
+        button.setText(current.isEmpty() ? "Pick date" : current);
+        button.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                DatePickerDialog dialog = new DatePickerDialog(context,
+                        new DatePickerDialog.OnDateSetListener() {
+                            @Override
+                            public void onDateSet(android.widget.DatePicker view,
+                                                  int year, int month, int day) {
+                                String iso = String.format(java.util.Locale.US,
+                                        "%04d-%02d-%02d", year, month + 1, day);
+                                button.setText(iso);
+                                Native.dispatchEvent(id, "change", iso);
+                            }
+                        }, y, m, d);
+                dialog.show();
+            }
+        });
+        return button;
+    }
+
+    private View buildTimePicker(final String id, JSONObject props) {
+        final String current = props.optString("value", "");
+        int hour = 12, minute = 0;
+        if (current.length() == 5) {
+            hour = Integer.parseInt(current.substring(0, 2));
+            minute = Integer.parseInt(current.substring(3, 5));
+        }
+        final int h = hour, min = minute;
+        final Button button = new Button(context);
+        button.setAllCaps(false);
+        button.setText(current.isEmpty() ? "Pick time" : current);
+        button.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                TimePickerDialog dialog = new TimePickerDialog(context,
+                        new TimePickerDialog.OnTimeSetListener() {
+                            @Override
+                            public void onTimeSet(android.widget.TimePicker view,
+                                                  int hour, int minute) {
+                                String iso = String.format(java.util.Locale.US,
+                                        "%02d:%02d", hour, minute);
+                                button.setText(iso);
+                                Native.dispatchEvent(id, "change", iso);
+                            }
+                        }, h, min, true);
+                dialog.show();
+            }
+        });
+        return button;
+    }
 
     private View buildLabel(JSONObject props) {
         TextView label = new TextView(context);

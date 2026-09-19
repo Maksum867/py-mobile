@@ -26,6 +26,7 @@ from .components import (
     Switch,
     TextInput,
 )
+from .dialogs import AlertDialog, BottomSheet, ConfirmDialog, Dialog
 from .layout import (
     Column,
     Divider,
@@ -38,6 +39,8 @@ from .layout import (
     Stack,
 )
 from .list import List, ListTile
+from .navigation import BottomNavigation
+from .pickers import DatePicker, TimePicker
 from .registry import WidgetCapability, supported_by, widget_types
 from .screen import Navigator, Screen
 from .style import Align, Color, EdgeInsets, Style
@@ -71,6 +74,13 @@ __all__ = [
     "Avatar",
     "List",
     "ListTile",
+    "BottomNavigation",
+    "Dialog",
+    "AlertDialog",
+    "ConfirmDialog",
+    "BottomSheet",
+    "DatePicker",
+    "TimePicker",
     "Divider",
     "Column",
     "Row",

@@ -174,6 +174,19 @@ def _alignment(value: str | None) -> str:
     }.get(value or "", "flex-start")
 
 
+def browser_url(host: str, port: int) -> str:
+    """A URL a human can actually open in a browser.
+
+    ``0.0.0.0`` and ``::`` are *bind* addresses ("listen on every interface");
+    they are not destinations — Windows browsers refuse them outright with
+    ``ERR_ADDRESS_INVALID``. Point humans at loopback instead, and keep the
+    wildcard bind for containers, SSH tunnels and LAN devices.
+    """
+    if host in ("0.0.0.0", "::", "[::]"):
+        host = "127.0.0.1"
+    return f"http://{host}:{port}"
+
+
 def render_html(node: dict[str, Any]) -> str:
     """Render one serialised widget node (and its children) as HTML."""
     if not node.get("visible", True):
@@ -454,6 +467,48 @@ def render_html(node: dict[str, Any]) -> str:
             f'<div class="muted">{trailing}</div></button>'
         )
 
+    if kind == "BottomNavigation":
+        tabs = []
+        for option in props.get("options", ()):
+            label = escape(str(option))
+            active = option == props.get("value")
+            look = "font-weight:700;background:#3F51B5;color:#fff;" if active else ""
+            tabs.append(
+                f'<button class="w" data-wid="{widget_id}"{disabled} '
+                f'style="flex:1;border-radius:0;{look}" '
+                f"onclick=\"send('{widget_id}','change',{escape(str(option), quote=True)})\">"
+                f"{label}</button>"
+            )
+        return f'<nav class="row" style="gap:0;{css}">{"".join(tabs)}</nav>'
+
+    if kind == "Dialog":
+        title = escape(str(props.get("title", "")))
+        sheet = bool(props.get("sheet"))
+        radius = "16px 16px 0 0" if sheet else "12px"
+        margin = "24px 0 0" if sheet else "12px 0"
+        head = f'<h4 style="margin:0 0 8px">{title}</h4>' if title else ""
+        return (
+            f'<section style="border:1px solid #b0bec5;border-radius:{radius};'
+            f"padding:12px;margin:{margin};box-shadow:0 6px 18px rgba(0,0,0,.18);{css}\">"
+            f"{head}{inner}</section>"
+        )
+
+    if kind == "DatePicker":
+        value = escape(str(props.get("value", "")), quote=True)
+        return (
+            f'<input type="date" class="w" data-wid="{widget_id}"{disabled} '
+            f'value="{value}" style="{css}" '
+            f"onchange=\"send('{widget_id}','change',this.value)\">"
+        )
+
+    if kind == "TimePicker":
+        value = escape(str(props.get("value", "")), quote=True)
+        return (
+            f'<input type="time" class="w" data-wid="{widget_id}"{disabled} '
+            f'value="{value}" style="{css}" '
+            f"onchange=\"send('{widget_id}','change',this.value)\">"
+        )
+
     return f'<div class="muted">&lt;{escape(kind)}&gt;</div>'
 
 
@@ -544,7 +599,7 @@ class WebPreview:
     def serve_forever(self) -> None:
         """Run the HTTP server until interrupted."""
         server = self._build_server()
-        _log.info("serving on http://%s:%d", self.host, server.server_port)
+        _log.info("serving on %s", browser_url(self.host, server.server_port))
         try:
             server.serve_forever()
         except KeyboardInterrupt:  # pragma: no cover - interactive
