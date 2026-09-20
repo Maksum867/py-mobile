@@ -44,7 +44,7 @@ class JNIBridge(Bridge):
         # back to a Python Future that the framework awaits, otherwise every
         # permission request would synchronously report "not granted" because
         # the user hasn't had time to tap anything yet.
-        self._pending_permissions: dict[int, "PermissionFuture"] = {}
+        self._pending_permissions: dict[int, PermissionFuture] = {}
         self._pending_permissions_lock = threading.Lock()
         self._permission_callback_attached = False
 
@@ -207,7 +207,7 @@ class JNIBridge(Bridge):
 
     def _request_permissions_async(  # pragma: no cover - device-only path
         self, permissions: list[str]
-    ) -> "PermissionFuture":
+    ) -> PermissionFuture:
         """Open the system dialog and return a :class:`PermissionFuture`.
 
         Exposed so a screen that wants to keep its UI responsive while the
@@ -256,7 +256,7 @@ class JNIBridge(Bridge):
             @java_method(  # type: ignore[untyped-decorator]
                 "(I[Ljava/lang/String;[IZ)V"
             )
-            def onResult(  # noqa: N802 - Java naming convention
+            def onResult(
                 self,
                 request_code: int,
                 permissions_j: Any,

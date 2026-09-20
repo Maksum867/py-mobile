@@ -107,8 +107,10 @@ class HttpCache:
         """Drop every cached entry."""
         # Take the snapshot of matching keys and delete them under one lock so
         # a writer that arrives mid-clear cannot land an entry that survives.
+        # ruff cannot see that ``Storage`` has no ``__iter__`` and refuses to
+        # drop the explicit ``.keys()`` call automatically.
         with self._lock:
-            keys = [k for k in self._storage.keys() if k.startswith(self._prefix)]
+            keys = [k for k in self._storage.keys() if k.startswith(self._prefix)]  # noqa: SIM118
             for key in keys:
                 self._storage.delete(key)
 
@@ -119,5 +121,5 @@ class HttpCache:
         # Storage exposes keys() but deliberately is not a Mapping/iterable.
         with self._lock:
             return sum(
-                1 for key in self._storage.keys() if key.startswith(self._prefix)
+                1 for key in self._storage.keys() if key.startswith(self._prefix)  # noqa: SIM118
             )
