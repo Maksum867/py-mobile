@@ -224,51 +224,13 @@ class Storage:
 
         ``store.update("cart", lambda items: [*items, new], default=[])`` is
         race-free where ``store["cart"] = store.get("cart", []) + [new]`` is
-        not: the read, the transformation and the persist happen under one
-        lock without re-entry, so two concurrent updates cannot lose one
-        another's change.
+        not: the read and the write happen under one lock.
         """
         with self._lock:
             self._load()
             new_value = function(self._data.get(key, default))
-            self._data[key] = new_value
-            # Inline the persist: ``self.set`` would re-acquire the lock, and
-            # even with the RLock the inner save() would release it across
-            # the disk write, opening a window for a third writer to slip in.
-            self._save_locked()
+            self.set(key, new_value)
             return new_value
-
-    def _save_locked(self) -> None:
-        """Atomically persist the in-memory store; the caller holds ``_lock``."""
-        try:
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-            fd, temp_name = tempfile.mkstemp(
-                dir=str(self._path.parent), suffix=".tmp", prefix=self._path.name
-            )
-        except OSError as exc:
-            raise ResourceError(
-                f"Could not open the storage directory {self._path.parent}: {exc}",
-                hint="Check that the path is writable and is not a file.",
-            ) from exc
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                json.dump(self._data, handle, ensure_ascii=False, indent=2)
-            os.replace(temp_name, self._path)
-        except IsADirectoryError as exc:
-            with suppress(OSError):
-                os.unlink(temp_name)
-            raise ResourceError(
-                f"The storage path {self._path} is a directory, not a file.",
-                hint=(
-                    "Pass a file such as "
-                    f"{self._path / DEFAULT_STORE_FILENAME}, or a directory that "
-                    "does not yet exist; PYMOBILE_STORAGE_DIR takes the directory."
-                ),
-            ) from exc
-        except BaseException:
-            with suppress(OSError):
-                os.unlink(temp_name)
-            raise
 
     def increment(self, key: str, amount: float = 1) -> float:
         """Atomically add ``amount`` to a numeric entry and return the result.
@@ -287,8 +249,7 @@ class Storage:
             self._load()
             if key in self._data:
                 return self._data[key]
-            self._data[key] = default
-            self._save_locked()
+            self.set(key, default)
             return default
 
     def keys(self) -> list[str]:

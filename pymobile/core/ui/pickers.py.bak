@@ -28,37 +28,12 @@ def _parse_date(value: str) -> _dt.date:
 
 def _parse_time(value: str) -> _dt.time:
     text = value.strip()
-    # Reject anything beyond the documented HH:MM shape up-front. ``fromisoformat``
-    # accepts a permissive superset (including seconds, "T" separators, and
-    # trailing "Z"), but the framework contract is "HH:MM" — anything else
-    # would round-trip oddly through ``strftime("%H:%M")``. Accept both the
-    # canonical "HH:MM" form and the short "H:MM" form which we normalise below.
-    if not (len(text) == 4 or len(text) == 5):
-        raise ValueError(f"{value!r} is not an ISO time (HH:MM)")
-    expected_colon = 1 if len(text) == 4 else 2
-    if text[expected_colon] != ":":
-        raise ValueError(f"{value!r} is not an ISO time (HH:MM)")
-    # Reject the ISO 8601 "end-of-day" sentinel ``24:xx`` *before* calling
-    # ``fromisoformat`` — Python 3.14 silently coerces ``24:00`` to
-    # ``00:00:00`` (hour=0), which would defeat the post-parse check below
-    # on that interpreter. Python 3.13 still raises ``ValueError`` from
-    # ``fromisoformat``, so the post-parse ``hour == 24`` branch is kept
-    # as a defence-in-depth fallback for older interpreters.
-    if text.startswith("24:"):
-        raise ValueError(f"{value!r} is not a valid wall-clock time (hour 24)")
     if len(text) == 4 and text[1] == ":":      # "7:05" -> "07:05"
         text = f"0{text}"
     try:
-        parsed = _dt.time.fromisoformat(text)
+        return _dt.time.fromisoformat(text)
     except ValueError:
         raise ValueError(f"{value!r} is not an ISO time (HH:MM)") from None
-    # ``datetime.time.fromisoformat`` accepts the ISO 8601 "end-of-day"
-    # sentinel 24:00 since Python 3.7 — it is technically valid but a wall
-    # clock never reads 24:00, so reject it explicitly. ``strftime`` would
-    # otherwise hand the value back unchanged and a UI field would show it.
-    if parsed.hour == 24:
-        raise ValueError(f"{value!r} is not a valid wall-clock time (hour 24)")
-    return parsed
 
 
 class DatePicker(Widget):

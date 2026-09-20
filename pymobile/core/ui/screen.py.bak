@@ -266,12 +266,8 @@ class Navigator:
         screen = self._stack.pop()
         screen.on_hide()
         screen._mounted = False
-        # Run the user hook first: it is the documented place for farewell
-        # work, and it must still see screen-owned subscriptions alive so
-        # ``screen.on(...)`` callbacks fired from the hook are delivered.
-        # Cancelling the subscriptions afterwards is safe because no later
-        # hook will run on this screen.
         screen.on_unmount()
+        # Cancel after on_unmount so a hook can still emit a farewell event.
         screen._cancel_subscriptions()
         screen.app = None
         current = self.current

@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import threading
 import time
 from collections.abc import Mapping
 from pathlib import Path
@@ -41,20 +40,14 @@ class HttpCache:
     ``get`` returns ``None`` when the URL is not cached; ``set`` stores it.
     ``ttl`` seconds bound freshness but a stale entry is still returned by
     ``get_stale`` so an offline app can show the last-known data.
-
-    Every public method is serialised through an internal lock so concurrent
-    jobs and HTTP callbacks cannot race: ``clear()`` would otherwise see a
-    stale snapshot of the keys while a writer slips a new entry in, leaving
-    it alive after the wipe.
     """
 
-    __slots__ = ("_storage", "_prefix", "_lock")
+    __slots__ = ("_storage", "_prefix")
 
     def __init__(self, path: str | Path | None = None, *, prefix: str = "http:") -> None:
         # Defaults to the shared app data store (keys namespaced by prefix).
         self._storage = Storage(path) if path is not None else Storage()
         self._prefix = prefix
-        self._lock = threading.Lock()
 
     @classmethod
     def at(cls, path: str | Path) -> HttpCache:
@@ -86,30 +79,25 @@ class HttpCache:
         The body is stored as base64 rather than a JSON array of bytes, which
         used to inflate both disk and CPU for large payloads.
         """
-        with self._lock:
-            self._storage.set(
-                self._full_key(url),
-                {
-                    "status": status,
-                    "headers": dict(headers),
-                    "content": base64.b64encode(content).decode("ascii"),
-                    "encoding": "base64",
-                    "fetched_at": time.time(),
-                },
-            )
+        self._storage.set(
+            self._full_key(url),
+            {
+                "status": status,
+                "headers": dict(headers),
+                "content": base64.b64encode(content).decode("ascii"),
+                "encoding": "base64",
+                "fetched_at": time.time(),
+            },
+        )
 
     def delete(self, url: str) -> bool:
         """Remove a cached entry; returns whether it existed."""
-        with self._lock:
-            return self._storage.delete(self._full_key(url))
+        return self._storage.delete(self._full_key(url))
 
     def clear(self) -> None:
         """Drop every cached entry."""
-        # Take the snapshot of matching keys and delete them under one lock so
-        # a writer that arrives mid-clear cannot land an entry that survives.
-        with self._lock:
-            keys = [k for k in self._storage.keys() if k.startswith(self._prefix)]
-            for key in keys:
+        for key in list(self._storage.keys()):
+            if key.startswith(self._prefix):
                 self._storage.delete(key)
 
     def __contains__(self, url: object) -> bool:
@@ -117,7 +105,4 @@ class HttpCache:
 
     def __len__(self) -> int:
         # Storage exposes keys() but deliberately is not a Mapping/iterable.
-        with self._lock:
-            return sum(
-                1 for key in self._storage.keys() if key.startswith(self._prefix)
-            )
+        return sum(1 for key in self._storage.keys() if key.startswith(self._prefix))  # noqa: SIM118

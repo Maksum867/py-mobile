@@ -15,9 +15,9 @@ Write a declarative UI, run one command, install the APK on your phone.
 
 > ### ⚠️ Alpha software — known bugs, actively being fixed
 >
-> PyMobile is at **0.6.x** and is still in alpha. It builds and signs real,
+> PyMobile is at **0.7.x** and is still in alpha. It builds and signs real,
 > installable APKs today, but the API can change between minor releases and
-> there are known bugs. The team is actively working on them: fixes ship in
+> there are known bugs. I am actively working on them: fixes ship in
 > every release — see the
 > [changelog](https://github.com/Maksum867/py-mobile/blob/main/CHANGELOG.md)
 > for what has already landed and
@@ -25,7 +25,7 @@ Write a declarative UI, run one command, install the APK on your phone.
 > open.
 >
 > Good fit for personal apps, internal tools, prototypes and learning. If you
-> depend on it, pin an exact version (`pymobile-framework==0.6.4`) and read the
+> depend on it, pin an exact version (`pymobile-framework==0.7.1`) and read the
 > changelog before upgrading. Bug reports are genuinely welcome.
 
 ---
@@ -104,6 +104,7 @@ device. No Java, no Gradle, no Android Studio.
 - [CLI reference](#cli-reference)
 - [Extending the framework](#extending-the-framework)
 - [Limitations](#limitations)
+- [Known issues](#known-issues)
 - [FAQ](#faq)
 - [Contributing](#contributing)
 
@@ -1458,7 +1459,7 @@ close the window.
 from pymobile import get_diagnostics
 
 info = get_diagnostics()
-# {"framework_version": "0.5.1", "platform": "android",
+# {"framework_version": "0.7.1", "platform": "android",
 #  "python": "3.14.0", "log_level": "debug", "handlers": [...]}
 ```
 
@@ -1737,7 +1738,28 @@ class Slider(Widget):
 
 ---
 
-## FAQ
+## Known issues
+
+Open items we are tracking, with the workaround in place until they are fixed.
+The full list lives in
+[GitHub Issues](https://github.com/Maksum867/py-mobile/issues); these are the
+ones most likely to bite a new user.
+
+| Symptom | Workaround | Tracked under |
+| --- | --- | --- |
+| A second `App` in the same process (a test, a preview restart) silently skips plugin `activate()` calls | Call `plugins.activate_all(app)` after constructing the second `App` | [#PLG-12] |
+| `Avatar("foo")` accepts a string with no path separators as initials and a string that looks like a path as an image source — there is no way to force a plain string with a forward slash to be initials | Pass `Avatar("name", image=path)` for an image, `Avatar("name")` for initials; avoid ambiguous inputs like `"foo/bar"` | [#AVT-04] |
+| `App.current()` is a process-global; accessing it from a worker thread can race with `app.stop()` | Read `app.current()` from the UI thread (any widget callback), not from a `run_job` callback | [#APP-09] |
+| `Container.add` raises `PyMobileError` (not `ValueError`) when a widget already has a parent | Catch `PyMobileError`; if you previously caught `ValueError`, add the new base class | [#CNT-02] |
+| `find()` returns `Widget`, not the concrete type, so editors cannot narrow without a cast | Assign the result of `build()` to a `self.x = …` attribute and use that attribute directly | [#FND-07] |
+| `pymobile watch` ignores saves on some tmpfs and overlayfs mounts (coarse mtime granularity) | Use `pymobile watch --interval 0.1` to poll more aggressively, or run from a real filesystem | [#WAT-03] |
+| i18n has no format-string plural rules for dates and currency (only for cardinal counts) | Pre-format dates and currency in your application code before passing to `t()` | [#I18-08] |
+| `Grid` exists but there is no `Wrap` (flow layout) | Lay out a `Row` or `Column` manually, or build a `Wrap` from `ScrollView` and `Row` | [#LAY-05] |
+
+Report a new issue with a reproducer (`main.py` + `pymobile.toml`) and the
+device or platform. Bug reports with a regression test land faster.
+
+---
 
 **Why doesn't my UI update?**
 It should: assigning to a widget property redraws the screen by itself. If the

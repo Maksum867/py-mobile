@@ -86,11 +86,7 @@ def widget_scope(owner: object = None) -> Iterator[None]:
 
 
 def _serialise_value(value: object) -> SerializedValue:
-    """Validate extension props at the public renderer boundary.
-
-    The returned value is always a **deep copy**: callers can mutate it
-    without surprising the widget that produced it.
-    """
+    """Validate extension props at the public renderer boundary."""
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     if isinstance(value, Mapping):
@@ -100,18 +96,6 @@ def _serialise_value(value: object) -> SerializedValue:
     raise TypeError(
         f"widget extension props must contain only JSON-like values (got {type(value).__name__})"
     )
-
-
-def _copy_props(props: Mapping[str, object]) -> WidgetProps:
-    """Return a deep copy of the internal ``_props`` mapping.
-
-    ``Widget.props()`` used to hand out a shallow ``dict(self._props)``,
-    which leaked references to nested dict/list extension props. A native
-    renderer that mutated them in place could corrupt widget state. Now the
-    nested values are cloned so the renderer can do whatever it likes with
-    the returned mapping.
-    """
-    return {key: _serialise_value(value) for key, value in props.items()}
 
 
 class Widget:
@@ -234,12 +218,8 @@ class Widget:
                 self.invalidate()
 
     def props(self) -> WidgetProps:
-        """Serialisable properties of this widget; subclasses extend this.
-
-        The returned mapping is a deep copy so renderers can mutate nested
-        dict/list extension props without leaking back into the widget.
-        """
-        return _copy_props(self._props)
+        """Serialisable properties of this widget; subclasses extend this."""
+        return dict(self._props)
 
     def to_dict(self) -> WidgetNode:
         """Serialise the widget subtree into the public renderer contract.
@@ -313,11 +293,6 @@ class Container(Widget):
                 raise ValueError("a container cannot contain one of its ancestors")
             ancestor = ancestor._parent
         if child._parent is not None:
-            # ``PyMobileError`` is the right type here: a widget arriving in
-            # the tree twice is almost always a side effect of how the
-            # framework owns the tree (Screen.build() / Screen.refresh()
-            # attaching widgets you also stashed on ``self``), so the hint
-            # reaches the user, which a plain ValueError would not.
             raise PyMobileError(
                 f"widget {child.id!r} already has a parent",
                 hint=(

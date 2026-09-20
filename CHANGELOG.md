@@ -3,6 +3,58 @@
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project uses [semantic versioning](https://semver.org/).
 
+## [0.7.1] — 2026-09-20
+
+### Fixed
+
+- **`JNIBridge.request_permissions` returned the answer before the user tapped
+  anything.** `Activity.requestPermissions()` is asynchronous: the dialog opens
+  and the call returns immediately, so a follow-up `checkSelfPermission()`
+  always read "not granted" and the rest of the code believed the user had
+  refused. The bridge now hands the request to a Java-side callback
+  (`onRequestPermissionsResult`) and resolves a `PermissionFuture` from the
+  actual answer — the documented "ask, then check" pattern works in
+  production, not only against the `StubBridge`.
+- **`Image` did not redraw when `source` or `fit` was reassigned.** The fields
+  were plain attributes with no `setter`, so assigning `img.source = "…"`
+  after construction left the on-screen view on the previous bitmap. They are
+  properties now, and the setter invalidates the widget exactly like every
+  other reactive attribute, matching the README.
+- **`HttpCache.clear()` walked the whole keyspace under the lock.** A cache
+  with tens of thousands of entries locked out `get_cached()` for the entire
+  iteration, and iterating `self._storage.keys()` while another thread was
+  writing could surface a `RuntimeError: dictionary changed size during
+  iteration`. The clear now snapshots the keys once and walks the snapshot.
+- **`Storage.setdefault()` raced with a concurrent `set()`.** It took the
+  internal `RLock`, looked up the key, released the lock and *then* called
+  `set()`, so another thread could insert the same key between the check and
+  the write — the documented "atomic against jobs, timers and HTTP callbacks"
+  contract was not actually atomic. There is now a single locked
+  read-modify-write.
+- **`Widget.props()` returned the live `_props` dict.** A widget kept its
+  reference; the next `setter` mutated the dict the caller had in hand, so a
+  test that compared `widget.props() == old_props` could pass on Monday and
+  fail on Tuesday after a single render. The method now returns a shallow
+  copy, matching what the renderer and the JSON serialiser actually need.
+- **`Screen.on_unmount` ran after the subscriptions were already torn down.**
+  A handler that tried to remove itself with `screen.off(...)` raised
+  `KeyError`, and a handler that published a final event reached zero
+  listeners. Subscriptions are detached *after* `on_unmount` returns now, in
+  the documented order.
+- **`TimePicker.set_value("24:00")` silently rewrote the field to `00:00`.**
+  `datetime.time.fromisoformat("24:00")` is an ISO 8601 end-of-day sentinel and
+  Python ≤ 3.13 silently turned it into `00:00:00`, so the wall-clock field
+  displayed a valid but wrong time. A pre-check rejects any input that starts
+  with `"24:"` before parsing (and the post-parse `hour == 24` guard is kept
+  as a defence-in-depth fallback for older interpreters). Python 3.14 was
+  specifically verified.
+- **`Native.dispatchEvent` could dereference a freed `jstring` for a null
+  payload.** A bare `"press"` event has no value, so `valueJ` is `NULL` after
+  `GetStringUTFChars`. The handler now treats `NULL` as the empty string,
+  releases nothing in that branch, and the `jstring` is released in a single
+  place — both the previous leak-on-null and the previous
+  use-after-free-on-non-null are gone.
+
 ## [0.7.0] — 2026-09-20
 
 ### Added

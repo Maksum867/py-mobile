@@ -581,27 +581,13 @@ JNIEXPORT void JNICALL Java_org_pymobile_app_Native_dispatchEvent(
     (void)clazz;
     const char *widget_id = (*env)->GetStringUTFChars(env, widgetIdJ, NULL);
     const char *type = (*env)->GetStringUTFChars(env, typeJ, NULL);
-    /* ``valueJ`` may legitimately be null (e.g. a bare "press" event carries
-     * no payload). Treat that as an empty string rather than letting
-     * ``GetStringUTFChars`` hand us a null that some Android JVMs reject when
-     * later released. */
-    const char *value = "";
-    if (valueJ) {
-        value = (*env)->GetStringUTFChars(env, valueJ, NULL);
-        if (value == NULL) {
-            /* OOM inside the JVM — fall back to empty so we still queue the
-             * event and can release the jstring safely. */
-            value = "";
-        }
-    }
+    const char *value = valueJ ? (*env)->GetStringUTFChars(env, valueJ, NULL) : "";
 
     queue_push(widget_id, type, value);
 
     (*env)->ReleaseStringUTFChars(env, widgetIdJ, widget_id);
     (*env)->ReleaseStringUTFChars(env, typeJ, type);
-    if (valueJ && value != NULL && value != "") {
-        /* Only release the UTF chars we actually fetched: the empty-string
-         * fallback above is a stack literal, not a JVM-owned buffer. */
+    if (valueJ) {
         (*env)->ReleaseStringUTFChars(env, valueJ, value);
     }
 }

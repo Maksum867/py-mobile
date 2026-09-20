@@ -321,14 +321,10 @@ class App:
         screen = self.navigator.current
         if screen is None:
             return None
-        # Hold the lock for the full serialise-and-render so a second thread
-        # observing ``_render_scheduled`` cannot decide to render concurrently.
-        # The bridge call itself is fast (JSON serialisation + a function call),
-        # so the critical section stays short.
         with self._render_lock:
             self._render_scheduled = False
-            tree = screen.to_dict()
-            self.bridge.render(tree)
+        tree = screen.to_dict()
+        self.bridge.render(tree)
         self.events.emit("app:render", source=screen.title, tree=tree)
         return tree
 
@@ -346,16 +342,6 @@ class App:
             if self._render_depth > 0:
                 self._render_scheduled = True
                 return
-            # Re-check inside the lock: another thread may have already
-            # started a render, in which case we piggy-back on its scheduled
-            # follow-up instead of issuing a second concurrent render.
-            if self._render_scheduled:
-                return
-            self._render_scheduled = True
-        # Render is called outside the lock to avoid holding it across the
-        # bridge call — but ``_render_scheduled`` is cleared inside ``render``
-        # itself, under the same lock, so a concurrent caller will see the
-        # in-flight render and queue exactly one follow-up frame.
         self.render()
 
     @contextmanager
