@@ -342,7 +342,7 @@ class PermissionFuture:
         self._result: dict[str, bool] = {}
         self._done = threading.Event()
         self._lock = threading.Lock()
-        self._callbacks: list[Callable[[], None]] = []
+        self._callbacks: list[Callable[[dict[str, bool]], None]] = []
         with PermissionFuture._code_lock:
             # request_code must not collide with anything the host app uses.
             # Start at 1000 to stay clear of common activity result codes.
