@@ -281,9 +281,9 @@ class HttpClient:
                 f"base_url must be a string, got {type(self.base_url).__name__!r}"
             )
         if isinstance(self.base_url, str) and self.base_url.strip() == "" and self.base_url != "":
-            # Only spaces - treat as empty but warn via stripping
             raise ValueError(
-                "base_url must not be only whitespace; pass \"\" for no base URL or a valid URL like \"https://api.example.com\""
+                "base_url must not be only whitespace; "
+                "pass \"\" for no base URL or a URL like https://api.example.com"
             )
         # Docs historically showed ``HttpClient(cache=app.storage)``. Accept a
         # Storage (or any object with a ``path``) and wrap it in HttpCache.

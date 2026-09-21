@@ -164,69 +164,15 @@ class Translations:
         """
         if not isinstance(catalogues, Mapping):
             raise TypeError(
-                f"catalogues must be a mapping of language -> messages, got {type(catalogues).__name__!r}"
+                f"catalogues must be a mapping, got {type(catalogues).__name__!r}"
             )
         loaded: list[str] = []
         for lang, messages in catalogues.items():
             if not isinstance(messages, Mapping):
                 raise TypeError(
-                    f"messages for language {lang!r} must be a mapping, got {type(messages).__name__!r}; "
-                    f"write load_dict({{{lang!r}: {{'key': 'value'}}}}) not load_dict({{{lang!r}: {messages!r}}})"
+                    f"messages for {lang!r} must be mapping, "
+                    f"got {type(messages).__name__!r}"
                 )
-            self.load(messages, language=lang)
-            loaded.append(normalise_language(lang))
-        return tuple(loaded)
-
-    def load_dict(self, catalogues: Mapping[str, Mapping[str, Any]]) -> tuple[str, ...]:
-        """Load multiple language catalogues from a dict.
-
-        Convenience method for in-code translations without external files::
-
-            translations.load_dict({
-                "en": {"greeting": "Hello"},
-                "uk": {"greeting": "Привіт"},
-            })
-
-        Returns the normalised language tags that were loaded.
-        """
-        loaded: list[str] = []
-        for lang, messages in catalogues.items():
-            self.load(messages, language=lang)
-            loaded.append(normalise_language(lang))
-        return tuple(loaded)
-
-    def load_dict(self, catalogues: Mapping[str, Mapping[str, Any]]) -> tuple[str, ...]:
-        """Load multiple language catalogues from a dict.
-
-        Convenience method for in-code translations without external files::
-
-            translations.load_dict({
-                "en": {"greeting": "Hello"},
-                "uk": {"greeting": "Привіт"},
-            })
-
-        Returns the normalised language tags that were loaded.
-        """
-        loaded: list[str] = []
-        for lang, messages in catalogues.items():
-            self.load(messages, language=lang)
-            loaded.append(normalise_language(lang))
-        return tuple(loaded)
-
-    def load_dict(self, catalogues: Mapping[str, Mapping[str, Any]]) -> tuple[str, ...]:
-        """Load multiple language catalogues from a dict.
-
-        Convenience method for in-code translations without external files::
-
-            translations.load_dict({
-                "en": {"greeting": "Hello"},
-                "uk": {"greeting": "Привіт"},
-            })
-
-        Returns the normalised language tags that were loaded.
-        """
-        loaded: list[str] = []
-        for lang, messages in catalogues.items():
             self.load(messages, language=lang)
             loaded.append(normalise_language(lang))
         return tuple(loaded)

@@ -60,12 +60,13 @@ class Screen:
             if root is None:
                 raise PyMobileError(
                     f"{type(self).__name__}.build() returned None",
-                    hint="build() must return a Widget, e.g. return Label('Hello') or return Column(...).",
+                    hint="build() must return a Widget, e.g. Label('Hello').",
                 )
             if not isinstance(root, Widget):
                 raise PyMobileError(
-                    f"{type(self).__name__}.build() must return a Widget, got {type(root).__name__!r}",
-                    hint="Return a Widget instance from build(), e.g. Label, Column, Row.",
+                    f"{type(self).__name__}.build() must return Widget, "
+                    f"got {type(root).__name__!r}",
+                    hint="Return a Widget from build(), e.g. Label, Column.",
                 )
             # The screen link lives on the root only; Widget.screen walks up
             # to find it, so every widget in the tree can reach us.
@@ -259,8 +260,7 @@ class Navigator:
         if screen in self._stack:
             raise PyMobileError(
                 f"screen {screen.title!r} is already on the stack",
-                hint="Create a new screen instance instead of pushing the same object twice, "
-                "e.g. app.push(SettingsScreen()) not app.push(existing_screen).",
+                hint="Create new instance: app.push(SettingsScreen())",
             )
         previous = self.current
         if previous is not None:
@@ -270,10 +270,25 @@ class Navigator:
         # Build the widget tree BEFORE lifecycle hooks so on_mount/on_show
         # can safely access widgets created in build() (e.g. self.label).
         try:
-            _ = screen.root
+            root = screen.root
+            if root is None:
+                raise PyMobileError(
+                    f"{type(screen).__name__}.build() returned None",
+                    hint="build() must return a Widget, e.g. Label('Hello').",
+                )
+            if not isinstance(root, Widget):
+                raise PyMobileError(
+                    f"{type(screen).__name__}.build() must return Widget, "
+                    f"got {type(root).__name__!r}",
+                    hint="Return a Widget from build(), e.g. Label, Column.",
+                )
         except NotImplementedError:
             raise
-        except Exception as exc:
+        except PyMobileError:
+            self._stack.pop()
+            screen.app = None
+            raise
+        except Exception:
             self._stack.pop()
             screen.app = None
             raise

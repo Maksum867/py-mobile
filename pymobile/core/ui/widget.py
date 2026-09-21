@@ -378,30 +378,6 @@ def in_build_scope() -> bool:
     return _scope.get() is not None
 
 
-def in_build_scope() -> bool:
-    """Whether we are currently inside a Screen.build() call.
-
-    Used to suppress on_change/on_select callbacks during build() (BUG-25):
-    firing them while the tree is still being constructed would let a handler
-    access widgets that haven't been created yet.
-    Outside build() (standalone widgets, tests, user interactions) callbacks
-    fire normally.
-    """
-    return _scope.get() is not None
-
-
-def in_build_scope() -> bool:
-    """Whether we are currently inside a Screen.build() call.
-
-    Used to suppress on_change/on_select callbacks during build() (BUG-25):
-    firing them while the tree is still being constructed would let a handler
-    access widgets that haven't been created yet.
-    Outside build() (standalone widgets, tests, user interactions) callbacks
-    fire normally.
-    """
-    return _scope.get() is not None
-
-
 def callback_name(handler: Callable[..., Any] | None) -> str | None:
     """Stable identifier for a callback, used when serialising handlers."""
     if handler is None:

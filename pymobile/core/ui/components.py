@@ -17,7 +17,7 @@ from urllib.parse import unquote, urlparse
 
 from ...logging import get_logger
 from .style import Color
-from .widget import Container, Widget, callback_name, in_build_scope, in_build_scope, in_build_scope
+from .widget import Container, Widget, callback_name, in_build_scope
 
 _log = get_logger("ui.components")
 _warned_missing_sources: set[str] = set()
@@ -686,7 +686,7 @@ class Dropdown(Widget):
         if value != self._value:
             self._value = value
             self.invalidate()
-            if self.on_select is not None:
+            if self.on_select is not None and not in_build_scope():
                 self.on_select(value)
 
     def set_value(self, value: str) -> None:
@@ -1146,7 +1146,7 @@ class SegmentedButtons(Widget):
         if value != self._value:
             self._value = value
             self.invalidate()
-            if self.on_select is not None:
+            if self.on_select is not None and not in_build_scope():
                 self.on_select(value)
 
     def set_value(self, value: str) -> None:

@@ -351,10 +351,9 @@ class Validator:
             for fn in validators:
                 if fn is optional:
                     continue
-                if isinstance(fn, _MatchesField):
-                    message = fn(value, data)
-                else:
-                    message = fn(value)
+                message = (
+                    fn(value, data) if isinstance(fn, _MatchesField) else fn(value)
+                )
                 if message is not None:
                     errors[name] = message
                     break

@@ -152,15 +152,19 @@ def cmd_build(args: argparse.Namespace) -> int:
         if isinstance(exc, ToolchainError):
             hint = getattr(exc, "hint", None) or ""
             if "setup-sdk" not in hint:
-                hint = (f"{hint} " if hint else "") + f"Run `{_invocation()} setup-sdk` to install it automatically."
+                hint = (f"{hint} " if hint else "") + (
+                    f"Run `{_invocation()} setup-sdk` to install it automatically."
+                )
             raise type(exc)(str(exc), hint=hint.strip()) from exc
         if native:
             from .errors import PyMobileError as _PyErr
 
             if isinstance(exc, _PyErr) and exc.hint and "setup-sdk" not in exc.hint:
-                exc.hint = f"{exc.hint} (for native builds: {_invocation()} setup-sdk)"
+                exc.hint = f"{exc.hint} (for native: {_invocation()} setup-sdk)"
             elif isinstance(exc, _PyErr) and not exc.hint:
-                exc.hint = f"Run `{_invocation()} setup-sdk` to install the Android SDK."
+                exc.hint = (
+                    f"Run `{_invocation()} setup-sdk` to install the Android SDK."
+                )
         raise
 
     for warning in result.warnings:
