@@ -175,7 +175,15 @@ def max(high: float) -> ValidatorFn:
 
 
 def matches(other: str) -> ValidatorFn:
-    """A string must equal ``other`` (useful for "confirm password")."""
+    """A string must equal ``other`` (useful for "confirm password").
+
+    When used directly, ``other`` is compared as a literal value::
+
+        matches("expected")(actual)  # returns None or error
+
+    Inside :class:`Validator`, use ``{"matches": "field_name"}`` to compare
+    against another field's value at validation time.
+    """
 
     def _check(value: Any) -> str | None:
         if value != other:
@@ -183,6 +191,23 @@ def matches(other: str) -> ValidatorFn:
         return None
 
     return _check
+
+
+class _MatchesField:
+    """Internal wrapper: resolves the other field's value at validation time."""
+
+    __slots__ = ("field_name",)
+
+    def __init__(self, field_name: str) -> None:
+        self.field_name = field_name
+
+    def __call__(self, value: Any, data: Mapping[str, Any] | None = None) -> str | None:
+        if data is None:
+            return None
+        other_value = data.get(self.field_name)
+        if value != other_value:
+            return f"does not match {self.field_name!r}"
+        return None
 
 
 def one_of(choices: Sequence[Any]) -> ValidatorFn:
@@ -274,8 +299,14 @@ class Validator:
             raise ValueError("a validation rule must be a callable, string, or one-key mapping")
         name, argument = next(iter(rule.items()))
         if name == "length":
+            if isinstance(argument, (int, float)):
+                return length(int(argument), int(argument))
             if not isinstance(argument, Mapping):
-                raise ValueError("length rule expects {min: ..., max: ...}")
+                raise ValueError(
+                    "length rule expects an integer (exact length) or "
+                    "{min: ..., max: ...} mapping; "
+                    f"got {type(argument).__name__!r}"
+                )
             return length(argument.get("min"), argument.get("max"))
         if name == "min_length":
             return min_length(int(argument))
@@ -289,7 +320,7 @@ class Validator:
         if name == "max":
             return max(float(argument))
         if name == "matches":
-            return matches(str(argument))
+            return _MatchesField(str(argument))
         if name == "one_of":
             if not isinstance(argument, Sequence) or isinstance(argument, str):
                 raise ValueError("one_of rule expects a sequence")
@@ -320,7 +351,10 @@ class Validator:
             for fn in validators:
                 if fn is optional:
                     continue
-                message = fn(value)
+                if isinstance(fn, _MatchesField):
+                    message = fn(value, data)
+                else:
+                    message = fn(value)
                 if message is not None:
                     errors[name] = message
                     break

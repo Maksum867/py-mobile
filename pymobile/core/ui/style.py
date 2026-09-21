@@ -138,9 +138,20 @@ class Style:
     def __post_init__(self) -> None:
         for value in (self.background, self.color):
             if value is not None:
+                if not isinstance(value, str):
+                    raise TypeError(
+                        f"color must be a hex string like '#RRGGBB', got {type(value).__name__!r}; "
+                        f"write Style(color='#FF0000') instead of Style(color={value!r})"
+                    )
                 Color.validate(value)
-        if self.font_size is not None and self.font_size <= 0:
-            raise ValueError("font_size must be positive")
+        if self.font_size is not None:
+            if not isinstance(self.font_size, (int, float)):
+                raise TypeError(
+                    f"font_size must be a number, got {type(self.font_size).__name__!r}; "
+                    f"write Style(font_size=16) instead of Style(font_size={self.font_size!r})"
+                )
+            if self.font_size <= 0:
+                raise ValueError("font_size must be positive")
         for name in ("min_width", "max_width", "min_height", "max_height"):
             value = getattr(self, name)
             if value is not None and value < 0:

@@ -17,7 +17,7 @@ from urllib.parse import unquote, urlparse
 
 from ...logging import get_logger
 from .style import Color
-from .widget import Container, Widget, callback_name
+from .widget import Container, Widget, callback_name, in_build_scope, in_build_scope, in_build_scope
 
 _log = get_logger("ui.components")
 _warned_missing_sources: set[str] = set()
@@ -61,7 +61,7 @@ class Label(Widget):
 
     def __init__(self, text: str = "", **kwargs: Any) -> None:
         super().__init__(**kwargs)
-        self._text = text
+        self._text = "" if text is None else str(text)
 
     @property
     def text(self) -> str:
@@ -70,6 +70,7 @@ class Label(Widget):
 
     @text.setter
     def text(self, value: str) -> None:
+        value = "" if value is None else str(value)
         if value != self._text:
             self._text = value
             self.invalidate()
@@ -96,7 +97,7 @@ class Button(Widget):
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
-        self._text = text
+        self._text = "" if text is None else str(text)
         self.on_press = on_press
 
     @property
@@ -106,6 +107,7 @@ class Button(Widget):
 
     @text.setter
     def text(self, value: str) -> None:
+        value = "" if value is None else str(value)
         if value != self._text:
             self._text = value
             self.invalidate()
@@ -144,6 +146,11 @@ class TextInput(Widget):
         on_change: Callable[[str], None] | None = None,
         **kwargs: Any,
     ) -> None:
+        # Alias: maxlength (HTML style) -> max_length
+        if "maxlength" in kwargs:
+            if max_length is not None:
+                raise ValueError("pass either max_length or maxlength, not both")
+            max_length = kwargs.pop("maxlength")
         super().__init__(**kwargs)
         if max_length is not None and max_length <= 0:
             raise ValueError("max_length must be positive")
@@ -171,7 +178,7 @@ class TextInput(Widget):
             return
         self._value = value
         self.invalidate()
-        if self.on_change is not None:
+        if self.on_change is not None and not in_build_scope():
             self.on_change(value)
 
     def clear(self) -> None:
@@ -331,7 +338,7 @@ class Switch(Widget):
         if checked != self._checked:
             self._checked = checked
             self.invalidate()
-            if self.on_toggle is not None:
+            if self.on_toggle is not None and not in_build_scope():
                 self.on_toggle(checked)
 
     def props(self) -> dict[str, Any]:
@@ -356,6 +363,11 @@ class ProgressBar(Widget):
         indeterminate: bool = False,
         **kwargs: Any,
     ) -> None:
+        # Alias: max -> maximum (common shorthand)
+        if "max" in kwargs:
+            if maximum != 100.0:  # user passed both
+                raise ValueError("pass either maximum or max, not both")
+            maximum = kwargs.pop("max")
         super().__init__(**kwargs)
         if maximum <= 0:
             raise ValueError("maximum must be positive")
@@ -431,9 +443,21 @@ class Slider(Widget):
         on_change: Callable[[float], None] | None = None,
         **kwargs: Any,
     ) -> None:
+        # Aliases: min -> minimum, max -> maximum
+        if "min" in kwargs:
+            if minimum != 0.0:
+                raise ValueError("pass either minimum or min, not both")
+            minimum = kwargs.pop("min")
+        if "max" in kwargs:
+            if maximum != 100.0:
+                raise ValueError("pass either maximum or max, not both")
+            maximum = kwargs.pop("max")
         super().__init__(**kwargs)
         if maximum <= minimum:
-            raise ValueError("maximum must be greater than minimum")
+            raise ValueError(
+                f"maximum ({maximum}) must be greater than minimum ({minimum}); "
+                "did you swap them?"
+            )
         if step is not None and step <= 0:
             raise ValueError("step must be positive")
         self.minimum = minimum
@@ -473,7 +497,7 @@ class Slider(Widget):
         if clamped != self._value:
             self._value = clamped
             self.invalidate()
-            if self.on_change is not None:
+            if self.on_change is not None and not in_build_scope():
                 self.on_change(clamped)
 
     def props(self) -> dict[str, Any]:
@@ -522,7 +546,7 @@ class Checkbox(Widget):
         if checked != self._checked:
             self._checked = checked
             self.invalidate()
-            if self.on_toggle is not None:
+            if self.on_toggle is not None and not in_build_scope():
                 self.on_toggle(checked)
 
     def toggle(self) -> bool:
@@ -557,6 +581,10 @@ class RatingBar(Widget):
         on_change: Callable[[float], None] | None = None,
         **kwargs: Any,
     ) -> None:
+        if "max" in kwargs:
+            if maximum != 5:
+                raise ValueError("pass either maximum or max, not both")
+            maximum = kwargs.pop("max")
         super().__init__(**kwargs)
         if rating is not None and value is not None:
             raise ValueError("pass either rating or value, not both")
@@ -587,7 +615,7 @@ class RatingBar(Widget):
         if clamped != self._rating:
             self._rating = clamped
             self.invalidate()
-            if self.on_change is not None:
+            if self.on_change is not None and not in_build_scope():
                 self.on_change(clamped)
 
     def props(self) -> dict[str, Any]:
@@ -622,7 +650,10 @@ class Dropdown(Widget):
         if on_select is not None and on_change is not None:
             raise ValueError("pass either on_select or on_change, not both")
         if not options:
-            raise ValueError("options must not be empty")
+            raise ValueError(
+                "options must not be empty; "
+                "pass at least one option, e.g. options=['Item 1', 'Item 2']"
+            )
         if not all(isinstance(o, str) for o in options):
             raise ValueError("options must be strings")
         self.options = list(options)
@@ -648,7 +679,10 @@ class Dropdown(Widget):
     def select(self, value: str) -> None:
         """Choose ``value``, notifying listeners only on a real change."""
         if value not in self.options:
-            raise ValueError(f"{value!r} is not one of the options")
+            raise ValueError(
+                f"{value!r} is not one of the options; "
+                f"available: {self.options!r}"
+            )
         if value != self._value:
             self._value = value
             self.invalidate()
@@ -786,6 +820,14 @@ class Stepper(Widget):
         on_change: Callable[[int], None] | None = None,
         **kwargs: Any,
     ) -> None:
+        if "min" in kwargs:
+            if minimum != 0:
+                raise ValueError("pass either minimum or min, not both")
+            minimum = kwargs.pop("min")
+        if "max" in kwargs:
+            if maximum != 100:
+                raise ValueError("pass either maximum or max, not both")
+            maximum = kwargs.pop("max")
         super().__init__(**kwargs)
         if maximum < minimum:
             raise ValueError("maximum must be >= minimum")
@@ -812,7 +854,7 @@ class Stepper(Widget):
         if clamped != self._value:
             self._value = clamped
             self.invalidate()
-            if self.on_change is not None:
+            if self.on_change is not None and not in_build_scope():
                 self.on_change(clamped)
 
     def increment(self) -> int:
@@ -874,7 +916,7 @@ class SearchBar(Widget):
         if value != self._value:
             self._value = value
             self.invalidate()
-            if self.on_change is not None:
+            if self.on_change is not None and not in_build_scope():
                 self.on_change(value)
 
     def submit(self) -> None:
@@ -999,7 +1041,10 @@ class RadioGroup(Container):
     def _select_silent(self, text: str) -> None:
         """Set the selected radio and update visuals without calling on_select."""
         if text not in self._radios:
-            raise ValueError(f"{text!r} is not a radio in this group")
+            raise ValueError(
+                f"{text!r} is not a radio in this group; "
+                f"available: {list(self._radios.keys())!r}"
+            )
         self._value = text
         for label, radio in self._radios.items():
             radio.set_selected(label == text)
@@ -1017,7 +1062,10 @@ class RadioGroup(Container):
     def select(self, text: str) -> None:
         """Choose the radio labelled ``text``, unselecting the others."""
         if text not in self._radios:
-            raise ValueError(f"{text!r} is not a radio in this group")
+            raise ValueError(
+                f"{text!r} is not a radio in this group; "
+                f"available: {list(self._radios.keys())!r}"
+            )
         if text == self._value:
             return
         self._select_silent(text)
@@ -1064,7 +1112,10 @@ class SegmentedButtons(Widget):
         if on_select is not None and on_change is not None:
             raise ValueError("pass either on_select or on_change, not both")
         if not options:
-            raise ValueError("options must not be empty")
+            raise ValueError(
+                "options must not be empty; "
+                "pass at least one option, e.g. options=['Item 1', 'Item 2']"
+            )
         self.options = list(options)
         self.on_select = on_select or on_change
         # Fail fast, the way Style() does for a bad colour: silently swapping an
@@ -1088,7 +1139,10 @@ class SegmentedButtons(Widget):
     def select(self, value: str) -> None:
         """Choose ``value``, notifying listeners only on a real change."""
         if value not in self.options:
-            raise ValueError(f"{value!r} is not one of the options")
+            raise ValueError(
+                f"{value!r} is not one of the options; "
+                f"available: {self.options!r}"
+            )
         if value != self._value:
             self._value = value
             self.invalidate()
@@ -1126,6 +1180,10 @@ class ProgressText(Widget):
         label: str = "",
         **kwargs: Any,
     ) -> None:
+        if "max" in kwargs:
+            if maximum != 100.0:
+                raise ValueError("pass either maximum or max, not both")
+            maximum = kwargs.pop("max")
         super().__init__(**kwargs)
         if maximum <= 0:
             raise ValueError("maximum must be positive")

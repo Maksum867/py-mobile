@@ -302,6 +302,13 @@ class Container(Widget):
 
     def add(self, child: Widget) -> Widget:
         """Append a child and return it (so calls can be chained/assigned)."""
+        if child is None:
+            raise TypeError(
+                f"{type(self).__name__} received None as a child; "
+                "every child must be a Widget instance. "
+                "Check for conditional expressions like "
+                "'Label(\'x\') if condition else None' \u2014 use 'visible' instead."
+            )
         if child is self:
             raise ValueError("a container cannot contain itself")
         # Reject attaching an ancestor below its own descendant. Without this,
@@ -357,6 +364,42 @@ class Container(Widget):
 
     def __iter__(self) -> Iterator[Widget]:
         return iter(self._children)
+
+
+def in_build_scope() -> bool:
+    """Whether we are currently inside a Screen.build() call.
+
+    Used to suppress on_change/on_select callbacks during build() (BUG-25):
+    firing them while the tree is still being constructed would let a handler
+    access widgets that haven't been created yet.
+    Outside build() (standalone widgets, tests, user interactions) callbacks
+    fire normally.
+    """
+    return _scope.get() is not None
+
+
+def in_build_scope() -> bool:
+    """Whether we are currently inside a Screen.build() call.
+
+    Used to suppress on_change/on_select callbacks during build() (BUG-25):
+    firing them while the tree is still being constructed would let a handler
+    access widgets that haven't been created yet.
+    Outside build() (standalone widgets, tests, user interactions) callbacks
+    fire normally.
+    """
+    return _scope.get() is not None
+
+
+def in_build_scope() -> bool:
+    """Whether we are currently inside a Screen.build() call.
+
+    Used to suppress on_change/on_select callbacks during build() (BUG-25):
+    firing them while the tree is still being constructed would let a handler
+    access widgets that haven't been created yet.
+    Outside build() (standalone widgets, tests, user interactions) callbacks
+    fire normally.
+    """
+    return _scope.get() is not None
 
 
 def callback_name(handler: Callable[..., Any] | None) -> str | None:

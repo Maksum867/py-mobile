@@ -163,6 +163,12 @@ class HttpFuture:
         Raises :class:`TimeoutError` when ``timeout`` seconds elapse before the
         request completes. Raises :class:`NetworkError` if the request failed.
         ``timeout`` of ``None`` waits forever.
+
+        .. warning::
+            This blocks the calling thread. Never call it on the UI thread
+            (e.g. inside ``on_show`` or a button handler) — it will freeze
+            the screen. Use ``then(on_success=...)`` instead, or call ``get()``
+            from a background job via ``app.run_job()``.
         """
         finished = self._done.wait(timeout)
         if not finished:
@@ -248,6 +254,37 @@ class HttpClient:
     security: HttpSecurityPolicy = field(default_factory=HttpSecurityPolicy)
 
     def __post_init__(self) -> None:
+        # Validation for common mistakes (BUG-27, BUG-28) + new checks
+        if not isinstance(self.timeout, (int, float)):
+            raise TypeError(f"timeout must be a number, got {type(self.timeout).__name__!r}")
+        if self.timeout <= 0:
+            raise ValueError(
+                f"timeout must be positive, got {self.timeout}; "
+                "pass e.g. timeout=15.0 for 15 seconds"
+            )
+        if not isinstance(self.retries, int) or isinstance(self.retries, bool):
+            raise TypeError(
+                f"retries must be an int, got {type(self.retries).__name__!r}; "
+                f"pass e.g. retries=0 or retries=2"
+            )
+        if self.retries < 0:
+            raise ValueError(
+                f"retries must be >= 0, got {self.retries}; "
+                "pass 0 for no retries, 2 for two retries"
+            )
+        if not isinstance(self.backoff, (int, float)):
+            raise TypeError(f"backoff must be a number, got {type(self.backoff).__name__!r}")
+        if self.backoff < 0:
+            raise ValueError(f"backoff must be >= 0, got {self.backoff}")
+        if self.base_url is not None and not isinstance(self.base_url, str):
+            raise TypeError(
+                f"base_url must be a string, got {type(self.base_url).__name__!r}"
+            )
+        if isinstance(self.base_url, str) and self.base_url.strip() == "" and self.base_url != "":
+            # Only spaces - treat as empty but warn via stripping
+            raise ValueError(
+                "base_url must not be only whitespace; pass \"\" for no base URL or a valid URL like \"https://api.example.com\""
+            )
         # Docs historically showed ``HttpClient(cache=app.storage)``. Accept a
         # Storage (or any object with a ``path``) and wrap it in HttpCache.
         cache = self.cache

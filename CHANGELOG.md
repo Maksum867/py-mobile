@@ -3,6 +3,48 @@
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project uses [semantic versioning](https://semver.org/).
 
+## [0.7.2] — 2026-09-21
+
+### Added
+
+- **Widget aliases for common shorthand:** `Slider(min=, max=)`, `Stepper(min=, max=)`, `ProgressBar(max=)`, `RatingBar(max=)`, `ProgressText(max=)`, `TextInput(maxlength=)` now work as aliases for `minimum`/`maximum`/`max_length`. Previously they were silently ignored via `**kwargs` → `Widget` props.
+- `Storage.exists(key)` alias for `contains(key)` — more discoverable, documented with examples.
+- `EventBus.off(name, handler=None)` now removes all handlers when handler is None and returns count; new `off_all(name)` method.
+- `App.off(event, handler=None)` — removes all or specific handlers, returns count.
+- `App.replace(screen)` and `App.reset(screen)` shortcuts for `navigator.replace`/`reset`.
+
+### Fixed
+
+- **Style validation:** `Style(font_size="big")` → `TypeError` with hint `Style(font_size=16)`; `Style(color=255)` → `TypeError` with hint `Style(color='#FF0000')`.
+- **Layout:** `Column(None, Label("B"))` → `TypeError` with hint about `visible` instead of `AttributeError`.
+- **Permissions:** `permissions.has(None)` → `TypeError` with hint instead of `AttributeError`.
+- **Components:** `Label.text = None` and `Button.text = None` now convert None → "" (was already in some paths, now consistent).
+- **i18n:** Added `Translations.load_dict()` for in-code translations; `load_dict({"en": "not-a-dict"})` now raises `TypeError` with example instead of `ValueError`.
+- **Validation:** `Validator({"code": [{"length": 3}]})` — length now accepts int as exact length; `{"matches": "field"}` now does field-to-field comparison via `_MatchesField`.
+- **Jobs:** `then(on_error=...)` without `on_success` now works — previously required on_done.
+- **Dropdown/SegmentedButtons:** Empty options message now includes example `e.g. options=['Item 1', 'Item 2']`; `set_value("Z")` now shows `available: [...]`.
+- **Slider:** `min=100, max=0` now shows values and hint `did you swap them?`; also supports `min`/`max` aliases, previously silently ignored.
+- **RadioGroup/SegmentedButtons:** `select("C")` now shows available options.
+- **Vibration:** `vibrate(0)` message improved to `milliseconds must be positive, got 0; pass e.g. vibrate(100)`; amplitude 999 and -5 now raise `ValueError`.
+- **Scheduler:** `set_interval(0)` message improved to explain `set_timeout` vs interval; `set_timeout("100", ...)` now raises `TypeError` for non-numeric.
+- **Lifecycle critical:** `on_show()` was called BEFORE `build()` — now `screen.root` is built before `on_mount`/`on_show`, with rollback if build fails.
+- **Lifecycle critical:** `Dropdown.set_value()` during `build()` fired `on_change` callbacks that accessed not-yet-created widgets — now callbacks are suppressed during `build()` via `in_build_scope()` (widget_scope ContextVar). Affects Dropdown, SegmentedButtons, RadioGroup, Slider, Switch, Checkbox, RatingBar, Stepper, TextInput, SearchBar.
+- **Navigation:** Push same object message improved with example `SettingsScreen()`; `App.push(None)` now raises `TypeError` with hint instead of `AttributeError`; `Screen.build()` returning None now raises `PyMobileError` with hint instead of `AttributeError`; `pop()` twice on root now documented as safe returning None.
+- **HttpClient:** `timeout=-1` and `retries=-1` now raise `ValueError` with clear message; `retries=1.5` float now raises `TypeError`; `base_url` non-string → `TypeError`; `base_url="   "` whitespace-only → `ValueError`; docstring for `get()` now warns about blocking UI thread.
+- **Storage:** `del storage["nonexistent"]` now raises `KeyError` with helpful hint (use `delete()` or check `key in storage`) instead of bare `KeyError`; `set()` and `setdefault()` with non-JSON value (e.g. set) now raise `PyMobileError`/`ResourceError` with hint about JSON types instead of raw `TypeError`.
+- **Events:** `app.on("event", None)` now raises `TypeError: handler must be callable`; `off()` now supports removing all handlers and returns count.
+- **Notifications:** `notify(None, "Body")` now raises `TypeError: title must be a string` instead of `ValueError`; empty title → `ValueError` with example hint; body type also validated; `notification_id` string now raises `TypeError`.
+- **Build:** `build --native` without SDK now always hints `pymobile setup-sdk` (ToolchainError already had hint, now cmd_build guarantees it); `build` without `--native` now warns `This is a structural build — not installable on a device. Use --native...`.
+- **Permissions:** `request([])` now unpacks list/tuple/set — allows both `request("CAMERA", "LOCATION")` and `request(["CAMERA", "LOCATION"])`.
+- **ProgressBar, RatingBar, Stepper, ProgressText, TextInput:** Now support `max`/`min`/`maxlength` aliases.
+
+### Changed
+
+- `Container.add()` now raises `TypeError` for None child with hint about `visible`.
+- `EventBus.off()` signature changed from `off(name, handler)` to `off(name, handler=None)` returning int (breaking: previously returned None).
+- `Navigator.push()` now validates `isinstance(screen, Screen)` before checking stack.
+- `Screen.root` property now validates build() result (None → PyMobileError, non-Widget → PyMobileError).
+
 ## [0.7.1] — 2026-09-20
 
 ### Fixed

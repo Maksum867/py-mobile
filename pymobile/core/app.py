@@ -387,8 +387,29 @@ class App:
         return self.navigator.push(screen)
 
     def pop(self) -> Screen | None:
-        """Go back one screen; ``None`` when already at the root."""
+        """Go back one screen; ``None`` when already at the root.
+
+        Safe to call multiple times — extra pops on the root return ``None``.
+        """
         return self.navigator.pop()
+
+    def replace(self, screen: ScreenT) -> ScreenT:
+        """Replace the top screen with ``screen`` (no back to previous).
+
+        Example::
+
+            app.replace(HomeScreen())  # after login, no back to login
+        """
+        return self.navigator.replace(screen)
+
+    def reset(self, screen: ScreenT) -> ScreenT:
+        """Clear stack and start from ``screen`` (e.g. on logout).
+
+        Example::
+
+            app.reset(LoginScreen())
+        """
+        return self.navigator.reset(screen)
 
     # -- UI dispatch -------------------------------------------------------
     def dispatch(self, callback: Callable[..., None], *args: Any, **kwargs: Any) -> bool:

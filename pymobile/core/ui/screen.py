@@ -57,6 +57,16 @@ class Screen:
         if self._root is None:
             with widget_scope(self):
                 root = self.build()
+            if root is None:
+                raise PyMobileError(
+                    f"{type(self).__name__}.build() returned None",
+                    hint="build() must return a Widget, e.g. return Label('Hello') or return Column(...).",
+                )
+            if not isinstance(root, Widget):
+                raise PyMobileError(
+                    f"{type(self).__name__}.build() must return a Widget, got {type(root).__name__!r}",
+                    hint="Return a Widget instance from build(), e.g. Label, Column, Row.",
+                )
             # The screen link lives on the root only; Widget.screen walks up
             # to find it, so every widget in the tree can reach us.
             root._screen = self
@@ -241,16 +251,32 @@ class Navigator:
 
     def push(self, screen: ScreenT) -> ScreenT:
         """Show ``screen`` on top of the stack."""
+        if not isinstance(screen, Screen):
+            raise TypeError(
+                f"push() expects a Screen instance, got {type(screen).__name__!r}; "
+                f"write app.push(MyScreen()) not app.push({screen!r})"
+            )
         if screen in self._stack:
             raise PyMobileError(
                 f"screen {screen.title!r} is already on the stack",
-                hint="Create a new screen instance instead of pushing the same object twice.",
+                hint="Create a new screen instance instead of pushing the same object twice, "
+                "e.g. app.push(SettingsScreen()) not app.push(existing_screen).",
             )
         previous = self.current
         if previous is not None:
             previous.on_hide()
         screen.app = self._app
         self._stack.append(screen)
+        # Build the widget tree BEFORE lifecycle hooks so on_mount/on_show
+        # can safely access widgets created in build() (e.g. self.label).
+        try:
+            _ = screen.root
+        except NotImplementedError:
+            raise
+        except Exception as exc:
+            self._stack.pop()
+            screen.app = None
+            raise
         if not screen._mounted:
             screen._mounted = True
             screen.on_mount()
@@ -260,7 +286,17 @@ class Navigator:
         return screen
 
     def pop(self) -> Screen | None:
-        """Remove the top screen and reveal the one below it."""
+        """Remove the top screen and reveal the one below it.
+
+        The root screen is never popped — ``pop()`` returns ``None`` when
+        already at the root. It is safe to call ``pop()`` multiple times:
+        extra calls on the root are no-ops returning ``None``, not errors.
+
+        Example::
+
+            app.pop()  # goes back
+            app.pop()  # safe even if already at root, returns None
+        """
         if len(self._stack) <= 1:
             return None
         screen = self._stack.pop()
@@ -282,7 +318,19 @@ class Navigator:
         return screen
 
     def replace(self, screen: ScreenT) -> ScreenT:
-        """Swap the top screen for ``screen``."""
+        """Swap the top screen for ``screen``.
+
+        Unlike ``push()``, this does not keep the current screen in the stack —
+        useful for login → home transitions where you don't want back to go to login.
+
+        Example::
+
+            # After login, replace login screen with home
+            app.navigator.replace(HomeScreen())
+
+            # Or via App shortcut
+            app.replace(HomeScreen())
+        """
         if self._stack:
             top = self._stack.pop()
             top.on_hide()
@@ -293,7 +341,16 @@ class Navigator:
         return self.push(screen)
 
     def reset(self, screen: ScreenT) -> ScreenT:
-        """Clear the stack and start again from ``screen``."""
+        """Clear the stack and start again from ``screen``.
+
+        Useful for logout or switching user accounts — all screens are unmounted
+        and the stack starts fresh.
+
+        Example::
+
+            # On logout, reset to login screen
+            app.navigator.reset(LoginScreen())
+        """
         self.dispose()
         return self.push(screen)
 

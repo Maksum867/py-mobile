@@ -60,9 +60,30 @@ class Notifications:
         ongoing: bool = False,
         icon: str | None = None,
     ) -> int:
-        """Post a notification and return its id (usable with :meth:`cancel`)."""
+        """Post a notification and return its id (usable with :meth:`cancel`).
+
+        ``title`` is required (Android needs it for the notification header),
+        ``body`` may be empty — a title-only notification is valid.
+        """
+        if not isinstance(title, str):
+            raise TypeError(
+                f"notification title must be a string, got {type(title).__name__!r}; "
+                f"write notify(\"Title\", \"Body\") not notify({title!r}, ...)"
+            )
         if not title:
-            raise ValueError("notification title must not be empty")
+            raise ValueError(
+                "notification title must not be empty; "
+                "pass e.g. notify(\"Update\", \"Download complete\")"
+            )
+        if not isinstance(body, str):
+            raise TypeError(
+                f"notification body must be a string, got {type(body).__name__!r}"
+            )
+        if notification_id is not None and not isinstance(notification_id, int):
+            raise TypeError(
+                f"notification_id must be an int, got {type(notification_id).__name__!r}; "
+                f"pass e.g. notification_id=1"
+            )
         self._ensure_channel()
         resolved_id = notification_id if notification_id is not None else next(self._ids)
         self._bridge.notify(

@@ -59,19 +59,43 @@ class EventBus:
 
     def on(self, name: str, handler: Handler) -> Subscription:
         """Register ``handler`` for events called ``name``."""
+        if not callable(handler):
+            raise TypeError(
+                f"handler must be callable, got {type(handler).__name__!r}; "
+                f"write app.on({name!r}, my_handler) where my_handler is a function"
+            )
         self._handlers.setdefault(name, []).append(handler)
         return Subscription(self, name, handler)
 
-    def off(self, name: str, handler: Handler) -> None:
-        """Detach a previously registered handler (no error if missing)."""
+    def off(self, name: str, handler: Handler | None = None) -> int:
+        """Detach a handler, or all handlers for ``name`` when ``handler`` is None.
+
+        ``off(\"event\")`` removes every subscriber for that event — useful when
+        you want to reset a channel without tracking each :class:`Subscription`::
+
+            app.events.off(\"my:event\")  # all handlers for my:event are gone
+
+        ``off(\"event\", handler)`` removes only that specific handler.
+        Returns number of handlers removed.
+        """
+        if handler is None:
+            handlers = self._handlers.pop(name, None)
+            return len(handlers) if handlers else 0
         handlers = self._handlers.get(name)
         if not handlers:
-            return
+            return 0
+        before = len(handlers)
         with_removed = [h for h in handlers if h is not handler]
         if with_removed:
             self._handlers[name] = with_removed
         else:
             del self._handlers[name]
+        return before - len(with_removed)
+
+    def off_all(self, name: str) -> int:
+        """Remove all handlers for ``name`` and return how many were removed."""
+        handlers = self._handlers.pop(name, None)
+        return len(handlers) if handlers else 0
 
     def emit(self, name: str, *, source: str | None = None, **data: Any) -> Event:
         """Build an :class:`Event` and deliver it to every subscriber."""

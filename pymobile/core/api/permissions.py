@@ -74,6 +74,11 @@ def normalize(permission: str | Permission) -> str:
     """Accept ``"CAMERA"``, ``"android.permission.CAMERA"`` or the enum member."""
     if isinstance(permission, Permission):
         return permission.value
+    if not isinstance(permission, str):
+        raise TypeError(
+            f"permission must be a string or Permission enum, got {type(permission).__name__!r}; "
+            f"write permissions.has('CAMERA') or permissions.has(Permission.CAMERA)"
+        )
     text = permission.strip()
     if not text:
         raise ValueError("permission name must not be empty")
@@ -105,6 +110,9 @@ class PermissionManager:
         system without even showing a dialog, which looks like a silent
         failure, so that case is logged explicitly.
         """
+        # Allow both request("CAMERA", "LOCATION") and request(["CAMERA", "LOCATION"])
+        if len(permissions) == 1 and isinstance(permissions[0], (list, tuple, set)):
+            permissions = tuple(permissions[0])
         wanted = [normalize(p) for p in permissions]
         if not wanted:
             return {}

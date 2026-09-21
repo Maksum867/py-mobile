@@ -25,7 +25,7 @@ Write a declarative UI, run one command, install the APK on your phone.
 > open.
 >
 > Good fit for personal apps, internal tools, prototypes and learning. If you
-> depend on it, pin an exact version (`pymobile-framework==0.7.1`) and read the
+> depend on it, pin an exact version (`pymobile-framework==0.7.2`) and read the
 > changelog before upgrading. Bug reports are genuinely welcome.
 
 ---
@@ -279,6 +279,7 @@ TextInput(
     max_length=50,             # extra characters are trimmed automatically
     on_change=lambda value: print(value),
 )
+TextInput(maxlength=50)        # alias: maxlength -> max_length (HTML style)
 
 TextInput(password=True)       # masked
 TextInput(multiline=True)      # multi-line
@@ -332,12 +333,15 @@ segmented = SegmentedButtons(
 ```python
 slider = Slider(value=50, minimum=0, maximum=100,
                 on_change=lambda v: print(v))
+# aliases supported: min/max
+slider = Slider(value=50, min=0, max=100)
 ```
 
 ### ProgressBar
 
 ```python
 bar = ProgressBar(40, maximum=100)
+bar = ProgressBar(40, max=100)      # alias: max -> maximum
 bar.set_value(150)         # clamped to maximum
 bar.fraction               # 0.0 … 1.0
 
@@ -358,6 +362,7 @@ ProgressText(42, maximum=100, label="Downloading")
 ```python
 rating = RatingBar(value=3, maximum=5,
                    on_change=lambda v: print(v))
+rating = RatingBar(value=3, max=5)  # alias: max -> maximum
 ```
 
 ### Dropdown
@@ -390,6 +395,7 @@ Badge("3")       # notification badge
 ```python
 stepper = Stepper(value=1, minimum=0, maximum=10,
                   on_change=lambda v: print(v))
+stepper = Stepper(value=1, min=0, max=10)  # aliases: min/max
 ```
 
 ### Link
@@ -692,12 +698,21 @@ Navigation is a stack:
 ```python
 app.push(Settings())            # on_hide(current) → on_mount → on_show
 app.pop()                       # on_hide → on_unmount → on_show(previous)
+app.pop()                       # safe to call multiple times, returns None on root
 
-app.navigator.replace(Other())  # swap the top screen
+app.replace(HomeScreen())       # after login, no back to login (App shortcut)
+app.reset(LoginScreen())        # on logout, clear stack (App shortcut)
+
+app.navigator.replace(Other())  # swap the top screen (via navigator)
 app.navigator.reset(Home())     # clear the stack, start fresh
 app.navigator.depth             # how many screens are stacked
 app.screen                      # the visible screen
 ```
+
+`build()` is now called **before** `on_mount()`/`on_show()`, so you can safely
+access widgets created in `build()` from lifecycle hooks. `push(None)` and
+`build()` returning `None` now raise clear `TypeError`/`PyMobileError` instead
+of raw `AttributeError`.
 
 The root screen is never popped — `pop()` returns `None` instead of leaving a
 blank window. The hardware back button is wired up automatically.
@@ -801,9 +816,12 @@ Key-value JSON storage with atomic writes.
 ```python
 app.storage["token"] = "abc123"      # set
 token = app.storage["token"]         # get
-del app.storage["token"]             # delete
+del app.storage["token"]             # delete (KeyError with hint if missing)
 
 app.storage.get("token", default="") # with default
+app.storage.contains("token")        # explicit check
+app.storage.exists("token")          # alias, more discoverable
+"token" in app.storage               # also works
 app.storage.keys()                   # all keys
 app.storage.clear()                  # wipe everything
 ```
@@ -1203,7 +1221,15 @@ app.on("cart:updated", lambda e: print(e.get("count")))
 
 subscription = app.on("x", handler)
 subscription.cancel()          # always unsubscribe in on_unmount()
+
+# remove handlers
+app.off("cart:updated")                 # removes all, returns count
+app.off("cart:updated", handler)        # removes specific, returns 0/1
+app.events.off_all("cart:updated")      # same, via EventBus
 ```
+
+`app.on("event", None)` now raises `TypeError` immediately instead of failing
+silently later. `app.off(event)` without handler removes all subscribers.
 
 An exception inside one handler is logged and never prevents the others from
 running.

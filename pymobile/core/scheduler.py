@@ -70,6 +70,8 @@ class Scheduler:
     # -- public API --------------------------------------------------------
     def set_timeout(self, delay_ms: int, callback: Callable[[], None]) -> TimerHandle:
         """Run ``callback`` once after ``delay_ms`` milliseconds."""
+        if not isinstance(delay_ms, (int, float)) or isinstance(delay_ms, bool):
+            raise TypeError(f"delay_ms must be a number, got {type(delay_ms).__name__!r}")
         if delay_ms < 0:
             raise ValueError("delay_ms must be >= 0")
         handle = TimerHandle()
@@ -105,8 +107,14 @@ class Scheduler:
         Pass ``drift_correction=False`` for the old behaviour: a fixed pause
         *between* runs, which is what a poller that must not overlap wants.
         """
+        if not isinstance(interval_ms, (int, float)) or isinstance(interval_ms, bool):
+            raise TypeError(f"interval_ms must be a number, got {type(interval_ms).__name__!r}")
         if interval_ms <= 0:
-            raise ValueError("interval_ms must be > 0")
+            raise ValueError(
+                f"interval_ms must be > 0, got {interval_ms}; "
+                "use set_timeout(0, ...) for immediate execution, "
+                "interval must be at least 1ms to avoid tight loop"
+            )
         handle = TimerHandle()
         interval = interval_ms / 1000.0
 

@@ -129,6 +129,11 @@ def cmd_build(args: argparse.Namespace) -> int:
     native = getattr(args, "native", False)
     if native:
         _out.info("native build: this may take a few minutes on the first run")
+    else:
+        _out.warn(
+            "This is a structural build — not installable on a device. "
+            f"Use --native for a real APK (requires Android SDK: {_invocation()} setup-sdk)"
+        )
     pipeline = BuildPipeline(
         config,
         use_cache=not args.no_cache and not args.clean,
@@ -139,7 +144,24 @@ def cmd_build(args: argparse.Namespace) -> int:
         key_alias=getattr(args, "key_alias", None),
         key_password=getattr(args, "key_pass", None),
     )
-    result = pipeline.run()
+    try:
+        result = pipeline.run()
+    except Exception as exc:
+        from .compiler.toolchain import ToolchainError
+
+        if isinstance(exc, ToolchainError):
+            hint = getattr(exc, "hint", None) or ""
+            if "setup-sdk" not in hint:
+                hint = (f"{hint} " if hint else "") + f"Run `{_invocation()} setup-sdk` to install it automatically."
+            raise type(exc)(str(exc), hint=hint.strip()) from exc
+        if native:
+            from .errors import PyMobileError as _PyErr
+
+            if isinstance(exc, _PyErr) and exc.hint and "setup-sdk" not in exc.hint:
+                exc.hint = f"{exc.hint} (for native builds: {_invocation()} setup-sdk)"
+            elif isinstance(exc, _PyErr) and not exc.hint:
+                exc.hint = f"Run `{_invocation()} setup-sdk` to install the Android SDK."
+        raise
 
     for warning in result.warnings:
         _out.warn(warning)

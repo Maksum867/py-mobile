@@ -99,12 +99,15 @@ class JobHandle:
 
         ``on_success`` is a documented alias of the positional ``on_done``
         argument so the same keyword works on :class:`~pymobile.core.net.http.HttpFuture`.
+
+        You may pass ``on_error`` without ``on_done``/``on_success`` to handle
+        only failures — the success value is silently discarded.
         """
         if on_done is not None and on_success is not None:
             raise TypeError("pass either on_done or on_success, not both")
         done = on_done if on_done is not None else on_success
-        if done is None:
-            raise TypeError("then() requires on_done or on_success")
+        if done is None and on_error is None:
+            raise TypeError("then() requires at least on_done, on_success, or on_error")
         callback: Callable[[], None] | None = None
         with self._lock:
             if self._cancelled:
@@ -140,13 +143,13 @@ class JobHandle:
 
     def _fire(
         self,
-        on_done: Callable[[Any], None],
+        on_done: Callable[[Any], None] | None,
         on_error: Callable[[BaseException], None] | None,
     ) -> None:
         if self._error is not None:
             if on_error is not None:
                 on_error(self._error)
-        else:
+        elif on_done is not None:
             on_done(self._result)
 
     def _complete(self, result: Any, error: BaseException | None) -> None:

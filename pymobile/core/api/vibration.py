@@ -39,7 +39,10 @@ class Vibration:
     def vibrate(self, milliseconds: int = 100, *, amplitude: int = DEFAULT_AMPLITUDE) -> None:
         """Vibrate once. ``amplitude`` is 1..255, or -1 for the device default."""
         if milliseconds <= 0:
-            raise ValueError("milliseconds must be positive")
+            raise ValueError(
+                f"milliseconds must be positive, got {milliseconds}; "
+                "pass e.g. vibrate(100) for 100ms"
+            )
         if amplitude != DEFAULT_AMPLITUDE and not 1 <= amplitude <= MAX_AMPLITUDE:
             raise ValueError(f"amplitude must be -1 or within 1..{MAX_AMPLITUDE}")
         self._bridge.vibrate(int(milliseconds), int(amplitude))

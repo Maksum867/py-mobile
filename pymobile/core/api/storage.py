@@ -154,6 +154,14 @@ class Storage:
                         "does not yet exist; PYMOBILE_STORAGE_DIR takes the directory."
                     ),
                 ) from exc
+            except TypeError as exc:
+                with suppress(OSError):
+                    os.unlink(temp_name)
+                raise ResourceError(
+                    f"Storage value is not JSON serializable: {exc}",
+                    hint="Use only JSON types: str, int, float, bool, None, list, dict. "
+                    "Convert sets, tuples, or custom objects to list/dict first.",
+                ) from exc
             except BaseException:
                 with suppress(OSError):
                     os.unlink(temp_name)
@@ -170,6 +178,17 @@ class Storage:
         """Set ``key`` atomically within this process and persist it."""
         if not isinstance(key, str) or not key:
             raise ValueError("storage key must be a non-empty string")
+        # Early check for JSON serializability to give clear error before save
+        try:
+            json.dumps(value)
+        except TypeError as exc:
+            from ...errors import PyMobileError
+
+            raise PyMobileError(
+                f"Storage value for {key!r} is not JSON serializable: {exc}",
+                hint="Use JSON types: str, int, float, bool, None, list, dict. "
+                "E.g. list(my_set) instead of my_set.",
+            ) from exc
         with self._lock:
             self._load()
             self._data[key] = value
@@ -191,6 +210,20 @@ class Storage:
         with self._lock:
             self._load()
             return key in self._data
+
+    def exists(self, key: str) -> bool:
+        """Whether ``key`` is present (alias of :meth:`contains`).
+
+        Added for discoverability — ``storage.exists(\"key\")`` reads more
+        naturally than ``\"key\" in storage`` for newcomers, though both work::
+
+            if storage.exists(\"token\"):
+                ...
+
+            if \"token\" in storage:
+                ...
+        """
+        return self.contains(key)
 
     def clear(self) -> None:
         """Remove every entry and persist the empty store."""
@@ -283,6 +316,15 @@ class Storage:
 
     def setdefault(self, key: str, default: Any) -> Any:
         """Return ``key``, storing and returning ``default`` when it is absent."""
+        try:
+            json.dumps(default)
+        except TypeError as exc:
+            from ...errors import PyMobileError
+
+            raise PyMobileError(
+                f"Storage value for {key!r} is not JSON serializable: {exc}",
+                hint="Use JSON types: str, int, float, bool, None, list, dict.",
+            ) from exc
         with self._lock:
             self._load()
             if key in self._data:
@@ -315,7 +357,13 @@ class Storage:
 
     def __delitem__(self, key: str) -> None:
         if not self.delete(key):
-            raise KeyError(key)
+            # Keep KeyError to satisfy Mapping protocol and existing tests,
+            # but include a helpful hint in the message.
+            raise KeyError(
+                f"storage key {key!r} not found — "
+                "use storage.delete(key) to silently ignore when missing, "
+                "or check 'key in storage' before deleting"
+            )
 
     def __contains__(self, key: object) -> bool:
         return isinstance(key, str) and self.contains(key)
