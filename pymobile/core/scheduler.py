@@ -173,6 +173,11 @@ class Scheduler:
         timer.daemon = True
         handle._set_timer(timer)
         timer.start()
+        # A cancel() landing between the callback's cancellation check and
+        # this re-arm would otherwise leave a "shadow tick" armed; disarm it
+        # so a cancelled interval never fires one extra callback.
+        if handle.cancelled:
+            timer.cancel()
 
     def _fire(self, callback: Callable[[], None]) -> None:
         """Invoke ``callback``; an error is logged, never propagated."""

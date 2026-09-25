@@ -152,7 +152,12 @@ class HttpFuture:
         return self._cancelled
 
     def cancel(self) -> None:
-        """Suppress callbacks for this request."""
+        """Detach callbacks from this request.
+
+        The network exchange itself still runs to completion on its daemon
+        thread (``urllib`` cannot be interrupted portably) and ``get()`` keeps
+        returning its result; only the registered callbacks are suppressed.
+        """
         with self._lock:
             self._cancelled = True
             self._callbacks.clear()
@@ -237,8 +242,11 @@ class HttpFuture:
 class HttpClient:
     """A small HTTP client with both synchronous and async (background) verbs.
 
-    ``retries`` applies to connection errors and to retryable status codes
-    (408/425/429 and 5xx) with exponential backoff. The synchronous ``get``/
+    ``retries`` applies only to idempotent requests (GET, HEAD, OPTIONS):
+    connection errors and retryable status codes (408/425/429 and 5xx) are
+    retried with exponential backoff. POST/PUT/DELETE are never replayed
+    automatically — a retry could perform a side effect twice — pass
+    ``retry_safe=True`` to opt in. The synchronous ``get``/
     ``post``/``put``/``delete`` return a :class:`Response` directly; the
     ``*_async`` variants run on a background thread and return an
     :class:`HttpFuture` so the UI thread is never blocked.
@@ -390,12 +398,16 @@ class HttpClient:
         data: bytes | str | Mapping[str, Any] | None = None,
         headers: Mapping[str, str] | None = None,
         timeout: float | None = None,
+        retry_safe: bool | None = None,
     ) -> Response:
         """Send a request and return a :class:`Response`.
 
         Raises :class:`~pymobile.errors.NetworkError` on transport failures;
         HTTP error statuses are returned, not raised (use
         :meth:`Response.raise_for_status`).
+
+        ``retry_safe=True`` permits retries for non-idempotent verbs; the
+        default retries only GET/HEAD/OPTIONS.
         """
         if json is not None and data is not None:
             raise ValueError("pass either json= or data=, not both")
@@ -404,6 +416,16 @@ class HttpClient:
         body, content_type = self._encode_body(json, data)
         request_headers = self._merge_headers(headers, content_type)
         attempts = max(0, self.retries) + 1
+        # Never replay a non-idempotent verb implicitly: a retried POST could
+        # perform its side effect twice. Callers opt in per request.
+        if retry_safe is not None:
+            allowed = retry_safe
+        elif method.upper() in ("GET", "HEAD", "OPTIONS"):
+            allowed = True
+        else:
+            allowed = False
+        if not allowed:
+            attempts = 1
         last_error: Exception | None = None
 
         for attempt in range(1, attempts + 1):

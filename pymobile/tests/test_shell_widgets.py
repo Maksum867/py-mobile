@@ -96,9 +96,11 @@ def test_time_picker_normalises() -> None:
 
 
 def test_renderers_cover_the_new_widgets() -> None:
+    dialog = ConfirmDialog("Sure?", "msg")
+    dialog.open()  # dialogs are hidden by default (audit B17)
     tree = Column(
         BottomNavigation(["Home", "Stats"], value="Home"),
-        ConfirmDialog("Sure?", "msg"),
+        dialog,
         DatePicker("2026-09-19"),
         TimePicker("14:30"),
     )

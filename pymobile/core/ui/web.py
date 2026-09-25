@@ -96,7 +96,13 @@ function apply(state) {{
   document.getElementById('back').style.display = state.depth > 1 ? '' : 'none';
   document.getElementById('status').textContent = state.status || '';
   if (keep) {{  // typing must survive a redraw
-    const again = document.querySelector('[data-wid="' + keep + '"]');
+    let again = null;
+    try {{
+      again = document.querySelector('[data-wid="' + keep + '"]');
+      if (again === null && typeof CSS !== 'undefined' && CSS.escape) {{
+        again = document.querySelector('[data-wid="' + CSS.escape(keep) + '"]');
+      }}
+    }} catch (e) {{ again = null; }}
     if (again) {{ again.focus(); if (start != null && again.setSelectionRange)
       again.setSelectionRange(start, start); }}
   }}
@@ -187,6 +193,25 @@ def browser_url(host: str, port: int) -> str:
     return f"http://{host}:{port}"
 
 
+def _js_value(value: str) -> str:
+    """Escape ``value`` for embedding inside a single-quoted JS string.
+
+    Inline handlers are plain attributes: the browser decodes HTML entities
+    before evaluating the JavaScript, so HTML-escaping alone was never enough
+    and an option label like ``O'Reilly`` could close the JS string. This
+    escapes the characters that matter inside a ''-quoted JS string first,
+    then HTML-escapes the whole thing so the attribute stays well-formed.
+    """
+    return escape(
+        str(value)
+        .replace("\\", "\\\\")
+        .replace("'", "\\'")
+        .replace("\r", "\\r")
+        .replace("\n", "\\n"),
+        quote=True,
+    )
+
+
 def render_html(node: dict[str, Any]) -> str:
     """Render one serialised widget node (and its children) as HTML."""
     if not node.get("visible", True):
@@ -211,7 +236,7 @@ def render_html(node: dict[str, Any]) -> str:
         gap = props.get("spacing", 0)
         horizontal = props.get("horizontal")
         flow = "row" if horizontal else "column"
-        overflow = "overflow-x:auto" if horizontal else "overflow-y:auto;max-height:60vh"
+        overflow = "overflow-x:auto" if horizontal else "overflow-y:auto"
         return (
             f'<div class="col" style="flex-direction:{flow};gap:{gap}px;{overflow};{css}">'
             f"{inner}</div>"
@@ -258,7 +283,7 @@ def render_html(node: dict[str, Any]) -> str:
         label = escape(str(props.get("text", "")))
         return (
             f'<button class="w" data-wid="{widget_id}"{disabled} style="{css}" '
-            f"onclick=\"send('{widget_id}','press','')\">{label}</button>"
+            f"onclick=\"send(this.dataset.wid,'press','')\">{label}</button>"
         )
 
     if kind == "TextInput":
@@ -270,12 +295,12 @@ def render_html(node: dict[str, Any]) -> str:
             return (
                 f'<textarea class="w" data-wid="{widget_id}" placeholder="{placeholder}"'
                 f'{disabled} style="{css}" '
-                f"oninput=\"send('{widget_id}','change',this.value)\">{body}</textarea>"
+                f"oninput=\"send(this.dataset.wid,'change',this.value)\">{body}</textarea>"
             )
         return (
             f'<input class="w" type="{kind_attr}" data-wid="{widget_id}" value="{value}" '
             f'placeholder="{placeholder}"{disabled} style="{css}" '
-            f"oninput=\"send('{widget_id}','change',this.value)\">"
+            f"oninput=\"send(this.dataset.wid,'change',this.value)\">"
         )
 
     if kind == "Switch":
@@ -283,7 +308,7 @@ def render_html(node: dict[str, Any]) -> str:
         return (
             f'<label style="display:flex;gap:8px;align-items:center;{css}">'
             f'<input type="checkbox" data-wid="{widget_id}"{checked}{disabled} '
-            f"onchange=\"send('{widget_id}','toggle',this.checked?'true':'false')\">"
+            f"onchange=\"send(this.dataset.wid,'toggle',this.checked?'true':'false')\">"
             f'<span class="muted">{"on" if props.get("checked") else "off"}</span></label>'
         )
 
@@ -295,7 +320,16 @@ def render_html(node: dict[str, Any]) -> str:
         return f'<progress class="w" max="{maximum}" value="{value}" style="{css}"></progress>'
 
     if kind == "Image":
-        return f'<div class="muted" style="{css}">🖼 {escape(str(props.get("source", "")))}</div>'
+        source = escape(str(props.get("source", "")), quote=True)
+        # http(s)/data sources render directly; APK-local asset paths degrade
+        # to the message on the right via the onerror fallback.
+        onerror = "this.replaceWith(document.createTextNode('[image unavailable]'))"
+        return (
+            f'<div style="{css}">'
+            f'<img data-wid="{widget_id}" src="{source}" alt="" '
+            f'style="max-width:100%;display:block" onerror="{onerror}">'
+            f"</div>"
+        )
 
     if kind == "Spacer":
         return f'<div style="height:{props.get("size", 8)}px;flex:0 0 auto"></div>'
@@ -307,7 +341,7 @@ def render_html(node: dict[str, Any]) -> str:
         return (
             f'<input class="w" type="range" data-wid="{widget_id}" min="{minimum}" '
             f'max="{maximum}" value="{value}"{disabled} style="{css}" '
-            f"oninput=\"send('{widget_id}','change',this.value)\">"
+            f"oninput=\"send(this.dataset.wid,'change',this.value)\">"
         )
 
     if kind == "Checkbox":
@@ -315,7 +349,7 @@ def render_html(node: dict[str, Any]) -> str:
         return (
             f'<label style="display:flex;gap:8px;align-items:center;{css}">'
             f'<input type="checkbox" data-wid="{widget_id}"{checked}{disabled} '
-            f"onchange=\"send('{widget_id}','toggle',this.checked?'true':'false')\">"
+            f"onchange=\"send(this.dataset.wid,'toggle',this.checked?'true':'false')\">"
             f"</label>"
         )
 
@@ -324,7 +358,7 @@ def render_html(node: dict[str, Any]) -> str:
         maximum = int(props.get("maximum", 5) or 5)
         stars = "".join(
             f'<button type="button" data-wid="{widget_id}"{disabled} '
-            f"onclick=\"send('{widget_id}','change','{i}')\">"
+            f"onclick=\"send(this.dataset.wid,'change','{i}')\">"
             f"{'★' if i <= float(rating or 0) else '☆'}</button>"
             for i in range(1, maximum + 1)
         )
@@ -340,7 +374,7 @@ def render_html(node: dict[str, Any]) -> str:
         )
         return (
             f'<select class="w" data-wid="{widget_id}"{disabled} style="{css}" '
-            f"onchange=\"send('{widget_id}','change',this.value)\">{items}</select>"
+            f"onchange=\"send(this.dataset.wid,'change',this.value)\">{items}</select>"
         )
 
     if kind == "Chip":
@@ -349,7 +383,7 @@ def render_html(node: dict[str, Any]) -> str:
         return (
             f'<button class="w" data-wid="{widget_id}"{disabled} '
             f'style="border-radius:999px;{selected}{css}" '
-            f"onclick=\"send('{widget_id}','press','')\">{label}</button>"
+            f"onclick=\"send(this.dataset.wid,'press','')\">{label}</button>"
         )
 
     if kind == "Badge":
@@ -367,10 +401,10 @@ def render_html(node: dict[str, Any]) -> str:
         return (
             f'<div data-wid="{widget_id}" style="display:flex;gap:8px;align-items:center;{css}">'
             f'<button class="w" style="width:auto"{disabled} '
-            f"onclick=\"send('{widget_id}','decrement','')\">-</button>"
+            f"onclick=\"send(this.parentElement.dataset.wid,'decrement','')\">-</button>"
             f"<span>{value}</span>"
             f'<button class="w" style="width:auto"{disabled} '
-            f"onclick=\"send('{widget_id}','increment','')\">+</button>"
+            f"onclick=\"send(this.parentElement.dataset.wid,'increment','')\">+</button>"
             f"</div>"
         )
 
@@ -380,8 +414,8 @@ def render_html(node: dict[str, Any]) -> str:
         return (
             f'<input class="w" type="search" data-wid="{widget_id}" value="{value}" '
             f'placeholder="{placeholder}"{disabled} style="{css}" '
-            f"oninput=\"send('{widget_id}','change',this.value)\" "
-            f"onkeydown=\"if(event.key==='Enter')send('{widget_id}','search',this.value)\">"
+            f"oninput=\"send(this.dataset.wid,'change',this.value)\" "
+            f"onkeydown=\"if(event.key==='Enter')send(this.dataset.wid,'search',this.value)\">"
         )
 
     if kind == "RadioButton":
@@ -390,7 +424,7 @@ def render_html(node: dict[str, Any]) -> str:
         return (
             f'<label style="display:flex;gap:8px;align-items:center;{css}">'
             f'<input type="radio" data-wid="{widget_id}"{checked}{disabled} '
-            f"onchange=\"send('{widget_id}','press','')\">"
+            f"onchange=\"send(this.dataset.wid,'press','')\">"
             f"<span>{label}</span></label>"
         )
 
@@ -400,7 +434,7 @@ def render_html(node: dict[str, Any]) -> str:
         buttons = "".join(
             f'<button class="w" data-wid="{widget_id}"{disabled} '
             f'style="{"font-weight:700;" if str(opt) == selected else ""}" '
-            f"onclick=\"send('{widget_id}','change','{escape(str(opt), quote=True)}')\">"
+            f"onclick=\"send(this.dataset.wid,'change','{_js_value(str(opt))}')\">"
             f"{escape(str(opt))}</button>"
             for opt in options
         )
@@ -422,7 +456,7 @@ def render_html(node: dict[str, Any]) -> str:
         return (
             f'<a class="w" data-wid="{widget_id}" href="{url or "#"}" '
             f'style="{css}" '
-            f"onclick=\"event.preventDefault();send('{widget_id}','press','')\">{label}</a>"
+            f"onclick=\"event.preventDefault();send(this.dataset.wid,'press','')\">{label}</a>"
         )
 
     if kind == "DataTable":
@@ -455,13 +489,13 @@ def render_html(node: dict[str, Any]) -> str:
         # to the context menu (right click / touch-and-hold), which is what a
         # desktop tester reaches for anyway.
         long_press = (
-            f" oncontextmenu=\"send('{widget_id}','long_press','');return false\""
+            " oncontextmenu=\"send(this.dataset.wid,'long_press','');return false\""
             if props.get("long_pressable")
             else ""
         )
         return (
             f'<button class="w" data-wid="{widget_id}"{disabled} style="text-align:left;{css}" '
-            f"onclick=\"send('{widget_id}','press','')\"{long_press}>"
+            f"onclick=\"send(this.dataset.wid,'press','')\"{long_press}>"
             f"<div>{title}</div>"
             f'<div class="muted">{subtitle}</div>'
             f'<div class="muted">{trailing}</div></button>'
@@ -476,7 +510,7 @@ def render_html(node: dict[str, Any]) -> str:
             tabs.append(
                 f'<button class="w" data-wid="{widget_id}"{disabled} '
                 f'style="flex:1;border-radius:0;{look}" '
-                f"onclick=\"send('{widget_id}','change',{escape(str(option), quote=True)})\">"
+                f"onclick=\"send(this.dataset.wid,'change','{_js_value(str(option))}')\">"
                 f"{label}</button>"
             )
         return f'<nav class="row" style="gap:0;{css}">{"".join(tabs)}</nav>'
@@ -498,7 +532,7 @@ def render_html(node: dict[str, Any]) -> str:
         return (
             f'<input type="date" class="w" data-wid="{widget_id}"{disabled} '
             f'value="{value}" style="{css}" '
-            f"onchange=\"send('{widget_id}','change',this.value)\">"
+            f"onchange=\"send(this.dataset.wid,'change',this.value)\">"
         )
 
     if kind == "TimePicker":
@@ -506,7 +540,7 @@ def render_html(node: dict[str, Any]) -> str:
         return (
             f'<input type="time" class="w" data-wid="{widget_id}"{disabled} '
             f'value="{value}" style="{css}" '
-            f"onchange=\"send('{widget_id}','change',this.value)\">"
+            f"onchange=\"send(this.dataset.wid,'change',this.value)\">"
         )
 
     return f'<div class="muted">&lt;{escape(kind)}&gt;</div>'

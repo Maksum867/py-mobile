@@ -163,6 +163,22 @@ class AndroidBridge(Bridge):
                 return False
         return False
 
+    # -- lifecycle ---------------------------------------------------------
+    def finish_app(self) -> bool:
+        """Ask the Activity to finish (root back button).
+
+        Returns True when the platform acknowledged the request; preview
+        bridges return False so the app stops instead.
+        """
+        native = self._native
+        if native is not None and hasattr(native, "finish_app"):
+            try:
+                native.finish_app()
+                return True
+            except Exception:
+                _log.exception("finish_app failed")
+        return False
+
     # -- events ------------------------------------------------------------
     def next_event(self, timeout_ms: int = -1) -> tuple[str, str, str] | None:
         """Block until the UI thread reports an interaction."""

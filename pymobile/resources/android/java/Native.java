@@ -96,4 +96,9 @@ public final class Native {
     public static boolean openUrl(String url) {
         return DeviceServices.openUrl(MainActivity.current(), url);
     }
+
+    /** Ask the launcher Activity to finish (the root back button). */
+    public static void finishApp() {
+        MainActivity.finishApp();
+    }
 }

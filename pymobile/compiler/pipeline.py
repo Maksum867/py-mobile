@@ -364,6 +364,13 @@ class BuildPipeline:
 
         runtime = self._stage("runtime", lambda: ensure_runtime(self.config.abis[0]))
         backend = NativeBackend(self.config, toolchain, runtime, abi=self.config.abis[0])
+        if len(self.config.abis) > 1:
+            # The native backend packages only the first ABI; surfacing this
+            # beats silently shipping an APK that ignores the rest.
+            self.warnings.append(
+                "native builds package only the first requested ABI "
+                f"({self.config.abis[0]} of {self.config.abis}); build one ABI at a time"
+            )
 
         native_dir = self._stage("jni", lambda: backend.compile_jni(workdir))
         dex = self._stage("dex", lambda: backend.compile_java(workdir))

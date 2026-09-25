@@ -198,6 +198,19 @@ public class MainActivity extends Activity {
         Native.dispatchEvent("", "back", "");
     }
 
+    /** Finish the activity from the Python thread (arrives via JNI). */
+    static void finishApp() {
+        final MainActivity activity = instance;
+        if (activity != null) {
+            activity.runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    activity.finish();
+                }
+            });
+        }
+    }
+
     @Override
     protected void onNewIntent(android.content.Intent intent) {
         super.onNewIntent(intent);

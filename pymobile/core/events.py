@@ -7,6 +7,7 @@ main thread and the bus keeps that contract simple and predictable.
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import Any
@@ -52,10 +53,11 @@ class Subscription:
 class EventBus:
     """Named channels of callbacks, dispatched in registration order."""
 
-    __slots__ = ("_handlers",)
+    __slots__ = ("_handlers", "_lock")
 
     def __init__(self) -> None:
         self._handlers: dict[str, list[Handler]] = {}
+        self._lock = threading.Lock()
 
     def on(self, name: str, handler: Handler) -> Subscription:
         """Register ``handler`` for events called ``name``."""
@@ -64,7 +66,8 @@ class EventBus:
                 f"handler must be callable, got {type(handler).__name__!r}; "
                 f"write app.on({name!r}, my_handler) where my_handler is a function"
             )
-        self._handlers.setdefault(name, []).append(handler)
+        with self._lock:
+            self._handlers.setdefault(name, []).append(handler)
         return Subscription(self, name, handler)
 
     def off(self, name: str, handler: Handler | None = None) -> int:
@@ -78,23 +81,25 @@ class EventBus:
         ``off(\"event\", handler)`` removes only that specific handler.
         Returns number of handlers removed.
         """
-        if handler is None:
-            handlers = self._handlers.pop(name, None)
-            return len(handlers) if handlers else 0
-        handlers = self._handlers.get(name)
-        if not handlers:
-            return 0
-        before = len(handlers)
-        with_removed = [h for h in handlers if h is not handler]
-        if with_removed:
-            self._handlers[name] = with_removed
-        else:
-            del self._handlers[name]
-        return before - len(with_removed)
+        with self._lock:
+            if handler is None:
+                handlers = self._handlers.pop(name, None)
+                return len(handlers) if handlers else 0
+            handlers = self._handlers.get(name)
+            if not handlers:
+                return 0
+            before = len(handlers)
+            with_removed = [h for h in handlers if h is not handler]
+            if with_removed:
+                self._handlers[name] = with_removed
+            else:
+                del self._handlers[name]
+            return before - len(with_removed)
 
     def off_all(self, name: str) -> int:
         """Remove all handlers for ``name`` and return how many were removed."""
-        handlers = self._handlers.pop(name, None)
+        with self._lock:
+            handlers = self._handlers.pop(name, None)
         return len(handlers) if handlers else 0
 
     def emit(self, name: str, *, source: str | None = None, **data: Any) -> Event:
@@ -105,7 +110,9 @@ class EventBus:
 
     def dispatch(self, event: Event) -> None:
         """Deliver a pre-built event; handler errors are logged, never raised."""
-        for handler in tuple(self._handlers.get(event.name, ())):
+        with self._lock:
+            handlers = tuple(self._handlers.get(event.name, ()))
+        for handler in handlers:
             try:
                 handler(event)
             except Exception:
@@ -113,7 +120,8 @@ class EventBus:
 
     def clear(self) -> None:
         """Drop every subscription."""
-        self._handlers.clear()
+        with self._lock:
+            self._handlers.clear()
 
     def __contains__(self, name: object) -> bool:
         return name in self._handlers
@@ -122,4 +130,5 @@ class EventBus:
         return iter(self._handlers)
 
     def __len__(self) -> int:
-        return sum(len(v) for v in self._handlers.values())
+        with self._lock:
+            return sum(len(v) for v in self._handlers.values())

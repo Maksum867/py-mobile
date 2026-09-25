@@ -54,6 +54,11 @@ class Vibration:
             raise ValueError("pattern must not be empty")
         if any(value < 0 for value in values):
             raise ValueError("pattern values must not be negative")
+        if len(values) % 2 != 0:
+            raise ValueError(
+                "pattern must have an even number of values (off/on pairs), "
+                f"got {len(values)}; e.g. [0, 100, 50, 100]"
+            )
         if repeat < -1 or repeat >= len(values):
             raise ValueError("repeat must be -1 or a valid index into the pattern")
         self._bridge.vibrate_pattern(values, repeat)

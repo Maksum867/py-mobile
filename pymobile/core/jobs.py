@@ -205,7 +205,11 @@ class JobManager:
                 handle._complete(None, error)
             finally:
                 with self._lock:
-                    self._jobs.pop(handle_id, None)
+                    # Only clear our own slot: a second job enqueued under the
+                    # same name overwrites the dictionary entry, and the first
+                    # completing one must not evict it.
+                    if self._jobs.get(handle_id) is handle:
+                        self._jobs.pop(handle_id, None)
 
         handle = JobHandle(handle_id, cancel_fn=cancelled.set)
         with self._lock:
@@ -245,7 +249,8 @@ class JobManager:
                 stop.set()
                 handle._complete(None, error)
                 with self._lock:
-                    self._jobs.pop(handle_id, None)
+                    if self._jobs.get(handle_id) is handle:
+                        self._jobs.pop(handle_id, None)
 
         handle = JobHandle(handle_id, cancel_fn=lambda: stop.set())
         with self._lock:

@@ -238,7 +238,7 @@ class App:
             if self.navigator.depth > 1:
                 self.pop()
             else:
-                self.stop()
+                self._finish_or_stop()
             return
 
         screen = self.navigator.current
@@ -284,6 +284,22 @@ class App:
         except Exception:
             _log.exception("handler for %s event on %s failed", kind, widget_id)
         self.events.emit(f"ui:{kind}", source=widget_id, value=value)
+
+    def _finish_or_stop(self) -> None:
+        """Handle the root hardware-back button.
+
+        On device this asks the platform to finish the Activity — previously
+        only the app stopped while the window stayed on screen, which looked
+        like a freeze. Preview bridges keep stopping the app as before.
+        """
+        finish = getattr(self.bridge, "finish_app", None)
+        if callable(finish):
+            try:
+                if finish():
+                    return
+            except Exception:
+                _log.exception("finish_app failed")
+        self.stop()
 
     def stop(self) -> None:
         """Shut the app down and release subscriptions.

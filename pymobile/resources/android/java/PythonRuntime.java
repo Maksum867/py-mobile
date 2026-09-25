@@ -36,10 +36,21 @@ public class PythonRuntime {
 
     private native int startPython(String home, String appDir, String entrypoint);
 
+    private static native boolean pythonIsInitialized();
+
+    /** Whether the interpreter is already initialised inside this process. */
+    private static boolean pythonAlreadyRunning() {
+        try {
+            return pythonIsInitialized();
+        } catch (Throwable error) {  // an older prebuilt bridge lacks the probe
+            return false;
+        }
+    }
+
     /** Extract assets if needed and run the entry point on the calling thread. */
     public static synchronized int run(Context context, String entrypoint) {
-        if (started) {
-            Log.w(TAG, "Python runtime already started");
+        if (started || pythonAlreadyRunning()) {
+            Log.w(TAG, "Python runtime already running");
             return 0;
         }
         started = true;
@@ -63,8 +74,16 @@ public class PythonRuntime {
                 // into the interpreter environment so urllib/OpenSSL find the bundle.
                 System.setProperty("javax.net.ssl.trustStore", cert.getAbsolutePath());
             }
-            return new PythonRuntime().startPython(
-                    home.getAbsolutePath(), appDir.getAbsolutePath(), entrypoint);
+            try {
+                return new PythonRuntime().startPython(
+                        home.getAbsolutePath(), appDir.getAbsolutePath(), entrypoint);
+            } finally {
+                // An Activity recreation re-runs this method in the same
+                // process; the static flag must not stay stuck at true after
+                // the interpreter has finalised, or the relaunched app would
+                // get no Python at all.
+                started = false;
+            }
         } catch (IOException error) {
             Log.e(TAG, "failed to prepare the Python runtime", error);
             return 1;

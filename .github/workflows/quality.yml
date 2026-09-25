@@ -29,7 +29,7 @@ jobs:
       # package code is held to the strict configuration.
       - run: mypy pymobile --exclude 'pymobile/tests'
       - run: python -m build
-      - run: python -m twine check dist/*
+      - run: python -m twine check --strict dist/*
       # tools/ is gitignored, so this step is skipped unless it is present.
       - if: hashFiles('tools/release_audit.py') != ''
         run: python tools/release_audit.py dist --output release-audit.json

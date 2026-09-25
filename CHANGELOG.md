@@ -3,6 +3,105 @@
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project uses [semantic versioning](https://semver.org/).
 
+## [0.7.3] — 2026-09-25
+
+### Security
+
+- **XSS in the browser preview (`web.py`):** widget ids and BottomNavigation tab
+  labels were interpolated into inline `onclick`/`oninput`/`onchange` handlers
+  by string concatenation, so a crafted `Widget(id=...)` could break out of the
+  JavaScript string and execute script in the preview (which `run --web` serves
+  on `0.0.0.0`, i.e. the whole LAN). Every handler now reads the id from
+  `this.dataset.wid`, and the remaining string values are escaped through a
+  dedicated `_js_value()` before being embedded in single-quoted JS strings.
+
+### Fixed
+
+- **Android lifecycle — app was dead after Activity recreation:** `PythonRuntime`
+  kept a static `started` flag that stayed `true` after the interpreter
+  finalised, so a recreated Activity believed Python was "still running" and
+  never restarted it — the relaunched app stayed blank. The flag is cleared in
+  a `finally` block, and a new JNI probe `pythonIsInitialized()` (backed by
+  `Py_IsInitialized()`, with a graceful fallback for older prebuilt bridges)
+  detects a still-alive interpreter across recreation.
+- **Android lifecycle — dead event-loop / 100% CPU after stop:** the C queue's
+  `q_stopped` flag was never reset, so `next_event()` stopped blocking and
+  busy-spun forever (or the loop silently died) after `onDestroy()`. The flag
+  is now cleared when a fresh interpreter starts its event loop.
+- **Android — root "back" button could not close the app:** `App` only called
+  `stop()`, which halted the loop while the window stayed on screen (looked
+  like a freeze). A new `finish_app()` path (`AndroidBridge` → `Native` →
+  `MainActivity.finishApp()` on the UI thread) actually finishes the Activity;
+  preview bridges fall back to the old `stop()`.
+- **Android — `RadioGroup` lost its selection:** the selected radio button was
+  not restored/synchronised from props on the device, so the choice vanished.
+  `updateView` now applies `selected` on `RadioButton` and syncs the checked
+  child inside `RadioGroup`.
+- **Android — `DataTable` edits never reached the screen:** `add_row`/cell edits
+  changed the model but the Java table was only ever built fresh. A new
+  `updateDataTable` patches headers and cells in place.
+- **Android — `Image` with `http(s)`/`data:` sources failed silently:** the
+  Python validator accepts them but the device decoded only local files, and a
+  failed `decodeFile` returned `null` without a word. Unsupported sources and
+  decode failures are now logged with a warning.
+- **`EventBus` thread-safety:** `on`/`off`/`off_all`/`emit` previously mutated
+  the handler map without a lock, racing when background jobs fired events.
+  All operations are now serialised through an internal lock.
+- **`JobManager` evicted other jobs:** two jobs under the same `name` share a
+  dictionary slot, and the first one completing used to `pop()` that slot —
+  dropping the second from accounting. Completion now only clears a slot if it
+  still points at the finishing handle.
+- **`HttpFuture.cancel()` was misleading:** it suppressed callbacks but the
+  request kept running and `get()` still returned the result. Docstrings now
+  state exactly that (the network exchange cannot be interrupted portably).
+- **`Vibration.pattern()` accepted odd-length arrays:** device and desktop now
+  agree — an odd number of values raises `ValueError` with an example
+  (`[0, 100, 50, 100]`).
+- **`HttpCache` reads raced with `clear()`:** `get()`/`get_stale()` now take the
+  same lock as mutations so a concurrent wipe cannot expose a half-cleared
+  keyspace (readers were previously lock-free despite the docstring's promise).
+- **HTTP client replayed non-idempotent verbs:** `retries` now applies only to
+  GET/HEAD/OPTIONS by default; POST/PUT/DELETE are never replayed implicitly
+  (a retried POST could perform its side effect twice). Pass `retry_safe=True`
+  to opt in.
+- **Web preview — images were invisible:** `Image`/`Avatar` are now rendered as
+  real `<img>` tags instead of a text placeholder, with an `onerror` fallback
+  that swaps in `[image unavailable]`.
+- **Web preview — `ScrollView` capped at 60vh:** removed the hard
+  `max-height: 60vh` so scroll content uses available space (vertical scrolling
+  still works).
+- **Dialogs were visible on construction:** `Dialog`/`AlertDialog`/
+  `ConfirmDialog`/`BottomSheet` are now hidden by default — a freshly built
+  dialog no longer pops up before `open()`; pass `visible=` explicitly to opt
+  out.
+- **`Scheduler` shadow tick:** a `cancel()` landing between a callback's
+  cancellation check and its re-arm used to leave one extra "shadow" tick
+  armed. The re-arm now disarms the fresh timer when the handle was cancelled
+  in that window.
+- **JNI — NULL dereference on OOM:** `queue_push` now checks `strdup` failures
+  on the widget-id/type/value strings and drops the event instead of
+  dereferencing NULL.
+- **JNI — partial stdio redirect + descriptor leak:** `redirect_stdio_to_logcat`
+  now reports `pipe()` and `dup2()` failures separately and no longer leaves a
+  half-redirected stdio with a stale pipe.
+- **JNI — `py_vibrate_pattern` ignored conversion errors:** `PyLong_AsLong`
+  results are now checked and return with the Python exception set instead of
+  silently garbling the pattern.
+- **Packaging:** `.bak` files are excluded from the wheel and from git, and the
+  nine stale `*.bak` files (old copies of `app.py`, `widget.py`, `jni.py`,
+  `storage.py`, `cache.py`, `pickers.py`, `components.py`, `screen.py`,
+  `pymobile_jni.c`) are removed from the repository.
+- **CI:** `quality.yml` no longer uploads the `device-smoke` diagnostics that
+  nothing generates; `twine check` now runs with `--strict`.
+
+### Changed
+
+- **Build config — honest ABI handling:** `abi` now accepts only the ABIs the
+  packaged runtime actually ships (`arm64-v8a`, `x86_64`). A multi-ABI config
+  no longer silently ignores the extra architectures — the pipeline emits a
+  warning that native builds package only the first requested ABI and asks to
+  build one ABI at a time.
+
 ## [0.7.2] — 2026-09-21
 
 ### Added

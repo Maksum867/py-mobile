@@ -995,12 +995,11 @@ final class ViewBuilder {
         if (children != null) {
             for (int i = 0; i < children.length(); i++) {
                 JSONObject childNode = children.getJSONObject(i);
-                View child = buildChild(childNode);
-                group.addView(child);
-                if (childNode.optJSONObject("props") != null
-                        && childNode.optJSONObject("props").optBoolean("selected", false)) {
-                    group.check(child.getId() == 0 ? -1 : child.getId());
-                }
+                // buildRadioButton already applies the child's `selected`
+                // state directly. Do not call group.check(...) here: children
+                // never carry a View id (nothing calls setId), so the old
+                // expression evaluated to check(NO_ID) and cleared the group.
+                group.addView(buildChild(childNode));
             }
         }
         // The outer group carries the widget id.
@@ -1100,6 +1099,50 @@ final class ViewBuilder {
             }
         }
         return table;
+    }
+
+    /** Patch a DataTable in place so row/header edits show without a rebuild. */
+    private boolean updateDataTable(ViewGroup table, JSONObject props) {
+        JSONArray headers = props.optJSONArray("headers");
+        JSONArray rows = props.optJSONArray("rows");
+        int headerRows = headers != null ? 1 : 0;
+        int expected = headerRows + (rows == null ? 0 : rows.length());
+        if (table.getChildCount() != expected) {
+            return false;  // structure changed -> let the caller rebuild
+        }
+        int index = 0;
+        if (headers != null) {
+            View head = table.getChildAt(index++);
+            if (!(head instanceof ViewGroup)) {
+                return false;
+            }
+            for (int c = 0; c < headers.length(); c++) {
+                View cell = ((ViewGroup) head).getChildAt(c);
+                if (cell instanceof TextView) {
+                    ((TextView) cell).setText(headers.optString(c, ""));
+                }
+            }
+        }
+        if (rows != null) {
+            for (int r = 0; r < rows.length(); r++) {
+                View rowView = table.getChildAt(index++);
+                if (!(rowView instanceof ViewGroup)) {
+                    return false;
+                }
+                JSONArray cells = rows.optJSONArray(r);
+                int columns = cells == null ? 0 : cells.length();
+                if (((ViewGroup) rowView).getChildCount() != columns) {
+                    return false;
+                }
+                for (int c = 0; c < columns; c++) {
+                    View cell = ((ViewGroup) rowView).getChildAt(c);
+                    if (cell instanceof TextView) {
+                        ((TextView) cell).setText(cells.optString(c, ""));
+                    }
+                }
+            }
+        }
+        return true;
     }
 
     private View buildAvatar(JSONObject props) {
@@ -1232,11 +1275,27 @@ final class ViewBuilder {
                 file = new java.io.File(context.getFilesDir(), "pymobile/app/" + source);
             }
             if (file.exists()) {
-                image.setImageBitmap(
-                        android.graphics.BitmapFactory.decodeFile(file.getAbsolutePath()));
+                android.graphics.Bitmap bitmap =
+                        android.graphics.BitmapFactory.decodeFile(file.getAbsolutePath());
+                if (bitmap == null) {
+                    android.util.Log.w("pymobile", "Image decode failed: " + source);
+                } else {
+                    image.setImageBitmap(bitmap);
+                }
+            } else if (source.startsWith("http://") || source.startsWith("https://")
+                    || source.startsWith("data:")) {
+                // The Python-side validator accepts http(s)/data sources, but
+                // this renderer only draws local files. Surface that instead of
+                // silently showing an empty view.
+                android.util.Log.w("pymobile", "Image source not supported on "
+                        + "device (only local files): "
+                        + source.substring(0, Math.min(source.length(), 64)));
+            } else {
+                android.util.Log.w("pymobile", "Image file not found: " + source);
             }
-        } catch (RuntimeException ignored) {
+        } catch (RuntimeException error) {
             // A broken image must not take the whole screen down.
+            android.util.Log.w("pymobile", "Image failed to load: " + source, error);
         }
         return image;
     }
@@ -1339,10 +1398,11 @@ final class ViewBuilder {
             }
             return true;
         }
-        if ("DataTable".equals(type)) {
-            // DataTable content is rebuilt by the Python side when it changes;
-            // accept the update so the screen is not rebuilt wholesale.
-            return true;
+        if ("DataTable".equals(type) && view instanceof ViewGroup) {
+            // The Python side mutates rows/headers in place and the table
+            // serialises as a leaf, so patch it live — otherwise add_row()
+            // and cell edits never reach the screen.
+            return updateDataTable((ViewGroup) view, props);
         }
 
         if (view instanceof ViewGroup) {
@@ -1370,6 +1430,35 @@ final class ViewBuilder {
                 if (!updateNode(target.getChildAt(i), children.getJSONObject(i))) {
                     return false;
                 }
+            }
+            return true;
+        }
+
+        if (view instanceof RadioGroup) {
+            RadioGroup group = (RadioGroup) view;
+            String selected = props.optString("value", "");
+            for (int i = 0; i < group.getChildCount(); i++) {
+                View child = group.getChildAt(i);
+                if (child instanceof RadioButton) {
+                    boolean on = String.valueOf(((RadioButton) child).getText())
+                            .equals(selected);
+                    if (((RadioButton) child).isChecked() != on) {
+                        ((RadioButton) child).setChecked(on);
+                    }
+                }
+            }
+            return true;
+        }
+
+        if (view instanceof RadioButton) {
+            RadioButton radio = (RadioButton) view;
+            boolean selected = props.optBoolean("selected", false);
+            if (radio.isChecked() != selected) {
+                radio.setChecked(selected);
+            }
+            String text = props.optString("text", "");
+            if (!String.valueOf(radio.getText()).equals(text)) {
+                radio.setText(text);
             }
             return true;
         }

@@ -29,7 +29,7 @@ CONFIG_FILENAME = "pymobile.toml"
 _PACKAGE_RE = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$")
 _VERSION_RE = re.compile(r"^\d+(\.\d+){0,3}([-.][0-9A-Za-z.]+)?$")
 _ORIENTATIONS = ("portrait", "landscape", "sensor", "user")
-_ABI_CHOICES = ("arm64-v8a", "armeabi-v7a", "x86_64", "x86")
+_ABI_CHOICES = ("arm64-v8a", "x86_64")  # only ABIs the packaged runtime ships
 
 
 @dataclass(slots=True)

@@ -40,6 +40,10 @@ class Dialog(Container):
     def __init__(
         self, *children: Widget, title: str = "", sheet: bool = False, **kwargs: Any
     ) -> None:
+        # Dialogs are modal by nature and were visible on construction,
+        # so a freshly built dialog "nobody opened" appeared on screen.
+        # Hidden until open() unless the caller passes visible= explicitly.
+        kwargs.setdefault("visible", False)
         super().__init__(*children, **kwargs)
         self._title = title
         self.sheet = sheet

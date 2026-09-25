@@ -54,6 +54,12 @@ static void queue_push(const char *widget_id, const char *type, const char *valu
     event->widget_id = strdup(widget_id ? widget_id : "");
     event->type = strdup(type ? type : "");
     event->value = strdup(value ? value : "");
+    if (!event->widget_id || !event->type || !event->value) {
+        /* Out of memory: drop the event instead of dereferencing NULL later. */
+        LOGI("dropping event: strdup failed");
+        event_free(event);
+        return;
+    }
 
     pthread_mutex_lock(&q_mutex);
     if (q_tail) {
@@ -107,10 +113,17 @@ static void redirect_stdio_to_logcat(void) {
     for (StreamInfo *si = STREAMS; si->tag; si++) {
         FILE *file = (si->fd == STDOUT_FILENO) ? stdout : stderr;
         setvbuf(file, NULL, _IOLBF, 0);
-        if (pipe(si->pipe) != 0 || dup2(si->pipe[1], si->fd) == -1) {
-            LOGE("stdio redirect failed: %s", strerror(errno));
+        if (pipe(si->pipe) != 0) {
+            LOGE("stdio redirect failed (pipe): %s", strerror(errno));
             return;
         }
+        if (dup2(si->pipe[1], si->fd) == -1) {
+            LOGE("stdio redirect failed (dup2): %s", strerror(errno));
+            close(si->pipe[0]);
+            close(si->pipe[1]);
+            return;
+        }
+        close(si->pipe[1]);  /* the writer end now lives at si->fd */
         pthread_t thread;
         if (pthread_create(&thread, NULL, stream_reader, si) == 0) {
             pthread_detach(thread);
@@ -259,25 +272,55 @@ static PyObject *py_vibrate_pattern(PyObject *self, PyObject *args) {
     JNIEnv *env = jni_env(&attached);
     if (env && g_native_class) {
         jlongArray array = (*env)->NewLongArray(env, (jsize)length);
-        jlong *values = (jlong *)malloc(sizeof(jlong) * (size_t)length);
-        for (Py_ssize_t i = 0; i < length; i++) {
-            PyObject *item = PySequence_GetItem(sequence, i);
-            values[i] = (jlong)PyLong_AsLong(item);
-            Py_XDECREF(item);
+        if (!array) {  /* OOM — nothing else to do */
+            if (attached) {
+                (*g_vm)->DetachCurrentThread(g_vm);
+            }
+            Py_RETURN_NONE;
         }
-        (*env)->SetLongArrayRegion(env, array, 0, (jsize)length, values);
-        free(values);
-        jmethodID method =
-            (*env)->GetStaticMethodID(env, g_native_class, "vibratePattern", "([JI)V");
-        if (method) {
-            (*env)->CallStaticVoidMethod(env, g_native_class, method, array, (jint)repeat);
-            if ((*env)->ExceptionCheck(env)) {
-                (*env)->ExceptionClear(env);
+        jlong *values = NULL;
+        if (length > 0) {
+            values = (jlong *)malloc(sizeof(jlong) * (size_t)length);
+            if (!values) {
+                (*env)->DeleteLocalRef(env, array);
+                if (attached) {
+                    (*g_vm)->DetachCurrentThread(g_vm);
+                }
+                Py_RETURN_NONE;
             }
         }
+        int failed = 0;
+        for (Py_ssize_t i = 0; i < length && !failed; i++) {
+            PyObject *item = PySequence_GetItem(sequence, i);
+            if (item == NULL) {
+                failed = 1;
+                break;
+            }
+            values[i] = (jlong)PyLong_AsLong(item);
+            Py_DECREF(item);
+            if (PyErr_Occurred()) {  /* non-integer element */
+                failed = 1;
+                break;
+            }
+        }
+        if (!failed) {
+            (*env)->SetLongArrayRegion(env, array, 0, (jsize)length, values);
+            jmethodID method =
+                (*env)->GetStaticMethodID(env, g_native_class, "vibratePattern", "([JI)V");
+            if (method) {
+                (*env)->CallStaticVoidMethod(env, g_native_class, method, array, (jint)repeat);
+                if ((*env)->ExceptionCheck(env)) {
+                    (*env)->ExceptionClear(env);
+                }
+            }
+        }
+        free(values);
         (*env)->DeleteLocalRef(env, array);
         if (attached) {
             (*g_vm)->DetachCurrentThread(g_vm);
+        }
+        if (failed) {
+            return NULL;  /* a Python exception is already set */
         }
     }
     Py_RETURN_NONE;
@@ -539,6 +582,13 @@ static PyObject *py_next_event(PyObject *self, PyObject *args) {
     return result;
 }
 
+static PyObject *py_finish_app(PyObject *self, PyObject *args) {
+    (void)self;
+    (void)args;
+    call_void_method("finishApp", "()V");
+    Py_RETURN_NONE;
+}
+
 static PyMethodDef module_methods[] = {
     {"render", py_render, METH_VARARGS, "Send a serialised widget tree to the UI thread."},
     {"toast", py_toast, METH_VARARGS, "Show a toast."},
@@ -553,6 +603,7 @@ static PyMethodDef module_methods[] = {
     {"device_language", py_device_language, METH_NOARGS, "The device's language tag."},
     {"open_url", py_open_url, METH_VARARGS, "Open a URL in the browser."},
     {"next_event", py_next_event, METH_VARARGS, "Block until the next UI event."},
+    {"finish_app", py_finish_app, METH_NOARGS, "Ask the Activity to finish."},
     {NULL, NULL, 0, NULL},
 };
 
@@ -616,6 +667,13 @@ JNIEXPORT void JNICALL Java_org_pymobile_app_Native_stopEventLoop(JNIEnv *env, j
     pthread_mutex_unlock(&q_mutex);
 }
 
+JNIEXPORT jboolean JNICALL
+Java_org_pymobile_app_PythonRuntime_pythonIsInitialized(JNIEnv *env, jclass clazz) {
+    (void)env;
+    (void)clazz;
+    return Py_IsInitialized() ? JNI_TRUE : JNI_FALSE;
+}
+
 JNIEXPORT jint JNICALL
 Java_org_pymobile_app_PythonRuntime_startPython(
         JNIEnv *env, jobject obj, jstring homeJ, jstring appDirJ, jstring entryJ) {
@@ -670,6 +728,13 @@ Java_org_pymobile_app_PythonRuntime_startPython(
         LOGE("Py_InitializeFromConfig failed: %s", status.err_msg ? status.err_msg : "?");
         return 1;
     }
+
+    /* A fresh interpreter means a fresh event loop: clear the stop flag a
+       previous Activity's onDestroy() may have left set, otherwise
+       next_event() stops blocking and busy-spins forever. */
+    pthread_mutex_lock(&q_mutex);
+    q_stopped = 0;
+    pthread_mutex_unlock(&q_mutex);
 
     char code[4096];
     snprintf(code, sizeof(code),

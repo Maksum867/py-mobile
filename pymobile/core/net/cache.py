@@ -42,10 +42,9 @@ class HttpCache:
     ``ttl`` seconds bound freshness but a stale entry is still returned by
     ``get_stale`` so an offline app can show the last-known data.
 
-    Every public method is serialised through an internal lock so concurrent
-    jobs and HTTP callbacks cannot race: ``clear()`` would otherwise see a
-    stale snapshot of the keys while a writer slips a new entry in, leaving
-    it alive after the wipe.
+    Mutations and ``clear()`` are serialised through an internal lock so
+    concurrent jobs and HTTP callbacks cannot race; readers take the same
+    lock so ``clear()`` never exposes a half-wiped keyspace.
     """
 
     __slots__ = ("_storage", "_prefix", "_lock")
@@ -66,7 +65,8 @@ class HttpCache:
 
     def get(self, url: str) -> dict[str, Any] | None:
         """Return the cached entry ``{status, headers, content, fetched_at}`` or ``None``."""
-        entry = self._storage.get(self._full_key(url))
+        with self._lock:
+            entry = self._storage.get(self._full_key(url))
         return entry if isinstance(entry, dict) else None
 
     def get_stale(self, url: str, ttl: float) -> dict[str, Any] | None:
