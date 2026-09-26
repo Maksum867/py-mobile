@@ -9,6 +9,11 @@ run repeatedly and one-shot jobs are both supported.
 Jobs fire on a daemon thread, so the UI is never blocked. An exception inside a
 job is captured on the handle and delivered to ``on_error`` (if any) rather than
 crashing the app. All jobs are cancelled automatically when the app stops.
+
+``then()`` callbacks run on the job's worker thread. To change widgets from
+them, hand the update to the UI with :meth:`App.dispatch`. An exception raised
+by a callback is logged with its traceback and passed to that callback's
+``on_error``; it never changes the job's own result.
 """
 
 from __future__ import annotations
@@ -19,7 +24,7 @@ import uuid
 from collections.abc import Callable
 from typing import Any
 
-from ..logging import get_logger
+from ..log import get_logger
 
 __all__ = ["JobManager", "JobHandle", "job_id"]
 
@@ -37,6 +42,11 @@ class JobHandle:
     ``done``/``result``/``error`` expose the outcome; ``cancel()`` stops a
     pending or repeating job and clears its callbacks. ``wait()`` blocks until
     the job finishes and returns its result (raising the job's error if any).
+
+    A cancelled job is ``done`` only once it has actually stopped: Python
+    cannot interrupt a function that is already running, so ``cancel()``
+    suppresses the callbacks and stops a repeating job after the current run,
+    and ``done`` turns true when the worker returns.
     """
 
     __slots__ = (
@@ -48,10 +58,19 @@ class JobHandle:
         "_lock",
         "_cancelled",
         "_callbacks",
+        "_deliver",
     )
 
-    def __init__(self, job_id: str, cancel_fn: Callable[[], None]) -> None:
+    def __init__(
+        self,
+        job_id: str,
+        cancel_fn: Callable[[], None],
+        deliver: Callable[[Callable[[], None]], None] | None = None,
+    ) -> None:
         self.id = job_id
+        #: Runs completion callbacks; App passes one that moves them to the
+        #: UI side. None: they run on the worker thread.
+        self._deliver = deliver
         self._cancel_fn = cancel_fn
         self._done = threading.Event()
         self._result: Any = None
@@ -62,7 +81,7 @@ class JobHandle:
 
     @property
     def done(self) -> bool:
-        """Whether the job has completed."""
+        """Whether the job has finished running (also after a cancellation)."""
         return self._done.is_set()
 
     @property
@@ -75,7 +94,8 @@ class JobHandle:
         with self._lock:
             self._cancelled = True
             self._callbacks.clear()
-            self._done.set()
+        # ``done`` is not set here: the worker may still be running. It is set
+        # by _finish_cancelled() / _complete() when the worker really stops.
         self._cancel_fn()
 
     @property
@@ -122,8 +142,14 @@ class JobHandle:
         # Never call application code with _lock held: a callback may cancel
         # this handle or register another callback.
         assert callback is not None
-        callback()
+        self._run(callback)
         return self
+
+    def _run(self, callback: Callable[[], None]) -> None:
+        if self._deliver is None:
+            callback()
+        else:
+            self._deliver(callback)
 
     def wait(self, timeout: float | None = None) -> Any:
         """Block until the job finishes and return its result.
@@ -148,22 +174,47 @@ class JobHandle:
     ) -> None:
         if self._error is not None:
             if on_error is not None:
-                on_error(self._error)
-        elif on_done is not None:
+                try:
+                    on_error(self._error)
+                except Exception:
+                    _log.exception("on_error callback of job %r failed", self.id)
+            return
+        if on_done is None:
+            return
+        try:
             on_done(self._result)
+        except Exception as exc:
+            # This used to escape into the worker, which then recorded the
+            # callback's exception as the job's error with result=None.
+            _log.exception("on_success callback of job %r failed", self.id)
+            if on_error is not None:
+                try:
+                    on_error(exc)
+                except Exception:
+                    _log.exception("on_error callback of job %r failed", self.id)
 
     def _complete(self, result: Any, error: BaseException | None) -> None:
         with self._lock:
             if self._cancelled:
+                # Keep the outcome for wait()/result, but no callbacks.
+                self._result = result
+                self._error = error
+                self._done.set()
                 return
             self._result = result
             self._error = error
             self._done.set()
             callbacks = list(self._callbacks)
             self._callbacks.clear()
-        # User callbacks intentionally run after releasing _lock.
+        # User callbacks intentionally run after releasing _lock; _fire()
+        # contains their exceptions, so one failing callback cannot hide others.
         for cb in callbacks:
-            cb()
+            self._run(cb)
+
+    def _finish_cancelled(self) -> None:
+        """The worker stopped before running the job at all."""
+        with self._lock:
+            self._done.set()
 
 
 class JobManager:
@@ -174,18 +225,22 @@ class JobManager:
     :meth:`App.stop` integration).
     """
 
-    __slots__ = ("_jobs", "_lock", "_alive")
+    __slots__ = ("_jobs", "_lock", "_alive", "_deliver")
 
-    def __init__(self) -> None:
+    def __init__(self, *, deliver: Callable[[Callable[[], None]], None] | None = None) -> None:
+        """``deliver(callback)`` runs ``then()`` callbacks — :class:`App`
+        passes one that runs them on the UI side; by default they run on the
+        worker thread."""
+        self._deliver = deliver
         self._jobs: dict[str, JobHandle] = {}
         self._lock = threading.Lock()
         self._alive = True
 
     @property
     def active(self) -> list[JobHandle]:
-        """Handles for jobs that have not finished."""
+        """Handles for jobs that are neither finished nor cancelled."""
         with self._lock:
-            return [h for h in self._jobs.values() if not h.done]
+            return [h for h in self._jobs.values() if not h.done and not h.cancelled]
 
     def enqueue(self, fn: Callable[[], Any], *, name: str | None = None) -> JobHandle:
         """Run ``fn`` once on a background thread; returns a :class:`JobHandle`."""
@@ -196,13 +251,18 @@ class JobManager:
         cancelled = threading.Event()
 
         def run() -> None:
-            if cancelled.is_set() or handle.cancelled:
-                return
             try:
-                result = fn()
-                handle._complete(result, None)
-            except BaseException as error:
-                handle._complete(None, error)
+                if cancelled.is_set() or handle.cancelled:
+                    handle._finish_cancelled()
+                    return
+                # Only fn() itself may produce the job's error; callbacks run
+                # afterwards and handle their own exceptions.
+                try:
+                    result = fn()
+                except BaseException as error:
+                    handle._complete(None, error)
+                else:
+                    handle._complete(result, None)
             finally:
                 with self._lock:
                     # Only clear our own slot: a second job enqueued under the
@@ -211,7 +271,7 @@ class JobManager:
                     if self._jobs.get(handle_id) is handle:
                         self._jobs.pop(handle_id, None)
 
-        handle = JobHandle(handle_id, cancel_fn=cancelled.set)
+        handle = JobHandle(handle_id, cancel_fn=cancelled.set, deliver=self._deliver)
         with self._lock:
             self._jobs[handle_id] = handle
         threading.Thread(target=run, name=f"pymobile-job-{handle_id}", daemon=True).start()
@@ -252,7 +312,7 @@ class JobManager:
                     if self._jobs.get(handle_id) is handle:
                         self._jobs.pop(handle_id, None)
 
-        handle = JobHandle(handle_id, cancel_fn=lambda: stop.set())
+        handle = JobHandle(handle_id, cancel_fn=lambda: stop.set(), deliver=self._deliver)
         with self._lock:
             self._jobs[handle_id] = handle
         threading.Thread(target=run, name=f"pymobile-job-{handle_id}", daemon=True).start()

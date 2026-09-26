@@ -46,6 +46,13 @@ static pthread_mutex_t q_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t q_cond = PTHREAD_COND_INITIALIZER;
 static int q_stopped = 0;
 
+static void event_free(Event *event) {
+    free(event->widget_id);
+    free(event->type);
+    free(event->value);
+    free(event);
+}
+
 static void queue_push(const char *widget_id, const char *type, const char *value) {
     Event *event = (Event *)calloc(1, sizeof(Event));
     if (!event) {
@@ -72,12 +79,6 @@ static void queue_push(const char *widget_id, const char *type, const char *valu
     pthread_mutex_unlock(&q_mutex);
 }
 
-static void event_free(Event *event) {
-    free(event->widget_id);
-    free(event->type);
-    free(event->value);
-    free(event);
-}
 
 /* ------------------------------------------------------------------ */
 /* Stdio → logcat                                                      */
@@ -135,6 +136,19 @@ static void redirect_stdio_to_logcat(void) {
 /* Helpers for calling static Java methods                             */
 /* ------------------------------------------------------------------ */
 
+/* Look up a static method of Native. A missing method leaves a pending
+ * NoSuchMethodError, and calling any further JNI function with a pending
+ * exception is undefined behaviour (CheckJNI aborts the process) — so it is
+ * logged and cleared here, once, for every caller. */
+static jmethodID static_method(JNIEnv *env, const char *name, const char *signature) {
+    jmethodID method = (*env)->GetStaticMethodID(env, g_native_class, name, signature);
+    if (!method) {
+        LOGE("method not found: %s%s", name, signature);
+        (*env)->ExceptionClear(env);
+    }
+    return method;
+}
+
 /* Attach the calling thread and return its JNIEnv. */
 static JNIEnv *jni_env(int *attached) {
     JNIEnv *env = NULL;
@@ -158,11 +172,8 @@ static void call_void_method(const char *name, const char *signature, ...) {
     if (!env || !g_native_class) {
         return;
     }
-    jmethodID method = (*env)->GetStaticMethodID(env, g_native_class, name, signature);
-    if (!method) {
-        LOGE("method not found: %s%s", name, signature);
-        (*env)->ExceptionClear(env);
-    } else {
+    jmethodID method = static_method(env, name, signature);
+    if (method) {
         va_list args;
         va_start(args, signature);
         (*env)->CallStaticVoidMethodV(env, g_native_class, method, args);
@@ -192,7 +203,7 @@ static PyObject *py_render(PyObject *self, PyObject *args) {
     if (env && g_native_class) {
         jstring jjson = (*env)->NewStringUTF(env, json);
         jmethodID method =
-            (*env)->GetStaticMethodID(env, g_native_class, "render", "(Ljava/lang/String;)V");
+            static_method(env, "render", "(Ljava/lang/String;)V");
         if (method) {
             (*env)->CallStaticVoidMethod(env, g_native_class, method, jjson);
             if ((*env)->ExceptionCheck(env)) {
@@ -215,7 +226,7 @@ static PyObject *call_with_string(const char *name, const char *signature, const
     JNIEnv *env = jni_env(&attached);
     if (env && g_native_class) {
         jstring jvalue = (*env)->NewStringUTF(env, value);
-        jmethodID method = (*env)->GetStaticMethodID(env, g_native_class, name, signature);
+        jmethodID method = static_method(env, name, signature);
         if (method) {
             if (has_bool) {
                 (*env)->CallStaticVoidMethod(env, g_native_class, method, jvalue,
@@ -306,7 +317,7 @@ static PyObject *py_vibrate_pattern(PyObject *self, PyObject *args) {
         if (!failed) {
             (*env)->SetLongArrayRegion(env, array, 0, (jsize)length, values);
             jmethodID method =
-                (*env)->GetStaticMethodID(env, g_native_class, "vibratePattern", "([JI)V");
+                static_method(env, "vibratePattern", "([JI)V");
             if (method) {
                 (*env)->CallStaticVoidMethod(env, g_native_class, method, array, (jint)repeat);
                 if ((*env)->ExceptionCheck(env)) {
@@ -354,8 +365,7 @@ static PyObject *py_notify(PyObject *self, PyObject *args) {
         jstring jchannel = (*env)->NewStringUTF(env, channel_id);
         jstring jchannelname = (*env)->NewStringUTF(env, channel_name);
         jstring jicon = (*env)->NewStringUTF(env, small_icon);
-        jmethodID method = (*env)->GetStaticMethodID(
-            env, g_native_class, "notify",
+        jmethodID method = static_method(env, "notify",
             "(Ljava/lang/String;Ljava/lang/String;IZLjava/lang/String;Ljava/lang/String;Ljava/lang/String;)V");
         if (method) {
             (*env)->CallStaticVoidMethod(env, g_native_class, method, jtitle, jbody,
@@ -390,8 +400,7 @@ static PyObject *py_ensure_channel(PyObject *self, PyObject *args) {
     if (env && g_native_class) {
         jstring jid = (*env)->NewStringUTF(env, channel_id);
         jstring jname = (*env)->NewStringUTF(env, channel_name);
-        jmethodID method = (*env)->GetStaticMethodID(
-            env, g_native_class, "ensureChannel", "(Ljava/lang/String;Ljava/lang/String;I)V");
+        jmethodID method = static_method(env, "ensureChannel", "(Ljava/lang/String;Ljava/lang/String;I)V");
         if (method) {
             (*env)->CallStaticVoidMethod(env, g_native_class, method, jid, jname,
                                          (jint)importance);
@@ -429,7 +438,7 @@ static PyObject *py_has_permission(PyObject *self, PyObject *args) {
     JNIEnv *env = jni_env(&attached);
     if (env && g_native_class) {
         jstring jperm = (*env)->NewStringUTF(env, permission);
-        jmethodID method = (*env)->GetStaticMethodID(env, g_native_class, "hasPermission",
+        jmethodID method = static_method(env, "hasPermission",
                                                      "(Ljava/lang/String;)Z");
         if (method) {
             granted = (*env)->CallStaticBooleanMethod(env, g_native_class, method, jperm);
@@ -453,7 +462,7 @@ static PyObject *py_device_language(PyObject *self, PyObject *args) {
     int attached = 0;
     JNIEnv *env = jni_env(&attached);
     if (env && g_native_class) {
-        jmethodID method = (*env)->GetStaticMethodID(env, g_native_class, "deviceLanguage",
+        jmethodID method = static_method(env, "deviceLanguage",
                                                      "()Ljava/lang/String;");
         if (method) {
             jstring value = (jstring)(*env)->CallStaticObjectMethod(env, g_native_class, method);
@@ -489,7 +498,7 @@ static PyObject *py_request_permission(PyObject *self, PyObject *args) {
     JNIEnv *env = jni_env(&attached);
     if (env && g_native_class) {
         jstring jperm = (*env)->NewStringUTF(env, permission);
-        jmethodID method = (*env)->GetStaticMethodID(env, g_native_class, "requestPermission",
+        jmethodID method = static_method(env, "requestPermission",
                                                      "(Ljava/lang/String;)Z");
         if (method) {
             /* This blocks until the user answers, so release the GIL to keep
@@ -521,8 +530,7 @@ static PyObject *py_open_url(PyObject *self, PyObject *args) {
     JNIEnv *env = jni_env(&attached);
     if (env && g_native_class) {
         jstring jurl = (*env)->NewStringUTF(env, url);
-        jmethodID method = (*env)->GetStaticMethodID(
-            env, g_native_class, "openUrl", "(Ljava/lang/String;)Z");
+        jmethodID method = static_method(env, "openUrl", "(Ljava/lang/String;)Z");
         if (method) {
             opened = (*env)->CallStaticBooleanMethod(env, g_native_class, method, jurl);
             if ((*env)->ExceptionCheck(env)) {
@@ -582,6 +590,15 @@ static PyObject *py_next_event(PyObject *self, PyObject *args) {
     return result;
 }
 
+/* Wake a next_event() that is blocked waiting, from any Python thread: the
+ * loop then runs the callbacks queued with App.dispatch() and timers. */
+static PyObject *py_wake(PyObject *self, PyObject *args) {
+    (void)self;
+    (void)args;
+    queue_push("", "__wake__", "");
+    Py_RETURN_NONE;
+}
+
 static PyObject *py_finish_app(PyObject *self, PyObject *args) {
     (void)self;
     (void)args;
@@ -603,6 +620,7 @@ static PyMethodDef module_methods[] = {
     {"device_language", py_device_language, METH_NOARGS, "The device's language tag."},
     {"open_url", py_open_url, METH_VARARGS, "Open a URL in the browser."},
     {"next_event", py_next_event, METH_VARARGS, "Block until the next UI event."},
+    {"wake", py_wake, METH_NOARGS, "Wake the thread blocked in next_event()."},
     {"finish_app", py_finish_app, METH_NOARGS, "Ask the Activity to finish."},
     {NULL, NULL, 0, NULL},
 };
@@ -637,12 +655,12 @@ JNIEXPORT void JNICALL Java_org_pymobile_app_Native_dispatchEvent(
      * ``GetStringUTFChars`` hand us a null that some Android JVMs reject when
      * later released. */
     const char *value = "";
+    const char *fetched = NULL;
     if (valueJ) {
-        value = (*env)->GetStringUTFChars(env, valueJ, NULL);
-        if (value == NULL) {
-            /* OOM inside the JVM — fall back to empty so we still queue the
-             * event and can release the jstring safely. */
-            value = "";
+        fetched = (*env)->GetStringUTFChars(env, valueJ, NULL);
+        /* NULL means OOM inside the JVM: still queue the event, empty. */
+        if (fetched) {
+            value = fetched;
         }
     }
 
@@ -650,10 +668,11 @@ JNIEXPORT void JNICALL Java_org_pymobile_app_Native_dispatchEvent(
 
     (*env)->ReleaseStringUTFChars(env, widgetIdJ, widget_id);
     (*env)->ReleaseStringUTFChars(env, typeJ, type);
-    if (valueJ && value != NULL && value != "") {
-        /* Only release the UTF chars we actually fetched: the empty-string
-         * fallback above is a stack literal, not a JVM-owned buffer. */
-        (*env)->ReleaseStringUTFChars(env, valueJ, value);
+    if (fetched) {
+        /* Only release what the JVM handed out — never the "" literal.
+         * (The old test compared value with a "" literal: that compares
+         * pointers, not strings.) */
+        (*env)->ReleaseStringUTFChars(env, valueJ, fetched);
     }
 }
 

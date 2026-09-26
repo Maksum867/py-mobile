@@ -8,6 +8,8 @@ with backoff, a base URL and default headers.
 
 from __future__ import annotations
 
+import functools
+import hashlib
 import http.client
 import json as jsonlib
 import ssl
@@ -21,7 +23,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ...errors import NetworkError
-from ...logging import get_logger
+from ...log import get_logger
 from .cache import HttpCache
 
 __all__ = ["HttpClient", "HttpSecurityPolicy", "Response", "HttpFuture", "DEFAULT_TIMEOUT"]
@@ -40,10 +42,23 @@ class HttpSecurityPolicy:
     Defaults preserve the framework's existing local-development behaviour.
     Set ``require_https=True`` in production; optionally restrict requests to
     an allow-list of hostnames.
+
+    The policy is enforced on the initial URL **and on every redirect hop**,
+    so a server (or an attacker controlling one) cannot bounce a request to a
+    blocked host or downgrade it to plain HTTP.
     """
 
     require_https: bool = False
     allowed_hosts: frozenset[str] | None = None
+
+    def __post_init__(self) -> None:
+        # Hosts are compared case-insensitively; accept any iterable, so
+        # allowed_hosts=["API.example.com"] works as written.
+        if self.allowed_hosts is not None:
+            if isinstance(self.allowed_hosts, str):
+                raise TypeError("allowed_hosts must be a collection of host names, not a str")
+            hosts = frozenset(h.strip().casefold() for h in self.allowed_hosts)
+            object.__setattr__(self, "allowed_hosts", hosts)
 
     def validate(self, url: str) -> None:
         parsed = urllib.parse.urlparse(url)
@@ -52,6 +67,53 @@ class HttpSecurityPolicy:
             raise NetworkError("Insecure HTTP is blocked by the security policy")
         if self.allowed_hosts is not None and host not in self.allowed_hosts:
             raise NetworkError(f"Host {host!r} is blocked by the security policy")
+
+
+#: Request headers that carry credentials and must not follow a redirect to
+#: another origin (urllib forwards every header by default).
+_CREDENTIAL_HEADERS = ("authorization", "cookie", "proxy-authorization")
+
+
+def _origin(url: str) -> tuple[str, str, int | None]:
+    parsed = urllib.parse.urlsplit(url)
+    return (parsed.scheme, (parsed.hostname or "").casefold(), parsed.port)
+
+
+class _PolicyRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Re-check the security policy on every hop and drop credentials cross-origin."""
+
+    def __init__(self, policy: HttpSecurityPolicy) -> None:
+        super().__init__()
+        self._policy = policy
+
+    def redirect_request(  # type: ignore[override]
+        self,
+        req: urllib.request.Request,
+        fp: Any,
+        code: int,
+        msg: str,
+        headers: Any,
+        newurl: str,
+    ) -> urllib.request.Request | None:
+        scheme = urllib.parse.urlsplit(newurl).scheme
+        if scheme not in ("http", "https"):
+            raise NetworkError(f"Redirect to unsupported URL scheme blocked: {newurl!r}")
+        try:
+            self._policy.validate(newurl)
+        except NetworkError as exc:
+            raise NetworkError(
+                f"Redirect from {req.full_url} to {newurl} blocked: {exc}",
+                hint="Add the target host to HttpSecurityPolicy.allowed_hosts if it is trusted.",
+            ) from exc
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new is not None and _origin(newurl) != _origin(req.full_url):
+            for name in list(new.headers):
+                if name.lower() in _CREDENTIAL_HEADERS:
+                    del new.headers[name]
+            for name in list(new.unredirected_hdrs):
+                if name.lower() in _CREDENTIAL_HEADERS:
+                    del new.unredirected_hdrs[name]
+        return new
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,10 +165,20 @@ class HttpFuture:
     """A handle to an in-flight background HTTP request.
 
     Returned by the ``*_async`` verbs. The request runs on a daemon thread so
-    the UI never blocks. Attach a callback with :meth:`then` (called on the
-    calling thread when the request finishes) or await the result with
-    :meth:`get`. Cancelling prevents the callbacks from firing (the request
-    itself continues to completion on its thread).
+    the UI never blocks. Attach a callback with :meth:`then` or await the
+    result with :meth:`get`. Cancelling prevents the callbacks from firing
+    (the request itself continues to completion on its thread).
+
+    .. note::
+        With ``app.http`` (or any client given ``deliver=``) callbacks run on
+        the UI side, like a button handler, and may update widgets directly.
+        A standalone ``HttpClient()`` runs them on the **background thread**
+        that performed the request (``pymobile-http-<METHOD>``) — or on the
+        caller's thread when the request had already finished; hand UI work
+        over with ``app.dispatch(...)`` there.
+
+    An exception raised by a callback is logged with its traceback; it never
+    replaces the request's result (``get()`` still returns the response).
     """
 
     __slots__ = (
@@ -195,8 +267,10 @@ class HttpFuture:
         """Register callbacks to run once the request completes.
 
         ``on_success`` is called with the :class:`Response`; ``on_error`` (if
-        given) with the exception. If the request has already finished, the
-        relevant callback runs immediately on the calling thread.
+        given) with the exception. With ``app.http`` (a client given
+        ``deliver=``) the callback runs on the UI side. A standalone client
+        runs it on the request's background thread — or, if the request has
+        already finished, immediately on the calling thread.
         """
         callback: Callable[[], None] | None = None
         with self._lock:
@@ -212,8 +286,15 @@ class HttpFuture:
         # Never call user code while holding _lock: callbacks are allowed to
         # cancel this future or attach another callback.
         assert callback is not None
-        callback()
+        self._run(callback)
         return self
+
+    def _run(self, callback: Callable[[], None]) -> None:
+        deliver = self._client.deliver
+        if deliver is None:
+            callback()
+        else:
+            deliver(callback)
 
     def _fire(
         self,
@@ -233,9 +314,13 @@ class HttpFuture:
             self._done.set()
             callbacks = [] if self._cancelled else list(self._callbacks)
             self._callbacks.clear()
-        # User callbacks intentionally run after releasing _lock.
+        # User callbacks intentionally run after releasing _lock. A failing
+        # callback must neither hide the others nor rewrite the result.
         for cb in callbacks:
-            cb()
+            try:
+                self._run(cb)
+            except Exception:
+                _log.exception("unhandled exception in an HttpFuture callback for %s", self._url)
 
 
 @dataclass(slots=True)
@@ -260,6 +345,11 @@ class HttpClient:
     user_agent: str = f"PyMobile/{__import__('pymobile').__version__}"
     cache: HttpCache | None = field(default=None, repr=False)
     security: HttpSecurityPolicy = field(default_factory=HttpSecurityPolicy)
+    #: Runs ``HttpFuture`` callbacks. ``app.http`` gets one that runs them on
+    #: the UI side; None (the default) runs them on the request thread.
+    deliver: Callable[[Callable[[], None]], None] | None = field(
+        default=None, repr=False, compare=False
+    )
 
     def __post_init__(self) -> None:
         # Validation for common mistakes (BUG-27, BUG-28) + new checks
@@ -342,9 +432,10 @@ class HttpClient:
         def run() -> None:
             try:
                 result = self.request(method, url, **kwargs)
-                future._complete(result, None)
             except BaseException as error:
                 future._complete(None, error)
+            else:
+                future._complete(result, None)
 
         threading.Thread(target=run, name=f"pymobile-http-{method}", daemon=True).start()
         return future
@@ -372,19 +463,24 @@ class HttpClient:
         if self.cache is None:
             raise ValueError("get_cached() needs a cache; pass HttpClient(cache=HttpCache())")
         final_url = self._build_url(url, params)
-        if self.cache.is_fresh(final_url, ttl):
-            entry = self.cache.get(final_url)
+        # Responses fetched with different credentials are different entries:
+        # otherwise one account's data would be served to the next.
+        variant = _credential_variant(self._merge_headers(kwargs.get("headers"), None))
+        if self.cache.is_fresh(final_url, ttl, variant=variant):
+            entry = self.cache.get(final_url, variant=variant)
             if entry is not None:
                 return _entry_to_response(entry, final_url, from_cache=True)
         try:
             response = self.get(final_url, **kwargs)
         except NetworkError:
-            stale = self.cache.get_stale(final_url, ttl)
+            stale = self.cache.get_stale(final_url, ttl, variant=variant)
             if stale is not None:
                 return _entry_to_response(stale, final_url, from_cache=True)
             raise
         if response.ok and self.cache is not None:
-            self.cache.set(final_url, response.status, response.headers, response.content)
+            self.cache.set(
+                final_url, response.status, response.headers, response.content, variant=variant
+            )
         return response
 
     # -- core --------------------------------------------------------------
@@ -470,11 +566,14 @@ class HttpClient:
         request = urllib.request.Request(url, data=body, method=method)
         for key, value in headers.items():
             request.add_header(key, value)
+        opener = urllib.request.build_opener(
+            urllib.request.HTTPSHandler(context=_ssl_context()),
+            _PolicyRedirectHandler(self.security),
+        )
         try:
-            with urllib.request.urlopen(
+            with opener.open(
                 request,
                 timeout=timeout if timeout is not None else self.timeout,
-                context=_ssl_context(),
             ) as raw:
                 return self._to_response(raw.geturl(), raw.status, dict(raw.headers), raw.read())
         except urllib.error.HTTPError as exc:  # 4xx/5xx are valid responses here
@@ -568,8 +667,23 @@ class HttpClient:
             time.sleep(self.backoff * (2 ** (attempt - 1)))
 
 
+def _credential_variant(headers: Mapping[str, str]) -> str:
+    """Fingerprint of the credentials a request carries ('' when it has none)."""
+    parts = sorted(
+        f"{key.lower()}:{value}" for key, value in headers.items()
+        if key.lower() in _CREDENTIAL_HEADERS or key.lower() == "x-api-key"
+    )
+    if not parts:
+        return ""
+    return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()[:32]
+
+
+@functools.lru_cache(maxsize=1)
 def _ssl_context() -> ssl.SSLContext:
-    """TLS context that prefers the packaged certifi bundle when available."""
+    """TLS context that prefers the packaged certifi bundle when available.
+
+    Built once: loading the CA bundle on every request costs tens of ms.
+    """
     try:
         import certifi
 

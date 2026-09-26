@@ -8,12 +8,12 @@ keeps navigation logic out of the app object.
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar, overload
 
 from ...errors import PyMobileError
-from ...logging import get_logger
+from ...log import get_logger
 from ..events import Event, Subscription
-from .widget import Widget, widget_scope
+from .widget import W, Widget, widget_scope
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from ..app import App
@@ -165,9 +165,37 @@ class Screen:
         if self.app is not None and self.app.navigator.current is self:
             self.app.render()
 
-    def find(self, widget_id: str) -> Widget | None:
-        """Look up a widget by id inside this screen."""
-        return self.root.find(widget_id)
+    @overload
+    def find(self, widget_id: str) -> Widget | None: ...
+
+    @overload
+    def find(self, widget_id: str, kind: type[W]) -> W | None: ...
+
+    def find(self, widget_id: str, kind: type[Widget] | None = None) -> Widget | None:
+        """Look up a widget by id inside this screen.
+
+        ``self.find("title", Label)`` is typed ``Label | None``; see
+        :meth:`Widget.find <pymobile.core.ui.widget.Widget.find>`.
+        """
+        return self.root.find(widget_id) if kind is None else self.root.find(widget_id, kind)
+
+    @overload
+    def get(self, widget_id: str) -> Widget: ...
+
+    @overload
+    def get(self, widget_id: str, kind: type[W]) -> W: ...
+
+    def get(self, widget_id: str, kind: type[Widget] | None = None) -> Widget:
+        """Look up a widget that must exist: ``self.get("title", Label).text = "Hi"``.
+
+        Raises :class:`~pymobile.errors.WidgetNotFoundError` (with the closest
+        existing ids) instead of returning ``None``.
+        """
+        return self.root.get(widget_id) if kind is None else self.root.get(widget_id, kind)
+
+    def find_all(self, kind: type[W]) -> list[W]:
+        """Every widget of this screen that is an instance of ``kind``."""
+        return self.root.find_all(kind)
 
     def to_dict(self) -> dict[str, Any]:
         """Serialise the screen (title + widget tree)."""
@@ -250,8 +278,14 @@ class Navigator:
         """Number of screens on the stack."""
         return len(self._stack)
 
-    def push(self, screen: ScreenT) -> ScreenT:
-        """Show ``screen`` on top of the stack."""
+    def _prepare(self, screen: ScreenT) -> None:
+        """Validate ``screen`` and build its widget tree without touching the stack.
+
+        Every navigation builds the new screen *first*: if ``build()`` raises,
+        the current screen is still mounted and visible and the stack is
+        unchanged. (``replace()``/``reset()`` used to unmount the old screen
+        before building the new one, leaving an empty stack on failure.)
+        """
         if not isinstance(screen, Screen):
             raise TypeError(
                 f"push() expects a Screen instance, got {type(screen).__name__!r}; "
@@ -262,43 +296,41 @@ class Navigator:
                 f"screen {screen.title!r} is already on the stack",
                 hint="Create new instance: app.push(SettingsScreen())",
             )
-        previous = self.current
-        if previous is not None:
-            previous.on_hide()
         screen.app = self._app
-        self._stack.append(screen)
         # Build the widget tree BEFORE lifecycle hooks so on_mount/on_show
         # can safely access widgets created in build() (e.g. self.label).
         try:
-            root = screen.root
-            if root is None:
-                raise PyMobileError(
-                    f"{type(screen).__name__}.build() returned None",
-                    hint="build() must return a Widget, e.g. Label('Hello').",
-                )
-            if not isinstance(root, Widget):
-                raise PyMobileError(
-                    f"{type(screen).__name__}.build() must return Widget, "
-                    f"got {type(root).__name__!r}",
-                    hint="Return a Widget from build(), e.g. Label, Column.",
-                )
-        except NotImplementedError:
-            raise
-        except PyMobileError:
-            self._stack.pop()
+            screen.root  # noqa: B018 - builds and validates the tree
+        except BaseException:
             screen.app = None
             raise
-        except Exception:
-            self._stack.pop()
-            screen.app = None
-            raise
+
+    def _show_new(self, screen: ScreenT) -> ScreenT:
+        """Put an already prepared screen on top and run its lifecycle hooks."""
+        self._stack.append(screen)
         if not screen._mounted:
             screen._mounted = True
             screen.on_mount()
         screen.on_show()
-        _log.debug("push %s (depth=%d)", screen.title, self.depth)
+        _log.debug("show %s (depth=%d)", screen.title, self.depth)
         self._notify()
         return screen
+
+    @staticmethod
+    def _discard(screen: Screen) -> None:
+        """Unmount a screen that has already been removed from the stack."""
+        screen._mounted = False
+        screen.on_unmount()
+        screen._cancel_subscriptions()
+        screen.app = None
+
+    def push(self, screen: ScreenT) -> ScreenT:
+        """Show ``screen`` on top of the stack."""
+        self._prepare(screen)
+        previous = self.current
+        if previous is not None:
+            previous.on_hide()
+        return self._show_new(screen)
 
     def pop(self) -> Screen | None:
         """Remove the top screen and reveal the one below it.
@@ -346,14 +378,12 @@ class Navigator:
             # Or via App shortcut
             app.replace(HomeScreen())
         """
+        self._prepare(screen)
         if self._stack:
             top = self._stack.pop()
             top.on_hide()
-            top._mounted = False
-            top.on_unmount()
-            top._cancel_subscriptions()
-            top.app = None
-        return self.push(screen)
+            self._discard(top)
+        return self._show_new(screen)
 
     def reset(self, screen: ScreenT) -> ScreenT:
         """Clear the stack and start again from ``screen``.
@@ -366,8 +396,9 @@ class Navigator:
             # On logout, reset to login screen
             app.navigator.reset(LoginScreen())
         """
+        self._prepare(screen)
         self.dispose()
-        return self.push(screen)
+        return self._show_new(screen)
 
     def dispose(self) -> None:
         """Hide and unmount every screen, releasing lifecycle resources.
@@ -380,11 +411,7 @@ class Navigator:
         if current is not None:
             current.on_hide()
         while self._stack:
-            top = self._stack.pop()
-            top._mounted = False
-            top.on_unmount()
-            top._cancel_subscriptions()
-            top.app = None
+            self._discard(self._stack.pop())
 
     def _notify(self) -> None:
         """Tell the app that the visible screen changed."""

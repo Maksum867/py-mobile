@@ -16,7 +16,7 @@ from collections.abc import Iterable, Sequence
 from enum import Enum
 
 from ...errors import PermissionError_
-from ...logging import get_logger
+from ...log import get_logger
 from ..bridge import Bridge, get_bridge
 
 __all__ = ["Permission", "PermissionManager", "normalize"]

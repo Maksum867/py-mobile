@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..errors import ResourceError
-from ..logging import get_logger
+from ..log import get_logger
 from ..resources import default_icon_path
 
 __all__ = ["IconSet", "prepare_icons", "DENSITIES"]

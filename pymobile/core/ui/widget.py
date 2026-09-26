@@ -17,11 +17,12 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
+from difflib import get_close_matches
 from itertools import count
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar, overload
 
-from ...errors import PyMobileError
-from ...logging import get_logger
+from ...errors import PyMobileError, WidgetNotFoundError, WidgetTypeError
+from ...log import get_logger
 from .contract import SerializedValue, WidgetNode, WidgetProps
 from .style import Style
 
@@ -29,6 +30,9 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from .screen import Screen
 
 __all__ = ["Widget", "Container", "auto_id", "reset_id_counter", "widget_scope"]
+
+#: A concrete widget class, for the typed lookups (``find(id, Label) -> Label``).
+W = TypeVar("W", bound="Widget")
 
 _log = get_logger("ui.widget")
 
@@ -67,7 +71,11 @@ def auto_id(prefix: str) -> str:
     """
     counters = _scope.get()
     if counters is None:
-        return f"{prefix}-{next(_ids)}"
+        # Outside build() (a widget made in Screen.__init__, a helper, a
+        # test) the id gets its own namespace. It used to be ``label-1`` too,
+        # colliding with the first Label built inside the screen: "duplicate
+        # widget id 'label-1'".
+        return f"{prefix}-g{next(_ids)}"
     counter = counters.get(prefix)
     if counter is None:
         counter = count(1)
@@ -114,6 +122,23 @@ def _copy_props(props: Mapping[str, object]) -> WidgetProps:
     return {key: _serialise_value(value) for key, value in props.items()}
 
 
+_SETTERS: dict[type, frozenset[str]] = {}
+
+
+def _setter_names(cls: type) -> frozenset[str]:
+    """Names of properties on ``cls`` (they handle redraws themselves)."""
+    names = _SETTERS.get(cls)
+    if names is None:
+        names = frozenset(
+            name
+            for klass in cls.__mro__
+            for name, member in vars(klass).items()
+            if isinstance(member, property)
+        )
+        _SETTERS[cls] = names
+    return names
+
+
 class Widget:
     """Base class for every UI component."""
 
@@ -151,6 +176,34 @@ class Widget:
         for name, value in props.items():
             self.set_prop(name, value, invalidate=False)
 
+    def __setattr__(self, name: str, value: Any) -> None:
+        """Redraw when a public attribute changes.
+
+        Stateful values with their own property setter (``text``, ``value``,
+        ``visible`` …) already schedule a redraw. Plain attributes —
+        ``placeholder``, ``ListTile.subtitle``, ``Badge.color``, a new ``style``
+        object, ``ProgressText.label`` … — used to change silently until
+        something else triggered a render. Mutating a mutable value in place
+        (``widget.style.bold = True``) still needs :meth:`invalidate`.
+        """
+        if name[0] == "_" or name in _setter_names(type(self)):
+            object.__setattr__(self, name, value)
+            return
+        try:
+            old = object.__getattribute__(self, name)
+        except AttributeError:  # first assignment, from __init__
+            object.__setattr__(self, name, value)
+            return
+        object.__setattr__(self, name, value)
+        if old is value:
+            return
+        try:
+            changed = bool(old != value)
+        except Exception:  # exotic __eq__: assume it changed
+            changed = True
+        if changed:
+            self.invalidate()
+
     # -- tree --------------------------------------------------------------
     @property
     def parent(self) -> Widget | None:
@@ -168,9 +221,55 @@ class Widget:
         for child in self.children:
             yield from child.walk()
 
-    def find(self, widget_id: str) -> Widget | None:
-        """Find a descendant (or self) by id."""
-        return next((widget for widget in self.walk() if widget.id == widget_id), None)
+    @overload
+    def find(self, widget_id: str) -> Widget | None: ...
+
+    @overload
+    def find(self, widget_id: str, kind: type[W]) -> W | None: ...
+
+    def find(self, widget_id: str, kind: type[Widget] | None = None) -> Widget | None:
+        """Find a descendant (or self) by id; ``None`` when there is none.
+
+        Pass the widget class as ``kind`` and the result is typed as that
+        class, so editors and type checkers know its methods without a cast::
+
+            title = self.find("title", Label)     # Label | None
+            if title is not None:
+                title.text = "Hi"
+
+        A widget with that id but another type raises
+        :class:`~pymobile.errors.WidgetTypeError` instead of handing back the
+        wrong object.
+        """
+        widget = next((node for node in self.walk() if node.id == widget_id), None)
+        if widget is not None and kind is not None:
+            _check_kind(widget, widget_id, kind)
+        return widget
+
+    @overload
+    def get(self, widget_id: str) -> Widget: ...
+
+    @overload
+    def get(self, widget_id: str, kind: type[W]) -> W: ...
+
+    def get(self, widget_id: str, kind: type[Widget] | None = None) -> Widget:
+        """Like :meth:`find`, but the widget must exist — never ``None``.
+
+        ``self.get("title", Label).text = "Hi"`` needs no ``None`` check. A
+        missing id raises :class:`~pymobile.errors.WidgetNotFoundError` naming
+        the closest ids that do exist (a typo is the usual cause).
+        """
+        widget = self.find(widget_id) if kind is None else self.find(widget_id, kind)
+        if widget is None:
+            raise WidgetNotFoundError(widget_id, hint=_not_found_hint(self, widget_id))
+        return widget
+
+    def find_all(self, kind: type[W]) -> list[W]:
+        """Every descendant (and self) that is an instance of ``kind``, in tree order.
+
+        ``self.find_all(TextInput)`` — all inputs of a form, typed as such.
+        """
+        return [node for node in self.walk() if isinstance(node, kind)]
 
     # -- reactivity --------------------------------------------------------
     @property
@@ -192,7 +291,10 @@ class Widget:
         ``build()``, or before the app is running. In those cases there is
         nothing on screen yet and the call does nothing.
         """
-        screen = self.screen
+        try:
+            screen = self.screen
+        except AttributeError:  # still inside __init__
+            return
         if screen is not None:
             screen.invalidate()
 
@@ -364,6 +466,25 @@ class Container(Widget):
 
     def __iter__(self) -> Iterator[Widget]:
         return iter(self._children)
+
+
+def _check_kind(widget: Widget, widget_id: str, kind: type[Widget]) -> None:
+    if not isinstance(kind, type):
+        raise TypeError(f"kind must be a widget class, got {kind!r}")
+    if not isinstance(widget, kind):
+        raise WidgetTypeError(widget_id, kind, type(widget))
+
+
+def _not_found_hint(root: Widget, widget_id: str) -> str:
+    """Suggest the ids closest to a missing one."""
+    ids = [node.id for node in root.walk()]
+    close = get_close_matches(widget_id, ids, n=3, cutoff=0.5)
+    if close:
+        return "Did you mean " + ", ".join(repr(name) for name in close) + "?"
+    return (
+        "Give the widget an explicit id (Label('…', id=\"title\")); anonymous "
+        "widgets get generated ids such as 'label-1'."
+    )
 
 
 def in_build_scope() -> bool:

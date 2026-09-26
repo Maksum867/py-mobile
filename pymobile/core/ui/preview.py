@@ -19,9 +19,16 @@ import os
 from pathlib import Path
 from typing import Any
 
-from ...logging import get_logger
+from ...log import get_logger
 
-__all__ = ["render_ascii", "render_png", "ascii_picture", "snapshot_path", "assert_snapshot"]
+__all__ = [
+    "render_ascii",
+    "render_png",
+    "render_mockup",
+    "ascii_picture",
+    "snapshot_path",
+    "assert_snapshot",
+]
 
 _log = get_logger("ui.preview")
 
@@ -38,6 +45,7 @@ def render_ascii(widget_or_tree: Any, *, show_ids: bool = False, title: str = ""
     lines = _node_lines(node, show_ids=show_ids)
     if not lines:
         lines = ["<empty screen>"]
+    lines += _snackbar_lines(node)
     width = max(len(line) for line in lines)
     body = "\n".join(line.rstrip() for line in lines)
     if title:
@@ -196,8 +204,22 @@ def _draw_line(
         x += _char_advance(font, ch)
 
 
+def render_mockup(widget_or_tree: Any, path: Any = None, **options: Any) -> Any:
+    """Draw the screen the way the phone does; see :mod:`pymobile.core.ui.mockup`.
+
+    Unlike :func:`render_png` (a picture of the *text* preview), this lays
+    the tree out with the device's rules and paints Material-style widgets in
+    the theme's colours.
+    """
+    from .mockup import render_mockup as _render_mockup
+
+    return _render_mockup(widget_or_tree, path, **options)
+
+
 def render_png(widget_or_tree: Any, path: str, *, scale: int = 12) -> str:
-    """Draw the tree to ``path`` as PNG using Pillow.
+    """Draw the text preview (:func:`render_ascii`) to ``path`` as PNG using Pillow.
+
+    For a picture of what the phone actually shows use :func:`render_mockup`.
 
     Raises :class:`RuntimeError` with an install hint when Pillow is missing,
     so callers can fall back to :func:`render_ascii`.
@@ -214,9 +236,11 @@ def render_png(widget_or_tree: Any, path: str, *, scale: int = 12) -> str:
             "PNG preview needs Pillow; install it with `pip install Pillow`."
         ) from exc
 
-    lines = _node_lines(_as_node(widget_or_tree), show_ids=False)
+    node = _as_node(widget_or_tree)
+    lines = _node_lines(node, show_ids=False)
     if not lines:
         lines = ["<empty screen>"]
+    lines += _snackbar_lines(node)
     font = _preview_font(ImageFont, scale)
 
     fallback: Any = None
@@ -257,6 +281,15 @@ def _as_node(widget_or_tree: Any) -> dict[str, Any]:
     return node
 
 
+def _snackbar_lines(tree: dict[str, Any]) -> list[str]:
+    """The snackbar of a rendered tree (``App.snackbar``) as a bottom line."""
+    data = tree.get("snackbar")
+    if not isinstance(data, dict) or data.get("message") is None:
+        return []
+    action = f"   [{data['action']}]" if data.get("action") else ""
+    return [f"▌ {data['message']}{action}"]
+
+
 def _node_lines(node: dict[str, Any], *, show_ids: bool = False) -> list[str]:
     if not node.get("visible", True):
         return []
@@ -284,6 +317,14 @@ def _node_lines(node: dict[str, Any], *, show_ids: bool = False) -> list[str]:
         "List",
     ):
         rows = _join_vertical([_node_lines(child, show_ids=show_ids) for child in children])
+        list_props = node.get("props", {})
+        if node_type == "List" and list_props.get("refreshing"):
+            rows.insert(0, "⟳ refreshing…")
+        if node_type == "List" and list_props.get("has_more"):
+            rest = int(list_props.get("item_count", 0)) - int(
+                list_props.get("loaded", len(children))
+            )
+            rows.append(f"… {rest} more (loaded as you scroll)")
     else:
         rows = _leaf_lines(node, show_ids=show_ids)
 

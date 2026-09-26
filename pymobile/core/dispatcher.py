@@ -14,7 +14,7 @@ from collections import deque
 from collections.abc import Callable
 from typing import Any
 
-from ..logging import get_logger
+from ..log import get_logger
 
 __all__ = ["UiDispatcher"]
 

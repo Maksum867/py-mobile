@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from ...logging import get_logger
+from ...log import get_logger
 from .base import Bridge, NotificationSpec
 
 __all__ = ["AndroidBridge", "native_module"]
@@ -35,6 +35,9 @@ class AndroidBridge(Bridge):
 
     name = "android"
 
+    #: The device renderer draws its default colours from the app theme.
+    accepts_theme = True
+
     def __init__(self) -> None:
         self._native = native_module()
         self._granted: set[str] = set()
@@ -48,6 +51,25 @@ class AndroidBridge(Bridge):
         if self._native is None:
             return
         self._native.render(json.dumps(tree, ensure_ascii=False))
+
+    #: Must match ``Native.WAKE`` in Native.java.
+    WAKE_PAYLOAD = '{"__wake__":true}'
+
+    def wake(self) -> None:
+        """Make the blocked event loop return a ``__wake__`` event.
+
+        Called from background threads by :meth:`App.dispatch` so that the
+        dispatched callbacks run on the event-loop thread.
+        """
+        if self._native is None:
+            return
+        native_wake = getattr(self._native, "wake", None)
+        if native_wake is not None:
+            native_wake()  # pushes "__wake__" straight into the event queue
+        else:
+            # Bridges built before 0.8.0: Native.render() turns this payload
+            # into a "__wake__" event instead of drawing it.
+            self._native.render(self.WAKE_PAYLOAD)
 
     def toast(self, message: str, long: bool = False) -> None:
         if self._native is not None:

@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from ..logging import get_logger
+from ..log import get_logger
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from .app import App

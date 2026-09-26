@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pymobile-framework"
-version = "0.7.3"
+version = "0.8.0"
 description = "A small, fast and extensible Python framework for building Android applications."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -105,6 +105,9 @@ ignore = [
 "pymobile/tests/*" = ["B018"]  # attribute access is the assertion under test
 # Cyrillic letters in the transliteration table are the point of the file.
 "pymobile/compiler/scaffold.py" = ["RUF001"]
+# Month names, currency symbols and separators of real locales.
+"pymobile/core/formatting.py" = ["RUF001", "RUF002"]
+"pymobile/tests/test_features_080.py" = ["B018", "RUF001"]
 
 [tool.mypy]
 python_version = "3.10"

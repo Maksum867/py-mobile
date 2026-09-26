@@ -11,6 +11,14 @@ from pymobile.core.bridge import StubBridge, reset_bridge, set_bridge
 from pymobile.core.config import ProjectConfig
 
 
+@pytest.fixture(autouse=True)
+def _isolated_debug_keystores(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Keep debug keys created by native builds out of the real ~/.pymobile."""
+    monkeypatch.setenv("PYMOBILE_KEYSTORE_DIR", str(tmp_path_factory.mktemp("keystores")))
+
+
 @pytest.fixture
 def bridge() -> Iterator[StubBridge]:
     """A recording stub bridge installed as the active platform bridge."""

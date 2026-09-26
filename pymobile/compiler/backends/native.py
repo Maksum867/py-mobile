@@ -25,7 +25,7 @@ from pathlib import Path
 
 from ...core.config import ProjectConfig
 from ...errors import PyMobileError, ResourceError
-from ...logging import get_logger
+from ...log import get_logger
 from ...resources import resource_path
 from ..manifest import build_manifest
 from ..packager import FIXED_TIMESTAMP
@@ -39,6 +39,42 @@ _log = get_logger("compiler.native")
 DEBUG_KEYSTORE_NAME = "pymobile-debug.jks"
 DEBUG_KEY_ALIAS = "pymobile"
 DEBUG_PASSWORD = "android"
+
+#: Environment variables read for release-signing passwords, so they never
+#: have to appear on the command line (shell history, ``ps``).
+KS_PASS_ENV = "PYMOBILE_KS_PASS"
+KEY_PASS_ENV = "PYMOBILE_KEY_PASS"
+#: Directory for per-app debug keystores (default ``~/.pymobile/keystores``).
+KEYSTORE_DIR_ENV = "PYMOBILE_KEYSTORE_DIR"
+
+#: Framework files that only the desktop tooling uses. They used to be copied
+#: into every APK: the build system, the CLI, the Java/JNI sources and prebuilt
+#: artefacts (already packaged separately) and the Tk/browser previews.
+_DESKTOP_ONLY_FRAMEWORK = (
+    "compiler/",
+    "resources/",
+    "tests/",
+    "cli.py",
+    "__main__.py",
+    "core/watcher.py",
+    "core/ui/gui.py",
+    "core/ui/web.py",
+    "core/ui/preview.py",
+)
+
+
+def debug_keystore_path(package: str) -> Path:
+    """Where the debug key for ``package`` lives: outside the build directory.
+
+    Android only installs an update signed with the same key. The key used to
+    be created in ``build/``, so ``pymobile clean`` / ``build --clean`` (or a
+    fresh CI checkout) produced a new one and the next APK could not be
+    installed over the previous build without uninstalling it — and losing
+    the app's data.
+    """
+    base = os.environ.get(KEYSTORE_DIR_ENV)
+    folder = Path(base).expanduser() if base else Path.home() / ".pymobile" / "keystores"
+    return folder / f"{package}-debug.jks"
 
 #: Parts of the standard library that are never needed on a phone.
 #:
@@ -110,6 +146,7 @@ def _run(
     cwd: Path | None = None,
     step: str = "",
     java_home: Path | None = None,
+    extra_env: dict[str, str] | None = None,
 ) -> str:
     """Run an external tool, converting failures into framework errors.
 
@@ -120,6 +157,8 @@ def _run(
     text_command = [str(part) for part in command]
     _log.debug("$ %s", " ".join(text_command))
     environment = dict(os.environ)
+    if extra_env:
+        environment.update(extra_env)
     if java_home is not None:
         environment["JAVA_HOME"] = str(java_home)
         environment["PATH"] = f"{java_home / 'bin'}{os.pathsep}{environment.get('PATH', '')}"
@@ -160,6 +199,11 @@ class NativeBackend:
         self.python_runtime = python_runtime
         #: True when the caller supplied a keystore path (release signing).
         self._release_keystore = keystore is not None
+        # Passwords may come from the environment instead of the command line.
+        if keystore_password is None:
+            keystore_password = os.environ.get(KS_PASS_ENV) or None
+        if key_password is None:
+            key_password = os.environ.get(KEY_PASS_ENV) or None
         #: True when a password was given; never silently reuse the debug one.
         self._keystore_password_given = keystore_password is not None
         self.keystore = keystore
@@ -289,9 +333,9 @@ class NativeBackend:
         """Copy the packaged launcher dex into the work directory.
 
         ``classes.dex`` is Dalvik bytecode, not native machine code, so one
-        launcher dex is valid for every ABI. The package currently ships the
-        arm64 resource path; x86_64 builds intentionally reuse it rather than
-        requiring a byte-identical duplicate.
+        launcher dex is valid for every ABI. It is stored once, next to the
+        arm64 bridge; x86_64 builds reuse it (the x86_64 directory carries only
+        its own ``libpymobile.so``).
         """
         try:
             prebuilt = resource_path("android", "prebuilt", self.abi, "classes.dex")
@@ -358,7 +402,7 @@ class NativeBackend:
             [
                 self.toolchain.d8,
                 "--min-api",
-                str(self.config.min_sdk),
+                str(self.config.effective_min_sdk),
                 "--lib",
                 self.toolchain.platform_jar,
                 "--output",
@@ -414,7 +458,7 @@ class NativeBackend:
                 manifest,
                 *sorted(flat.glob("*.flat")),
                 "--min-sdk-version",
-                str(self.config.min_sdk),
+                str(self.config.effective_min_sdk),
                 "--target-sdk-version",
                 str(self.config.target_sdk),
                 "--auto-add-overlay",
@@ -489,7 +533,13 @@ class NativeBackend:
                 continue
             if path.suffix in (".pyc", ".pyo"):
                 continue
-            assets[f"assets/app/pymobile/{relative.as_posix()}"] = path
+            posix = relative.as_posix()
+            if any(
+                posix.startswith(item) if item.endswith("/") else posix == item
+                for item in _DESKTOP_ONLY_FRAMEWORK
+            ):
+                continue
+            assets[f"assets/app/pymobile/{posix}"] = path
         return assets
 
     # -- 6. package --------------------------------------------------------
@@ -548,10 +598,10 @@ class NativeBackend:
         keystore = self.keystore or self._ensure_debug_keystore(workdir)
         if self._release_keystore and not self._keystore_password_given:
             raise PyMobileError(
-                "A release keystore was given without --ks-pass",
+                "A release keystore was given without a password",
                 hint=(
-                    "Pass --ks-pass (and --key-alias / --key-pass). "
-                    "The debug password is not used."
+                    f"Set {KS_PASS_ENV} (and {KEY_PASS_ENV} if the key has its own "
+                    "password) or pass --ks-pass. The debug password is not used."
                 ),
             )
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -563,25 +613,44 @@ class NativeBackend:
                 keystore,
                 "--ks-key-alias",
                 self.key_alias,
+                # env: keeps the passwords out of the process list.
                 "--ks-pass",
-                f"pass:{self.keystore_password}",
+                "env:PYMOBILE_SIGN_KS_PASS",
                 "--key-pass",
-                f"pass:{self.key_password}",
+                "env:PYMOBILE_SIGN_KEY_PASS",
                 "--out",
                 output,
                 aligned,
             ],
             step="apksigner",
             java_home=self.toolchain.java_home,
+            extra_env={
+                "PYMOBILE_SIGN_KS_PASS": self.keystore_password,
+                "PYMOBILE_SIGN_KEY_PASS": self.key_password,
+            },
         )
         return output
 
     def _ensure_debug_keystore(self, workdir: Path) -> Path:
-        """Create (once) a debug keystore in the project's build directory."""
-        keystore = self.config.output_path / DEBUG_KEYSTORE_NAME
+        """Create (once) the app's debug keystore outside the build directory.
+
+        A key left in ``build/`` by an older version is adopted, so existing
+        installs keep accepting updates.
+        """
+        keystore = debug_keystore_path(self.config.package)
         if keystore.exists():
             return keystore
         keystore.parent.mkdir(parents=True, exist_ok=True)
+        legacy = self.config.output_path / DEBUG_KEYSTORE_NAME
+        if legacy.exists():
+            shutil.copy2(legacy, keystore)
+            _log.info("moved the debug keystore out of the build directory: %s", keystore)
+            return keystore
+        self.warnings.append(
+            f"created a new debug signing key at {keystore}. Keep this file: APKs signed "
+            "with another key cannot be installed over this build (set "
+            f"{KEYSTORE_DIR_ENV} to share it, e.g. on CI)"
+        )
         _run(
             [
                 self.toolchain.keytool,

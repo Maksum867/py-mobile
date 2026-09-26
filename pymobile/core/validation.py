@@ -18,6 +18,7 @@ Example::
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
@@ -50,6 +51,21 @@ ValidatorFn = Callable[[Any], str | None]
 #: Well-known regex for email addresses (pragmatic, not RFC-perfect).
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
+#: What a user can type as an integer / a decimal number. Python's int() and
+#: float() are more permissive than a form should be: they accept "4_2",
+#: "nan", "inf" and non-ASCII digits.
+_INTEGER_RE = re.compile(r"[+-]?[0-9]+", re.ASCII)
+_NUMBER_RE = re.compile(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?", re.ASCII)
+
+
+def _is_empty(value: Any) -> bool:
+    """None, an empty collection or a whitespace-only string."""
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    return isinstance(value, (list, dict, tuple, set)) and not value
+
 #: Rules that only exist with an argument; a bare string spelling of one of
 #: these is a mistake we can name precisely instead of "unknown rule".
 _ARGUMENT_RULES = frozenset(
@@ -70,17 +86,16 @@ class ValidationError(PyMobileError):
 # Individual validators (return None on success, a message on failure)
 # --------------------------------------------------------------------------
 def required(value: Any) -> str | None:
-    """A value must be present (not None, not an empty string/list/dict)."""
-    if value is None:
-        return "is required"
-    if isinstance(value, (str, list, dict, tuple, set)) and not value:
-        return "is required"
-    return None
+    """A value must be present: not None, not empty, not only whitespace."""
+    return "is required" if _is_empty(value) else None
 
 
 def optional(value: Any) -> str | None:
-    """Skip further validation when the value is absent/empty."""
-    # Handled by Validator: optional fields are skipped. Never fails itself.
+    """Allow the field to be left empty; its other rules run only when filled.
+
+    Handled by :class:`Validator`: a field WITHOUT ``optional`` is validated
+    even when empty, so ``["email"]`` rejects ``""``. Never fails itself.
+    """
     return None
 
 
@@ -123,12 +138,8 @@ def integer(value: Any) -> str | None:
         return "must be an integer"
     if isinstance(value, int):
         return None
-    if isinstance(value, str):
-        try:
-            int(value.strip())
-            return None
-        except ValueError:
-            pass
+    if isinstance(value, str) and _INTEGER_RE.fullmatch(value.strip()):
+        return None
     return "must be an integer"
 
 
@@ -136,14 +147,12 @@ def number(value: Any) -> str | None:
     """A value must be a number (int or float)."""
     if isinstance(value, bool):
         return "must be a number"
-    if isinstance(value, (int, float)):
+    if isinstance(value, int):
         return None
-    if isinstance(value, str):
-        try:
-            float(value.strip())
-            return None
-        except ValueError:
-            pass
+    if isinstance(value, float):
+        return None if math.isfinite(value) else "must be a number"
+    if isinstance(value, str) and _NUMBER_RE.fullmatch(value.strip()):
+        return None
     return "must be a number"
 
 
@@ -205,6 +214,8 @@ class _MatchesField:
         if data is None:
             return None
         other_value = data.get(self.field_name)
+        if _is_empty(value) and _is_empty(other_value):
+            return None  # both left empty: nothing to confirm
         if value != other_value:
             return f"does not match {self.field_name!r}"
         return None
@@ -264,6 +275,14 @@ class Validator:
 
     Callable validators remain supported for advanced cases. The result maps
     every invalid field to its first human-readable error.
+
+    Empty values (None, ``""``, whitespace, empty collections):
+
+    * ``required`` reports ``"is required"``;
+    * ``optional`` lets the field stay empty — its other rules are skipped,
+      except ``matches``, which still fails while the other field is filled
+      (a password with an empty confirmation is not valid);
+    * a field with neither is validated as is, so ``["email"]`` rejects ``""``.
     """
 
     __slots__ = ("_fields",)
@@ -343,13 +362,12 @@ class Validator:
         errors: dict[str, str] = {}
         for name, validators in self._fields:
             value = data.get(name)
-            present = value is not None and not (
-                isinstance(value, (str, list, dict, tuple, set)) and not value
-            )
-            if not present and not any(fn is required for fn in validators):
-                continue
+            skip_empty = _is_empty(value) and any(fn is optional for fn in validators)
+            skip_empty = skip_empty and not any(fn is required for fn in validators)
             for fn in validators:
                 if fn is optional:
+                    continue
+                if skip_empty and not isinstance(fn, _MatchesField):
                     continue
                 message = (
                     fn(value, data) if isinstance(fn, _MatchesField) else fn(value)

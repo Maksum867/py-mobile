@@ -30,16 +30,16 @@ def test_radio_button_state():
 def test_radio_group_selects_first_selected():
     group = RadioGroup(RadioButton("A"), RadioButton("B", selected=True))
     assert group.value == "B"
-    assert group._radios["B"].selected
-    assert not group._radios["A"].selected
+    assert group.children[1].selected
+    assert not group.children[0].selected
 
 
 def test_radio_group_select_switches():
     group = RadioGroup(RadioButton("A"), RadioButton("B"))
     group.select("B")
     assert group.value == "B"
-    assert group._radios["B"].selected
-    assert not group._radios["A"].selected
+    assert group.children[1].selected
+    assert not group.children[0].selected
 
 
 def test_radio_group_unknown_option():
@@ -62,10 +62,10 @@ def test_radio_group_on_select():
 
 def test_radio_button_press_selects_in_group():
     group = RadioGroup(RadioButton("A"), RadioButton("B"))
-    group._radios["B"].press()
+    group.children[1].press()
     assert group.value == "B"
-    assert group._radios["B"].selected
-    assert not group._radios["A"].selected
+    assert group.children[1].selected
+    assert not group.children[0].selected
 
 
 def test_radio_group_value_in_ctor_does_not_fire_callback():

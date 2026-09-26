@@ -2,7 +2,7 @@
 
 A dialog is a container the renderers draw as a framed, elevated surface:
 a ``LabelFrame`` in the Tk window, a bordered ``<section>`` in the browser
-preview, a card with a title and elevation on Android. ``open()``/``close()``
+preview, a modal window (``android.app.Dialog``) on Android. ``open()``/``close()``
 flip ``visible``, so the usual reactive rules apply — a closed dialog costs
 nothing and reopening it keeps its children::
 
@@ -31,7 +31,9 @@ class Dialog(Container):
 
     ``sheet=True`` renders it as a bottom sheet instead: anchored to the
     bottom edge with rounded top corners (browser), packed at the bottom
-    (Tk) and marked for bottom gravity on the device.
+    (Tk) and as a full-width window at the bottom of the screen on the
+    device. On a device the back button or a tap outside calls
+    :meth:`dismiss`.
     """
 
     type_name = "Dialog"
@@ -71,6 +73,14 @@ class Dialog(Container):
     def close(self) -> None:
         """Hide the dialog (``visible = False``)."""
         self.visible = False
+
+    def dismiss(self) -> None:
+        """The user dismissed the dialog (back button / tap outside on a device).
+
+        Plain dialogs just close; :class:`ConfirmDialog` treats it as "cancel"
+        and :class:`AlertDialog` as an acknowledgement.
+        """
+        self.close()
 
     def props(self) -> dict[str, Any]:
         return {**super().props(), "title": self._title, "sheet": self.sheet}
@@ -117,6 +127,9 @@ class AlertDialog(Dialog):
         self.close()
         if self.on_acknowledge is not None:
             self.on_acknowledge()
+
+    def dismiss(self) -> None:
+        self._acknowledge()
 
 
 class ConfirmDialog(Dialog):
@@ -173,6 +186,9 @@ class ConfirmDialog(Dialog):
         self.close()
         if self.on_cancel is not None:
             self.on_cancel()
+
+    def dismiss(self) -> None:
+        self._decline()
 
 
 class BottomSheet(Dialog):

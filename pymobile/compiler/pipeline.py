@@ -12,8 +12,10 @@ appending to the list — no existing stage has to change.
 from __future__ import annotations
 
 import hashlib
+import os
 import py_compile
 import shutil
+import sys
 import tempfile
 import time
 from collections.abc import Callable
@@ -23,7 +25,7 @@ from typing import Any
 
 from ..core.config import ProjectConfig
 from ..errors import PyMobileError
-from ..logging import get_logger
+from ..log import get_logger
 from .backends.native import NativeBackend
 from .cache import BuildCache, fingerprint_files
 from .collector import SourceSet, collect_sources
@@ -36,6 +38,9 @@ from .toolchain import find_toolchain
 __all__ = ["BuildPipeline", "BuildResult", "StageTiming", "build_apk"]
 
 _log = get_logger("compiler")
+
+#: Python version of the interpreter embedded in native APKs.
+DEVICE_PYTHON = (3, 14)
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +134,13 @@ class BuildPipeline:
     def _validate(self) -> None:
         """Re-check the configuration and warn about likely mistakes."""
         self.config.validate()
+        if self.config.min_sdk < self.config.effective_min_sdk:
+            self.warnings.append(
+                f"min_sdk = {self.config.min_sdk} is below what the embedded CPython 3.14 "
+                f"supports; the APK declares minSdkVersion {self.config.effective_min_sdk} "
+                f"(Android 7.0) instead. Set min_sdk = {self.config.effective_min_sdk} in "
+                "pymobile.toml to silence this warning."
+            )
         permissions = {str(p) for p in self.config.permissions}
         if "android.permission.INTERNET" not in permissions and self._uses_http():
             self.warnings.append(
@@ -218,9 +230,18 @@ class BuildPipeline:
             shutil.copyfile(absolute, target)
             entries.append((relative.as_posix(), target))
 
-        # A native build runs CPython 3.14 on the device, while this process may
-        # be any other version. .pyc files are version-locked, so ship sources.
-        if not self.config.optimize or self.native:
+        # A native build runs CPython 3.14 on the device. .pyc files are
+        # version-locked, so bytecode can only be produced by a 3.14 host;
+        # anywhere else the option is ignored — loudly, not silently.
+        if not self.config.optimize:
+            return entries
+        if self.native and sys.version_info[:2] != DEVICE_PYTHON:
+            self.warnings.append(
+                "optimize = true was ignored: the device runs Python "
+                f"{DEVICE_PYTHON[0]}.{DEVICE_PYTHON[1]} and bytecode is version-specific, "
+                f"but this build runs on {sys.version_info[0]}.{sys.version_info[1]}; "
+                "shipping .py sources instead"
+            )
             return entries
 
         optimize_level = 2 if self.config.strip_debug else 1
@@ -363,7 +384,18 @@ class BuildPipeline:
         toolchain.verify(require_ndk=False)
 
         runtime = self._stage("runtime", lambda: ensure_runtime(self.config.abis[0]))
-        backend = NativeBackend(self.config, toolchain, runtime, abi=self.config.abis[0])
+        backend = NativeBackend(
+            self.config,
+            toolchain,
+            runtime,
+            # The release-signing options used to stop here: `--keystore`
+            # was accepted and then silently ignored (debug-signed APK).
+            keystore=self.keystore,
+            keystore_password=self.keystore_password,
+            key_alias=self.key_alias,
+            key_password=self.key_password,
+            abi=self.config.abis[0],
+        )
         if len(self.config.abis) > 1:
             # The native backend packages only the first ABI; surfacing this
             # beats silently shipping an APK that ignores the rest.
@@ -410,8 +442,13 @@ class BuildPipeline:
         only one of them installs on a device; without the mode in the key,
         ``build`` followed by ``build --native`` would report "up to date" and
         hand back the structural artifact.
+
+        So is the **framework** that goes into the APK — its version, the
+        launcher dex, the JNI bridge and their sources — and the
+        ``PYMOBILE_BUILD_JNI`` switch. Otherwise upgrading pymobile (a new
+        renderer) kept answering "up to date" with an APK built by the old one.
         """
-        paths = list(sources.files)
+        paths = list(sources.files) + _framework_inputs()
         icon = self.config.icon_path
         if icon is not None and icon.exists():
             paths.append(icon)
@@ -419,7 +456,27 @@ class BuildPipeline:
             repr(sorted(self.config.to_dict().items())).encode("utf-8"), digest_size=8
         ).hexdigest()
         mode = "native" if self.native else "structural"
-        return f"{mode}:{fingerprint_files(paths)}:{config_digest}"
+        if self.native and os.environ.get("PYMOBILE_BUILD_JNI") == "1":
+            mode += "+jni"
+        from .. import __version__
+
+        return f"{mode}:{__version__}:{fingerprint_files(paths)}:{config_digest}"
+
+
+def _framework_inputs() -> list[Path]:
+    """The packaged Android files every APK is assembled from."""
+    from ..resources import resource_path
+
+    try:
+        android = resource_path("android")
+    except PyMobileError:  # an incomplete install fails later, with a hint
+        return []
+    return sorted(
+        path
+        for pattern in ("java/*.java", "jni/*.c", "prebuilt/*/*")
+        for path in android.glob(pattern)
+        if path.is_file()
+    )
 
 
 def build_apk(

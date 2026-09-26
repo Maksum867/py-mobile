@@ -1,10 +1,16 @@
 package org.pymobile.app;
 
+import android.animation.ValueAnimator;
 import android.app.DatePickerDialog;
+import android.app.Dialog;
+import android.content.DialogInterface;
 import android.app.TimePickerDialog;
 import android.content.Context;
 import android.graphics.Color;
+import android.graphics.Rect;
 import android.graphics.Typeface;
+import android.graphics.drawable.ColorDrawable;
+import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.text.Editable;
 import android.text.InputType;
@@ -12,12 +18,19 @@ import android.text.TextWatcher;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.HapticFeedbackConstants;
+import android.view.MotionEvent;
+import android.view.VelocityTracker;
+import android.view.ViewConfiguration;
+import android.view.ViewParent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.ViewTreeObserver;
+import android.view.Window;
 import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.CompoundButton;
 import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -35,6 +48,9 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.util.HashMap;
+import java.util.WeakHashMap;
+
 /**
  * Turns a serialised PyMobile widget tree into a native Android view hierarchy.
  *
@@ -51,6 +67,110 @@ final class ViewBuilder {
         this.context = context;
         this.density = context.getResources().getDisplayMetrics().density;
     }
+
+    // -- theme --------------------------------------------------------------
+    // The palette arrives with every tree (root "theme" object, sent by the
+    // Python App). It used to be hard-coded here, so a dark theme only
+    // changed what the author styled by hand.
+
+    private static final int DEFAULT_PRIMARY = Color.parseColor("#3F51B5");
+    private int colorPrimary = DEFAULT_PRIMARY;
+    private int colorOnPrimary = Color.WHITE;
+    private int colorBackground = Color.WHITE;
+    private int colorSurface = Color.WHITE;
+    private int colorText = Color.parseColor("#212121");
+    private int colorTextMuted = Color.parseColor("#757575");
+    private String themeSignature = null;
+    private boolean darkTheme = false;
+
+    /** Apply the palette sent with a tree; returns true when it changed. */
+    boolean setTheme(JSONObject theme) {
+        String signature = theme == null ? "" : theme.toString();
+        if (signature.equals(themeSignature)) {
+            return false;
+        }
+        themeSignature = signature;
+        JSONObject t = theme == null ? new JSONObject() : theme;
+        colorPrimary = parseColor(t.optString("PRIMARY", ""), DEFAULT_PRIMARY);
+        colorBackground = parseColor(t.optString("BACKGROUND", ""), Color.WHITE);
+        // SURFACE is the palette's card colour; the light preset's #F5F5F5
+        // looks washed out as a dialog, so the light default stays white.
+        colorSurface = t.optBoolean("dark", false)
+                ? parseColor(t.optString("SURFACE", ""), Color.parseColor("#1E1E1E"))
+                : Color.WHITE;
+        colorText = parseColor(t.optString("TEXT", ""), Color.parseColor("#212121"));
+        colorTextMuted = parseColor(t.optString("TEXT_MUTED", ""), Color.parseColor("#757575"));
+        colorOnPrimary = Color.WHITE;
+        darkTheme = t.optBoolean("dark", false);
+        return true;
+    }
+
+    /** Window background for the current theme. */
+    int backgroundColor() {
+        return colorBackground;
+    }
+
+    // -- per-view state ------------------------------------------------------
+    // View tags hold the widget id, so extra state lives in weak side tables
+    // that disappear together with the views.
+
+    /** A Dialog renders into its own window; the anchor stays in the layout. */
+    private static final class DialogHost {
+        final Dialog window;
+        final LinearLayout box;
+        final TextView title;
+        boolean wanted;
+
+        DialogHost(Dialog window, LinearLayout box, TextView title) {
+            this.window = window;
+            this.box = box;
+            this.title = title;
+        }
+    }
+
+    private final WeakHashMap<View, DialogHost> dialogs = new WeakHashMap<>();
+    private final WeakHashMap<View, String> imageSources = new WeakHashMap<>();
+    private final WeakHashMap<View, Integer> inputRevisions = new WeakHashMap<>();
+    private final WeakHashMap<View, double[]> sliderScales = new WeakHashMap<>();
+
+    /** Paging state of a List: more rows exist / the row count last requested. */
+    private static final class ListState {
+        boolean hasMore;
+        int requestedAt = -1;
+        /** Pull-to-refresh spinner row (child 0), or null for a plain list. */
+        FrameLayout header;
+        /** Whether the spinner is showing (pulled and released, or set by Python). */
+        boolean refreshing;
+        /** A running height animation of the header. */
+        ValueAnimator headerAnimator;
+    }
+
+    private final WeakHashMap<View, ListState> lists = new WeakHashMap<>();
+
+    /** scroll_serial last applied per List id; survives rebuilds of the screen. */
+    private final HashMap<String, Integer> scrollSerials = new HashMap<>();
+
+    /** Swipe configuration and drag state of a ListTile row. */
+    private static final class SwipeState {
+        String id = "";
+        boolean left;
+        boolean right;
+        int leftColor = Color.parseColor("#E53935");
+        int rightColor = Color.parseColor("#43A047");
+        boolean dragging;
+        boolean committing;
+        /** The row's own background while it is tinted by a drag. */
+        Drawable saved;
+        boolean hasSaved;
+        float downX;
+        float downY;
+        VelocityTracker velocity;
+    }
+
+    private final WeakHashMap<View, SwipeState> swipes = new WeakHashMap<>();
+
+    /** Progress bars use a fixed fine scale so float values/maxima survive. */
+    private static final int PROGRESS_SCALE = 1000;
 
     private int dp(int value) {
         return Math.round(value * density);
@@ -198,6 +318,15 @@ final class ViewBuilder {
         view.setEnabled(enabled);
         view.setVisibility(visible ? View.VISIBLE : View.GONE);
         applyStyle(view, style);
+        if ("Dialog".equals(type)) {
+            // The anchor never takes space: the dialog shows in its own window.
+            DialogHost host = dialogs.get(view);
+            if (host != null) {
+                host.wanted = visible;
+                applyStyle(host.box, style);
+            }
+            view.setVisibility(View.GONE);
+        }
         // Remember the widget id so a later tree can patch this view in place
         // instead of rebuilding the screen (which loses scroll and focus).
         view.setTag(id);
@@ -646,14 +775,12 @@ final class ViewBuilder {
                 tab.setAllCaps(false);
                 tab.setLayoutParams(new LinearLayout.LayoutParams(
                         0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-                if (label.equals(value)) {
-                    tab.setBackgroundColor(Color.parseColor("#3F51B5"));
-                    tab.setTextColor(Color.WHITE);
-                }
+                styleTab(tab, label.equals(value));
                 tab.setOnClickListener(new View.OnClickListener() {
                     @Override
                     public void onClick(View v) {
-                        Native.dispatchEvent(id, "change", label);
+                        // Read the label at click time: a patch may rename tabs.
+                        Native.dispatchEvent(id, "change", ((Button) v).getText().toString());
                     }
                 });
                 bar.addView(tab);
@@ -662,25 +789,35 @@ final class ViewBuilder {
         return bar;
     }
 
+    private void styleTab(Button tab, boolean selected) {
+        tab.setBackgroundColor(selected ? colorPrimary : colorSurface);
+        tab.setTextColor(selected ? colorOnPrimary : colorText);
+    }
+
+    /**
+     * A Dialog is a real modal window (android.app.Dialog), not a card in the
+     * layout flow. The view returned here is an invisible zero-size anchor
+     * that keeps the widget's place in the tree; the dialog is shown while
+     * the anchor is attached and the node is visible, and dismissed when the
+     * anchor leaves the window (screen change, rebuild).
+     *
+     * The title TextView always exists (GONE when empty) so the number of
+     * native children is stable: children + 1.
+     */
     private View buildDialog(JSONObject node, JSONObject props) throws JSONException {
+        final String id = node.optString("id", "");
+        final FrameLayout anchor = new FrameLayout(context);
+
         LinearLayout box = new LinearLayout(context);
         box.setOrientation(LinearLayout.VERTICAL);
-        int pad = dp(12);
+        int pad = dp(16);
         box.setPadding(pad, pad, pad, pad);
-        GradientDrawable surface = new GradientDrawable();
-        surface.setColor(Color.parseColor("#FFFFFF"));
-        surface.setCornerRadius(dp(12));
-        box.setBackground(surface);
-        box.setElevation(dp(6));
-        String title = props.optString("title", "");
-        if (!title.isEmpty()) {
-            TextView head = new TextView(context);
-            head.setText(title);
-            head.setTypeface(null, Typeface.BOLD);
-            head.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
-            box.addView(head, new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        }
+        TextView head = new TextView(context);
+        head.setTypeface(null, Typeface.BOLD);
+        head.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
+        head.setPadding(0, 0, 0, dp(8));
+        box.addView(head, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         JSONArray children = node.optJSONArray("children");
         if (children != null) {
             for (int i = 0; i < children.length(); i++) {
@@ -688,24 +825,115 @@ final class ViewBuilder {
                         ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
             }
         }
-        return box;
+        ScrollView scroll = new ScrollView(context);
+        scroll.addView(box, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        Dialog window = new Dialog(context);
+        window.requestWindowFeature(Window.FEATURE_NO_TITLE);
+        window.setContentView(scroll);
+        window.setCanceledOnTouchOutside(true);
+        window.setOnCancelListener(new DialogInterface.OnCancelListener() {
+            @Override
+            public void onCancel(DialogInterface dialog) {
+                // Back / tap outside: let Python close it (and run on_cancel).
+                Native.dispatchEvent(id, "dismiss", "");
+            }
+        });
+        DialogHost host = new DialogHost(window, box, head);
+        dialogs.put(anchor, host);
+        applyDialogProps(host, props);
+
+        anchor.addOnAttachStateChangeListener(new View.OnAttachStateChangeListener() {
+            @Override
+            public void onViewAttachedToWindow(View v) {
+                syncDialog(v);
+            }
+
+            @Override
+            public void onViewDetachedFromWindow(View v) {
+                DialogHost h = dialogs.get(v);
+                if (h != null && h.window.isShowing()) {
+                    h.window.dismiss();
+                }
+            }
+        });
+        return anchor;
+    }
+
+    private void applyDialogProps(DialogHost host, JSONObject props) {
+        String title = props.optString("title", "");
+        if (!title.contentEquals(host.title.getText())) {
+            host.title.setText(title);
+        }
+        host.title.setVisibility(title.isEmpty() ? View.GONE : View.VISIBLE);
+        host.title.setTextColor(colorText);
+        boolean sheet = props.optBoolean("sheet", false);
+        GradientDrawable surface = new GradientDrawable();
+        surface.setColor(colorSurface);
+        float r = dp(sheet ? 16 : 12);
+        surface.setCornerRadii(sheet
+                ? new float[]{r, r, r, r, 0, 0, 0, 0}
+                : new float[]{r, r, r, r, r, r, r, r});
+        host.box.setBackground(surface);
+        Window w = host.window.getWindow();
+        if (w != null) {
+            w.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+            w.setGravity(sheet ? Gravity.BOTTOM : Gravity.CENTER);
+            int screen = context.getResources().getDisplayMetrics().widthPixels;
+            w.setLayout(sheet ? ViewGroup.LayoutParams.MATCH_PARENT : Math.round(screen * 0.88f),
+                    ViewGroup.LayoutParams.WRAP_CONTENT);
+        }
+    }
+
+    /** Show or dismiss the dialog window to match the node and the anchor. */
+    private void syncDialog(View anchor) {
+        DialogHost host = dialogs.get(anchor);
+        if (host == null) {
+            return;
+        }
+        boolean show = host.wanted && anchor.getWindowToken() != null && ancestorsVisible(anchor);
+        try {
+            if (show && !host.window.isShowing()) {
+                host.window.show();
+            } else if (!show && host.window.isShowing()) {
+                host.window.dismiss();
+            }
+        } catch (RuntimeException error) {
+            // e.g. BadTokenException while the activity is finishing.
+            android.util.Log.w("pymobile", "dialog window failed", error);
+        }
+    }
+
+    /** A dialog nested in a hidden container must stay hidden too. */
+    private static boolean ancestorsVisible(View view) {
+        android.view.ViewParent parent = view.getParent();
+        while (parent instanceof View) {
+            if (((View) parent).getVisibility() != View.VISIBLE) {
+                return false;
+            }
+            parent = parent.getParent();
+        }
+        return true;
     }
 
     private View buildDatePicker(final String id, JSONObject props) {
         final String current = props.optString("value", "");
-        int year = 2000, month = 0, day = 1;
-        if (current.length() == 10) {
-            year = Integer.parseInt(current.substring(0, 4));
-            month = Integer.parseInt(current.substring(5, 7)) - 1;
-            day = Integer.parseInt(current.substring(8, 10));
-        }
-        final int y = year, m = month, d = day;
         final Button button = new Button(context);
         button.setAllCaps(false);
         button.setText(current.isEmpty() ? "Pick date" : current);
         button.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
+                // Parse the value shown now, not the one captured at build
+                // time: Python may have changed it through a patch since.
+                String shown = button.getText().toString();
+                int y = 2000, m = 0, d = 1;
+                if (shown.matches("\\d{4}-\\d{2}-\\d{2}")) {
+                    y = Integer.parseInt(shown.substring(0, 4));
+                    m = Integer.parseInt(shown.substring(5, 7)) - 1;
+                    d = Integer.parseInt(shown.substring(8, 10));
+                }
                 DatePickerDialog dialog = new DatePickerDialog(context,
                         new DatePickerDialog.OnDateSetListener() {
                             @Override
@@ -725,18 +953,18 @@ final class ViewBuilder {
 
     private View buildTimePicker(final String id, JSONObject props) {
         final String current = props.optString("value", "");
-        int hour = 12, minute = 0;
-        if (current.length() == 5) {
-            hour = Integer.parseInt(current.substring(0, 2));
-            minute = Integer.parseInt(current.substring(3, 5));
-        }
-        final int h = hour, min = minute;
         final Button button = new Button(context);
         button.setAllCaps(false);
         button.setText(current.isEmpty() ? "Pick time" : current);
         button.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
+                String shown = button.getText().toString();
+                int h = 12, min = 0;
+                if (shown.matches("\\d{2}:\\d{2}")) {
+                    h = Integer.parseInt(shown.substring(0, 2));
+                    min = Integer.parseInt(shown.substring(3, 5));
+                }
                 TimePickerDialog dialog = new TimePickerDialog(context,
                         new TimePickerDialog.OnTimeSetListener() {
                             @Override
@@ -757,7 +985,7 @@ final class ViewBuilder {
     private View buildLabel(JSONObject props) {
         TextView label = new TextView(context);
         label.setText(props.optString("text", ""));
-        label.setTextColor(Color.parseColor("#212121"));
+        label.setTextColor(colorText);
         label.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
         return label;
     }
@@ -779,6 +1007,9 @@ final class ViewBuilder {
         EditText input = new EditText(context);
         input.setText(props.optString("value", ""));
         input.setHint(props.optString("placeholder", ""));
+        input.setTextColor(colorText);
+        input.setHintTextColor(colorTextMuted);
+        inputRevisions.put(input, props.optInt("revision", 0));
         if (props.optBoolean("multiline", false)) {
             input.setInputType(InputType.TYPE_CLASS_TEXT
                     | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
@@ -810,6 +1041,7 @@ final class ViewBuilder {
     private View buildSwitch(final String id, JSONObject props) {
         Switch toggle = new Switch(context);
         toggle.setChecked(props.optBoolean("checked", false));
+        toggle.setTextColor(colorText);
         toggle.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
             @Override
             public void onCheckedChanged(CompoundButton view, boolean checked) {
@@ -822,6 +1054,7 @@ final class ViewBuilder {
     private View buildCheckbox(final String id, JSONObject props) {
         CheckBox checkbox = new CheckBox(context);
         checkbox.setChecked(props.optBoolean("checked", false));
+        checkbox.setTextColor(colorText);
         checkbox.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
             @Override
             public void onCheckedChanged(CompoundButton view, boolean checked) {
@@ -833,17 +1066,22 @@ final class ViewBuilder {
 
     private View buildSlider(final String id, JSONObject props) {
         SeekBar seek = new SeekBar(context);
-        double minimum = props.optDouble("minimum", 0);
-        double maximum = props.optDouble("maximum", 100);
-        int steps = Math.max(1, (int) Math.round(maximum - minimum));
-        seek.setMax(steps);
-        seek.setProgress((int) Math.round(props.optDouble("value", 0) - minimum));
+        applySliderScale(seek, props);
         seek.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
             @Override
             public void onProgressChanged(SeekBar bar, int progress, boolean fromUser) {
                 if (fromUser) {
-                    Native.dispatchEvent(id, "change",
-                            String.valueOf(minimum + progress));
+                    double[] scale = sliderScales.get(bar);
+                    if (scale == null) {
+                        return;
+                    }
+                    double value = progress >= bar.getMax()
+                            ? scale[1]
+                            : scale[0] + progress * scale[2];
+                    // Trim binary noise (0.30000000000000004) before it
+                    // reaches Python.
+                    value = Math.round(value * 1e9) / 1e9;
+                    Native.dispatchEvent(id, "change", String.valueOf(value));
                 }
             }
 
@@ -856,6 +1094,37 @@ final class ViewBuilder {
             }
         });
         return seek;
+    }
+
+    /**
+     * Map [minimum, maximum] with ``step`` onto SeekBar's integer progress.
+     *
+     * The old mapping used one position per whole unit, so Slider(0, 1,
+     * step=0.1) had two positions. Without a step, ranges of 100+ keep whole
+     * units and smaller ranges get 100 positions.
+     */
+    private void applySliderScale(SeekBar seek, JSONObject props) {
+        double minimum = props.optDouble("minimum", 0);
+        double maximum = props.optDouble("maximum", 100);
+        double range = Math.max(0, maximum - minimum);
+        double step = props.isNull("step") ? Double.NaN : props.optDouble("step", Double.NaN);
+        if (Double.isNaN(step) || step <= 0) {
+            step = range >= 100 ? 1 : (range > 0 ? range / 100.0 : 1);
+        }
+        if (range / step > 10000) {
+            step = range / 10000.0;
+        }
+        int steps = Math.max(1, (int) Math.round(range / step));
+        sliderScales.put(seek, new double[]{minimum, maximum, step});
+        if (seek.getMax() != steps) {
+            seek.setMax(steps);
+        }
+        double value = props.optDouble("value", minimum);
+        int progress = (int) Math.round((value - minimum) / step);
+        progress = Math.max(0, Math.min(steps, progress));
+        if (seek.getProgress() != progress) {
+            seek.setProgress(progress);
+        }
     }
 
     private View buildRatingBar(final String id, JSONObject props) {
@@ -915,8 +1184,8 @@ final class ViewBuilder {
         chip.setAllCaps(false);
         if (props.optBoolean("selected", false)) {
             chip.setTextColor(Color.parseColor("#FFFFFF"));
-            chip.setBackgroundColor(parseColor(props.optString("selectedColor", "#3F51B5"),
-                    Color.parseColor("#3F51B5")));
+            chip.setBackgroundColor(parseColor(props.optString("selectedColor", ""),
+                    colorPrimary));
         }
         chip.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -932,8 +1201,7 @@ final class ViewBuilder {
         badge.setText(props.optString("text", ""));
         badge.setTextColor(parseColor(props.optString("color", "#FFFFFF"),
                 Color.parseColor("#FFFFFF")));
-        badge.setBackgroundColor(parseColor(props.optString("background", "#3F51B5"),
-                Color.parseColor("#3F51B5")));
+        badge.setBackgroundColor(parseColor(props.optString("background", ""), colorPrimary));
         badge.setGravity(Gravity.CENTER);
         int pad = dp(6);
         badge.setPadding(pad, dp(2), pad, dp(2));
@@ -958,6 +1226,7 @@ final class ViewBuilder {
         value.setGravity(Gravity.CENTER);
         value.setPadding(dp(12), 0, dp(12), 0);
         value.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
+        value.setTextColor(colorText);
         Button plus = new Button(context);
         plus.setText("+");
         plus.setOnClickListener(new View.OnClickListener() {
@@ -977,6 +1246,7 @@ final class ViewBuilder {
     private View buildRadioButton(final String id, JSONObject props) {
         RadioButton radio = new RadioButton(context);
         radio.setText(props.optString("text", ""));
+        radio.setTextColor(colorText);
         radio.setChecked(props.optBoolean("selected", false));
         radio.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -1019,8 +1289,10 @@ final class ViewBuilder {
                 segment.setText(label);
                 segment.setAllCaps(false);
                 if (label.equals(selected)) {
-                    segment.setTextColor(Color.parseColor("#FFFFFF"));
-                    segment.setBackgroundColor(Color.parseColor("#3F51B5"));
+                    segment.setTextColor(colorOnPrimary);
+                    segment.setBackgroundColor(colorPrimary);
+                } else {
+                    segment.setTextColor(colorText);
                 }
                 segment.setOnClickListener(new View.OnClickListener() {
                     @Override
@@ -1038,7 +1310,7 @@ final class ViewBuilder {
     private View buildLink(final String id, JSONObject props) {
         TextView link = new TextView(context);
         link.setText(props.optString("text", ""));
-        link.setTextColor(Color.parseColor("#3F51B5"));
+        link.setTextColor(colorPrimary);
         link.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
         final String url = props.optString("url", "");
         link.setOnClickListener(new View.OnClickListener() {
@@ -1056,15 +1328,46 @@ final class ViewBuilder {
         return link;
     }
 
+    /** A horizontal bar with its formatted label ("Downloading 42%") below. */
     private View buildProgressText(final String id, JSONObject props) {
+        LinearLayout box = new LinearLayout(context);
+        box.setOrientation(LinearLayout.VERTICAL);
         ProgressBar bar = new ProgressBar(context, null,
                 android.R.attr.progressBarStyleHorizontal);
-        bar.setMax(Math.max(1, (int) props.optDouble("maximum", 100)));
-        bar.setProgress((int) props.optDouble("value", 0));
-        // The label is separate; we keep the bar itself simple and let the
-        // Python side present the "Downloading 42%" text via a sibling label.
-        bar.setTag(id);
-        return bar;
+        setScaledProgress(bar, props);
+        box.addView(bar, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        TextView label = new TextView(context);
+        label.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        label.setTextColor(colorTextMuted);
+        setTextAndVisibility(label, props.optString("text", ""), false);
+        box.addView(label);
+        return box;
+    }
+
+    /** Fractional value/maximum → fixed integer scale (float maxima used to truncate). */
+    private static void setScaledProgress(ProgressBar bar, JSONObject props) {
+        double maximum = props.optDouble("maximum", 100);
+        if (!(maximum > 0)) {
+            maximum = 1;
+        }
+        double fraction = props.optDouble("value", 0) / maximum;
+        fraction = Math.max(0, Math.min(1, Double.isNaN(fraction) ? 0 : fraction));
+        if (bar.getMax() != PROGRESS_SCALE) {
+            bar.setMax(PROGRESS_SCALE);
+        }
+        int progress = (int) Math.round(fraction * PROGRESS_SCALE);
+        if (bar.getProgress() != progress) {
+            bar.setProgress(progress);
+        }
+    }
+
+    /** Set a secondary text and hide the view when it is empty. */
+    private static void setTextAndVisibility(TextView view, String text, boolean keepWhenEmpty) {
+        if (!text.contentEquals(view.getText())) {
+            view.setText(text);
+        }
+        view.setVisibility(text.isEmpty() && !keepWhenEmpty ? View.GONE : View.VISIBLE);
     }
 
     private View buildDataTable(JSONObject node, JSONObject props) throws JSONException {
@@ -1079,6 +1382,7 @@ final class ViewBuilder {
                 TextView cell = new TextView(context);
                 cell.setText(headers.optString(i, ""));
                 cell.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+                cell.setTextColor(colorText);
                 cell.setPadding(dp(8), dp(4), dp(8), dp(4));
                 head.addView(cell);
             }
@@ -1092,6 +1396,7 @@ final class ViewBuilder {
                 for (int c = 0; c < (cells == null ? 0 : cells.length()); c++) {
                     TextView cell = new TextView(context);
                     cell.setText(cells.optString(c, ""));
+                    cell.setTextColor(colorText);
                     cell.setPadding(dp(8), dp(4), dp(8), dp(4));
                     row.addView(cell);
                 }
@@ -1156,8 +1461,7 @@ final class ViewBuilder {
                 Color.parseColor("#FFFFFF")));
         avatar.setGravity(Gravity.CENTER);
         int size = dp(props.optInt("size", 48));
-        avatar.setBackgroundColor(parseColor(props.optString("background", "#3F51B5"),
-                Color.parseColor("#3F51B5")));
+        avatar.setBackgroundColor(parseColor(props.optString("background", ""), colorPrimary));
         avatar.setMinimumWidth(size);
         avatar.setMinimumHeight(size);
         return avatar;
@@ -1168,8 +1472,18 @@ final class ViewBuilder {
      * serialised), so here it is a plain vertical stack of its children.
      */
     private View buildList(JSONObject node, JSONObject props) throws JSONException {
-        LinearLayout list = new LinearLayout(context);
+        String id = node.optString("id", "");
+        PullList list = new PullList(id);
         list.setOrientation(LinearLayout.VERTICAL);
+        ListState state = new ListState();
+        state.hasMore = props.optBoolean("has_more", false);
+        lists.put(list, state);
+        if (props.optBoolean("refreshable", false)) {
+            state.header = buildRefreshHeader();
+            list.addView(state.header, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, 0));
+            applyRefreshing(state, props.optBoolean("refreshing", false), false);
+        }
         int spacing = dp(props.optInt("spacing", 0));
         JSONArray children = node.optJSONArray("children");
         if (children != null) {
@@ -1183,7 +1497,341 @@ final class ViewBuilder {
                 list.addView(buildChild(children.getJSONObject(i)), params);
             }
         }
+        watchList(id, list, props);
+        applyScrollRequest(id, list, props);
         return list;
+    }
+
+    /** Rows before the first data row: the pull-to-refresh header, if any. */
+    private int rowOffset(LinearLayout list) {
+        ListState state = lists.get(list);
+        return state != null && state.header != null ? 1 : 0;
+    }
+
+    /** The spinner row a refreshable List keeps (collapsed) above its rows. */
+    private FrameLayout buildRefreshHeader() {
+        FrameLayout header = new FrameLayout(context);
+        ProgressBar spinner = new ProgressBar(context);
+        spinner.setIndeterminate(true);
+        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(dp(32), dp(32));
+        params.gravity = Gravity.CENTER;
+        header.addView(spinner, params);
+        header.setClipChildren(true);
+        return header;
+    }
+
+    private void setHeaderHeight(ListState state, int height) {
+        if (state.header == null) {
+            return;
+        }
+        ViewGroup.LayoutParams params = state.header.getLayoutParams();
+        if (params == null || params.height == height) {
+            return;
+        }
+        params.height = height;
+        state.header.setLayoutParams(params);
+        View spinner = state.header.getChildCount() > 0 ? state.header.getChildAt(0) : null;
+        if (spinner != null) {
+            spinner.setAlpha(Math.min(1f, height / (float) dp(56)));
+        }
+    }
+
+    private void animateHeader(final ListState state, int target) {
+        if (state.header == null) {
+            return;
+        }
+        if (state.headerAnimator != null) {
+            state.headerAnimator.cancel();
+        }
+        ViewGroup.LayoutParams params = state.header.getLayoutParams();
+        int from = params == null ? 0 : Math.max(0, params.height);
+        if (from == target) {
+            return;
+        }
+        ValueAnimator animator = ValueAnimator.ofInt(from, target);
+        animator.setDuration(180);
+        animator.addUpdateListener(new ValueAnimator.AnimatorUpdateListener() {
+            @Override
+            public void onAnimationUpdate(ValueAnimator animation) {
+                setHeaderHeight(state, (Integer) animation.getAnimatedValue());
+            }
+        });
+        state.headerAnimator = animator;
+        animator.start();
+    }
+
+    /** Show or hide the spinner as Python asks (refreshing = True/False). */
+    private void applyRefreshing(ListState state, boolean refreshing, boolean animate) {
+        state.refreshing = refreshing;
+        int target = refreshing ? dp(56) : 0;
+        if (animate) {
+            animateHeader(state, target);
+        } else {
+            setHeaderHeight(state, target);
+        }
+    }
+
+    /**
+     * A List that can be pulled down from its top to refresh.
+     *
+     * There is no androidx here (no Gradle), so SwipeRefreshLayout is not an
+     * option. The gesture is read in dispatchTouchEvent, which sees every
+     * touch even when a row handles it: at the top of the enclosing
+     * ScrollView a downward drag grows the header row, and releasing it past
+     * the threshold sends "refresh". Any other drag is handed back to the
+     * ScrollView (or to a row being swiped) untouched.
+     */
+    private final class PullList extends LinearLayout {
+        private final String listId;
+        private final int touchSlop;
+        private float downX;
+        private float downY;
+        private boolean armed;
+        private boolean pulling;
+
+        PullList(String listId) {
+            super(context);
+            this.listId = listId;
+            this.touchSlop = ViewConfiguration.get(context).getScaledTouchSlop();
+        }
+
+        @Override
+        public boolean dispatchTouchEvent(MotionEvent event) {
+            ListState state = lists.get(this);
+            if (state == null || state.header == null || !isEnabled()) {
+                return super.dispatchTouchEvent(event);
+            }
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    downX = event.getRawX();
+                    downY = event.getRawY();
+                    pulling = false;
+                    armed = !state.refreshing && atTop();
+                    if (armed && getParent() != null) {
+                        // Keep the ScrollView from taking a downward drag at
+                        // the top (it would only draw its overscroll glow).
+                        getParent().requestDisallowInterceptTouchEvent(true);
+                    }
+                    break;
+                case MotionEvent.ACTION_MOVE: {
+                    float dy = event.getRawY() - downY;
+                    float dx = event.getRawX() - downX;
+                    if (armed && !pulling) {
+                        if (dy > touchSlop && dy > Math.abs(dx)) {
+                            pulling = true;
+                            // The row under the finger must not see a tap.
+                            MotionEvent cancel = MotionEvent.obtain(event);
+                            cancel.setAction(MotionEvent.ACTION_CANCEL);
+                            super.dispatchTouchEvent(cancel);
+                            cancel.recycle();
+                        } else if (dy < -touchSlop) {
+                            // Scrolling the content up: give it back.
+                            armed = false;
+                            if (getParent() != null) {
+                                getParent().requestDisallowInterceptTouchEvent(false);
+                            }
+                        } else if (Math.abs(dx) > touchSlop) {
+                            armed = false;  // a sideways swipe of a row
+                        }
+                    }
+                    if (pulling) {
+                        int height = (int) Math.max(0, Math.min(dy * 0.5f, dp(120)));
+                        if (state.headerAnimator != null) {
+                            state.headerAnimator.cancel();
+                        }
+                        setHeaderHeight(state, height);
+                        return true;
+                    }
+                    break;
+                }
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    if (pulling) {
+                        pulling = false;
+                        armed = false;
+                        ViewGroup.LayoutParams params = state.header.getLayoutParams();
+                        boolean release = event.getActionMasked() == MotionEvent.ACTION_UP
+                                && params != null && params.height >= dp(64);
+                        if (release) {
+                            state.refreshing = true;
+                            animateHeader(state, dp(56));
+                            performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
+                            Native.dispatchEvent(listId, "refresh", "");
+                        } else {
+                            animateHeader(state, 0);
+                        }
+                        return true;
+                    }
+                    armed = false;
+                    break;
+                default:
+                    break;
+            }
+            return super.dispatchTouchEvent(event);
+        }
+
+        /** Whether the enclosing ScrollView (if any) is scrolled to the top. */
+        private boolean atTop() {
+            ViewParent parent = getParent();
+            while (parent instanceof View) {
+                if (parent instanceof ScrollView) {
+                    return !((View) parent).canScrollVertically(-1);
+                }
+                parent = parent.getParent();
+            }
+            return true;
+        }
+    }
+
+    /** Scroll to the row a List.scroll_to() asked for, once per request. */
+    private void applyScrollRequest(String id, final LinearLayout list, JSONObject props) {
+        int serial = props.optInt("scroll_serial", 0);
+        final int index = props.optInt("scroll_to", -1);
+        if (serial <= 0 || index < 0) {
+            return;
+        }
+        Integer seen = scrollSerials.get(id);
+        if (seen != null && seen == serial) {
+            return;
+        }
+        scrollSerials.put(id, serial);
+        final boolean animated = props.optBoolean("scroll_animated", true);
+        // Posted: rows appended in this frame are laid out first.
+        list.post(new Runnable() {
+            @Override
+            public void run() {
+                scrollToRow(list, index, animated);
+            }
+        });
+    }
+
+    private void scrollToRow(LinearLayout list, int index, boolean animated) {
+        int child = index + rowOffset(list);
+        if (child < 0 || child >= list.getChildCount()) {
+            return;
+        }
+        View node = list.getChildAt(child);
+        int y = 0;
+        ViewParent parent = node.getParent();
+        while (parent instanceof View && !(parent instanceof ScrollView)) {
+            y += node.getTop();
+            node = (View) parent;
+            parent = node.getParent();
+        }
+        if (!(parent instanceof ScrollView)) {
+            return;  // not inside a ScrollView: nothing to scroll
+        }
+        y += node.getTop();
+        ScrollView scroll = (ScrollView) parent;
+        if (animated) {
+            scroll.smoothScrollTo(0, y);
+        } else {
+            scroll.scrollTo(0, y);
+        }
+    }
+
+    /**
+     * Sends "load_more" when the last built row of a List becomes visible.
+     *
+     * The List used to show its first page (visible_count rows) and nothing
+     * else: List(10000, ...) was a list of 20. Scroll and layout changes are
+     * observed on the window, so this works whichever ScrollView the list
+     * sits in, and also when the first page does not fill the screen.
+     */
+    private void watchList(final String id, final LinearLayout list, JSONObject props) {
+        final ViewTreeObserver.OnScrollChangedListener onScroll =
+                new ViewTreeObserver.OnScrollChangedListener() {
+                    @Override
+                    public void onScrollChanged() {
+                        maybeLoadMore(id, list);
+                    }
+                };
+        final ViewTreeObserver.OnGlobalLayoutListener onLayout =
+                new ViewTreeObserver.OnGlobalLayoutListener() {
+                    @Override
+                    public void onGlobalLayout() {
+                        maybeLoadMore(id, list);
+                    }
+                };
+        list.addOnAttachStateChangeListener(new View.OnAttachStateChangeListener() {
+            @Override
+            public void onViewAttachedToWindow(View v) {
+                ViewTreeObserver observer = v.getViewTreeObserver();
+                observer.addOnScrollChangedListener(onScroll);
+                observer.addOnGlobalLayoutListener(onLayout);
+            }
+
+            @Override
+            public void onViewDetachedFromWindow(View v) {
+                ViewTreeObserver observer = v.getViewTreeObserver();
+                observer.removeOnScrollChangedListener(onScroll);
+                observer.removeOnGlobalLayoutListener(onLayout);
+            }
+        });
+    }
+
+    private void maybeLoadMore(String id, LinearLayout list) {
+        ListState state = lists.get(list);
+        if (state == null || !state.hasMore || !list.isShown()) {
+            return;
+        }
+        int offset = state.header != null ? 1 : 0;
+        int count = list.getChildCount() - offset;
+        // One request per page: the count only changes when Python appended rows.
+        if (count <= 0 || state.requestedAt == count) {
+            return;
+        }
+        Rect visible = new Rect();
+        if (list.getChildAt(offset + count - 1).getGlobalVisibleRect(visible)) {
+            state.requestedAt = count;
+            Native.dispatchEvent(id, "load_more", String.valueOf(count));
+        }
+    }
+
+    /** Patch a List in place: update built rows, append/remove the difference. */
+    private boolean updateList(LinearLayout list, JSONObject node, JSONObject props)
+            throws JSONException {
+        ListState state = lists.get(list);
+        if (state == null) {
+            return false;
+        }
+        if ((state.header != null) != props.optBoolean("refreshable", false)) {
+            return false;  // on_refresh added or removed: rebuild with/without header
+        }
+        int offset = state.header != null ? 1 : 0;
+        JSONArray children = node.optJSONArray("children");
+        int count = children == null ? 0 : children.length();
+        int existing = list.getChildCount() - offset;
+        if (count < existing) {
+            list.removeViews(offset + count, existing - count);
+            existing = count;
+        }
+        for (int i = 0; i < existing; i++) {
+            if (!updateNode(list.getChildAt(offset + i), children.getJSONObject(i))) {
+                return false;
+            }
+        }
+        int spacing = dp(props.optInt("spacing", 0));
+        for (int i = existing; i < count; i++) {
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            if (spacing > 0 && i > 0) {
+                params.topMargin = spacing;
+            }
+            list.addView(buildChild(children.getJSONObject(i)), params);
+        }
+        state.hasMore = props.optBoolean("has_more", false);
+        if (state.header != null) {
+            boolean refreshing = props.optBoolean("refreshing", false);
+            ViewGroup.LayoutParams params = state.header.getLayoutParams();
+            int shown = params == null ? 0 : params.height;
+            boolean settled = shown == (refreshing ? dp(56) : 0);
+            if (refreshing != state.refreshing || !settled) {
+                applyRefreshing(state, refreshing, true);
+            }
+        }
+        applyScrollRequest(node.optString("id", ""), list, props);
+        return true;
     }
 
     /** A tappable list row: title + subtitle + trailing, dispatching "press". */
@@ -1202,32 +1850,22 @@ final class ViewBuilder {
 
         LinearLayout texts = new LinearLayout(context);
         texts.setOrientation(LinearLayout.VERTICAL);
+        // The subtitle and trailing views always exist (GONE when empty): the
+        // row's structure never changes, so every field can be patched.
         TextView title = new TextView(context);
-        title.setText(props.optString("title", ""));
         title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
-        title.setTextColor(Color.parseColor("#212121"));
         texts.addView(title);
-        String subtitle = props.optString("subtitle", "");
-        if (!subtitle.isEmpty()) {
-            TextView sub = new TextView(context);
-            sub.setText(subtitle);
-            sub.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-            sub.setTextColor(Color.parseColor("#757575"));
-            texts.addView(sub);
-        }
+        TextView sub = new TextView(context);
+        sub.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        texts.addView(sub);
 
         LinearLayout.LayoutParams textsParams = new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
         row.addView(texts, textsParams);
 
-        String trailing = props.optString("trailing", "");
-        if (!trailing.isEmpty()) {
-            TextView trailingView = new TextView(context);
-            trailingView.setText(trailing);
-            trailingView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
-            trailingView.setTextColor(Color.parseColor("#757575"));
-            row.addView(trailingView);
-        }
+        TextView trailingView = new TextView(context);
+        trailingView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
+        row.addView(trailingView);
 
         row.setOnClickListener(new View.OnClickListener() {
             @Override
@@ -1235,7 +1873,206 @@ final class ViewBuilder {
                 Native.dispatchEvent(id, "press", "");
             }
         });
-        if (props.optBoolean("long_pressable", false)) {
+        applyListTile(row, id, props);
+        return row;
+    }
+
+    /** Fill (or re-fill) every part of a ListTile row. */
+    private boolean applyListTile(ViewGroup row, String id, JSONObject props) {
+        if (row.getChildCount() != 2
+                || !(row.getChildAt(0) instanceof ViewGroup)
+                || !(row.getChildAt(1) instanceof TextView)) {
+            return false;
+        }
+        ViewGroup texts = (ViewGroup) row.getChildAt(0);
+        if (texts.getChildCount() != 2
+                || !(texts.getChildAt(0) instanceof TextView)
+                || !(texts.getChildAt(1) instanceof TextView)) {
+            return false;
+        }
+        TextView title = (TextView) texts.getChildAt(0);
+        TextView sub = (TextView) texts.getChildAt(1);
+        TextView trailing = (TextView) row.getChildAt(1);
+        setTextAndVisibility(title, props.optString("title", ""), true);
+        setTextAndVisibility(sub, props.optString("subtitle", ""), false);
+        setTextAndVisibility(trailing, props.optString("trailing", ""), false);
+        title.setTextColor(colorText);
+        sub.setTextColor(colorTextMuted);
+        trailing.setTextColor(colorTextMuted);
+        setLongPress(row, id, props.optBoolean("long_pressable", false));
+        setSwipe(row, id, props);
+        return true;
+    }
+
+    /** Configure (or remove) the sideways swipe of a ListTile row. */
+    private void setSwipe(View row, String id, JSONObject props) {
+        boolean left = props.optBoolean("swipe_left", false);
+        boolean right = props.optBoolean("swipe_right", false);
+        SwipeState state = swipes.get(row);
+        if (!left && !right) {
+            if (state != null) {
+                resetSwipe(row, state, false);
+                swipes.remove(row);
+            }
+            row.setOnTouchListener(null);
+            return;
+        }
+        if (state == null) {
+            state = new SwipeState();
+            swipes.put(row, state);
+            row.setOnTouchListener(swipeListener);
+        }
+        state.id = id;
+        state.left = left;
+        state.right = right;
+        state.leftColor = parseColor(props.optString("swipe_left_color", ""), state.leftColor);
+        state.rightColor = parseColor(props.optString("swipe_right_color", ""), state.rightColor);
+        // A redraw after the handler ran (the row now shows the next item, or
+        // the same one if nothing was deleted) puts the row back in place.
+        if (!state.dragging && !state.committing) {
+            resetSwipe(row, state, false);
+        }
+    }
+
+    private void resetSwipe(View row, SwipeState state, boolean animate) {
+        row.animate().cancel();
+        if (animate && row.getTranslationX() != 0f) {
+            row.animate().translationX(0f).alpha(1f).setDuration(150).start();
+        } else {
+            row.setTranslationX(0f);
+            row.setAlpha(1f);
+        }
+        if (state.hasSaved) {
+            row.setBackground(state.saved);
+            state.saved = null;
+            state.hasSaved = false;
+        }
+    }
+
+    private static int withAlpha(int color, float alpha) {
+        int a = Math.max(0, Math.min(255, Math.round(255 * alpha)));
+        return (color & 0x00FFFFFF) | (a << 24);
+    }
+
+    /**
+     * One listener for every swipeable row; the per-row configuration lives
+     * in the swipes table. A drag only starts once the finger moved sideways
+     * clearly more than vertically, so scrolling the list is unaffected, and
+     * the row's tap and long-press are cancelled when it does.
+     */
+    private final View.OnTouchListener swipeListener = new View.OnTouchListener() {
+        @Override
+        public boolean onTouch(final View row, MotionEvent event) {
+            final SwipeState state = swipes.get(row);
+            if (state == null || !row.isEnabled() || state.committing) {
+                return false;
+            }
+            int slop = ViewConfiguration.get(context).getScaledTouchSlop();
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    state.downX = event.getRawX();
+                    state.downY = event.getRawY();
+                    state.dragging = false;
+                    if (state.velocity != null) {
+                        state.velocity.recycle();
+                    }
+                    state.velocity = VelocityTracker.obtain();
+                    state.velocity.addMovement(event);
+                    return false;
+                case MotionEvent.ACTION_MOVE: {
+                    if (state.velocity != null) {
+                        state.velocity.addMovement(event);
+                    }
+                    float dx = event.getRawX() - state.downX;
+                    float dy = event.getRawY() - state.downY;
+                    if (!state.dragging) {
+                        boolean allowed = (dx < 0 && state.left) || (dx > 0 && state.right);
+                        if (!allowed || Math.abs(dx) <= slop || Math.abs(dx) < Math.abs(dy) * 1.5f) {
+                            return false;
+                        }
+                        state.dragging = true;
+                        if (row.getParent() != null) {
+                            row.getParent().requestDisallowInterceptTouchEvent(true);
+                        }
+                        row.cancelLongPress();
+                        MotionEvent cancel = MotionEvent.obtain(event);
+                        cancel.setAction(MotionEvent.ACTION_CANCEL);
+                        row.onTouchEvent(cancel);
+                        cancel.recycle();
+                        state.saved = row.getBackground();
+                        state.hasSaved = true;
+                    }
+                    float tx = dx;
+                    if ((tx < 0 && !state.left) || (tx > 0 && !state.right)) {
+                        tx = 0;
+                    }
+                    row.setTranslationX(tx);
+                    float third = Math.max(1f, row.getWidth() / 3f);
+                    int color = tx < 0 ? state.leftColor : state.rightColor;
+                    row.setBackgroundColor(withAlpha(color, Math.min(1f, Math.abs(tx) / third) * 0.85f));
+                    return true;
+                }
+                case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL: {
+                    if (!state.dragging) {
+                        return false;
+                    }
+                    state.dragging = false;
+                    float tx = row.getTranslationX();
+                    float vx = 0f;
+                    if (state.velocity != null) {
+                        state.velocity.addMovement(event);
+                        state.velocity.computeCurrentVelocity(1000);
+                        vx = state.velocity.getXVelocity();
+                        state.velocity.recycle();
+                        state.velocity = null;
+                    }
+                    int minFling = ViewConfiguration.get(context).getScaledMinimumFlingVelocity() * 8;
+                    boolean flung = Math.abs(vx) > minFling && Math.signum(vx) == Math.signum(tx)
+                            && Math.abs(tx) > slop * 2;
+                    boolean commit = event.getActionMasked() == MotionEvent.ACTION_UP
+                            && tx != 0f && (Math.abs(tx) > row.getWidth() / 3f || flung);
+                    if (!commit) {
+                        resetSwipe(row, state, true);
+                        return true;
+                    }
+                    final String direction = tx < 0 ? "left" : "right";
+                    final String rowId = state.id;
+                    state.committing = true;
+                    row.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY);
+                    row.animate()
+                            .translationX(Math.signum(tx) * row.getWidth())
+                            .alpha(0.4f)
+                            .setDuration(160)
+                            .withEndAction(new Runnable() {
+                                @Override
+                                public void run() {
+                                    state.committing = false;
+                                    Native.dispatchEvent(rowId, "swipe", direction);
+                                    // If the handler left the item in place (no
+                                    // redraw), slide the row back after a moment.
+                                    row.postDelayed(new Runnable() {
+                                        @Override
+                                        public void run() {
+                                            if (!state.dragging && !state.committing
+                                                    && row.getTranslationX() != 0f) {
+                                                resetSwipe(row, state, true);
+                                            }
+                                        }
+                                    }, 700);
+                                }
+                            })
+                            .start();
+                    return true;
+                }
+                default:
+                    return false;
+            }
+        }
+    };
+
+    private void setLongPress(View row, final String id, boolean enabled) {
+        if (enabled) {
             row.setOnLongClickListener(new View.OnLongClickListener() {
                 @Override
                 public boolean onLongClick(View v) {
@@ -1244,8 +2081,10 @@ final class ViewBuilder {
                     return true;
                 }
             });
+        } else {
+            row.setOnLongClickListener(null);
+            row.setLongClickable(false);
         }
-        return row;
     }
 
     private View buildProgress(JSONObject props) {
@@ -1256,19 +2095,28 @@ final class ViewBuilder {
                               : android.R.attr.progressBarStyleHorizontal);
         bar.setIndeterminate(indeterminate);
         if (!indeterminate) {
-            int maximum = (int) props.optDouble("maximum", 100);
-            bar.setMax(Math.max(1, maximum));
-            bar.setProgress((int) props.optDouble("value", 0));
+            setScaledProgress(bar, props);
         }
         return bar;
     }
 
     private View buildImage(JSONObject props) {
         ImageView image = new ImageView(context);
-        String source = props.optString("source", "");
+        applyImage(image, props);
+        return image;
+    }
+
+    /** Load the image source and fit; used for the first build and for patches. */
+    private void applyImage(ImageView image, JSONObject props) {
         image.setScaleType("cover".equals(props.optString("fit", "contain"))
                 ? ImageView.ScaleType.CENTER_CROP
                 : ImageView.ScaleType.FIT_CENTER);
+        String source = props.optString("source", "");
+        if (source.equals(imageSources.get(image))) {
+            return;
+        }
+        imageSources.put(image, source);
+        image.setImageDrawable(null);
         try {
             java.io.File file = new java.io.File(source);
             if (!file.isAbsolute()) {
@@ -1297,7 +2145,6 @@ final class ViewBuilder {
             // A broken image must not take the whole screen down.
             android.util.Log.w("pymobile", "Image failed to load: " + source, error);
         }
-        return image;
     }
 
     private View buildSpacer(JSONObject props) {
@@ -1345,40 +2192,127 @@ final class ViewBuilder {
         // and styling changes are reflected without a full rebuild.
         applyStyle(view, node.optJSONObject("style"));
 
-        // ListTile is a row built from props (no serialised children), so update
-        // its title text in place rather than treating it as a child container.
+        // Composite views built from props (they serialise as leaves, or have
+        // extra native children) must be handled before the generic ViewGroup
+        // walk below: it compares native and tree child counts, and a mismatch
+        // makes the caller rebuild the ENTIRE screen — closing the keyboard,
+        // resetting scroll and losing widget state on every render.
+
+        if ("Dialog".equals(type)) {
+            DialogHost host = dialogs.get(view);
+            if (host == null) {
+                return false;
+            }
+            host.wanted = node.optBoolean("visible", true);
+            view.setVisibility(View.GONE);
+            applyDialogProps(host, props);
+            applyStyle(host.box, node.optJSONObject("style"));
+            JSONArray children = node.optJSONArray("children");
+            int count = children == null ? 0 : children.length();
+            // +1: the title TextView is always the first child of the box.
+            if (host.box.getChildCount() != count + 1) {
+                return false;
+            }
+            for (int i = 0; i < count; i++) {
+                if (!updateNode(host.box.getChildAt(i + 1), children.getJSONObject(i))) {
+                    return false;
+                }
+            }
+            syncDialog(view);
+            return true;
+        }
+
+        if ("List".equals(type) && view instanceof LinearLayout) {
+            // A new page appends rows; the generic walk below would see a
+            // different child count and rebuild the screen (scroll back to top).
+            return updateList((LinearLayout) view, node, props);
+        }
+
         if ("ListTile".equals(type) && view instanceof ViewGroup) {
+            // Title, subtitle, trailing and long-press are all patched: row ids
+            // are positional, so after a deletion a row shows another item.
+            return applyListTile((ViewGroup) view, id, props);
+        }
+
+        if ("BottomNavigation".equals(type) && view instanceof ViewGroup) {
+            ViewGroup bar = (ViewGroup) view;
+            JSONArray options = props.optJSONArray("options");
+            int count = options == null ? 0 : options.length();
+            if (bar.getChildCount() != count) {
+                return false;  // the set of tabs changed
+            }
+            String value = props.optString("value", "");
+            for (int i = 0; i < count; i++) {
+                View child = bar.getChildAt(i);
+                if (!(child instanceof Button)) {
+                    return false;
+                }
+                Button tab = (Button) child;
+                String label = options.optString(i, "");
+                if (!label.contentEquals(tab.getText())) {
+                    tab.setText(label);
+                }
+                styleTab(tab, label.equals(value));
+            }
+            return true;
+        }
+
+        if ("Stepper".equals(type) && view instanceof ViewGroup) {
+            // Layout: [minus button][value text][plus button]. Only the middle
+            // view shows the value — the buttons are TextViews too, and
+            // writing to every TextView turned "− 10 +" into "10 10 10".
             ViewGroup group = (ViewGroup) view;
-            for (int i = 0; i < group.getChildCount(); i++) {
-                View child = group.getChildAt(i);
-                if (child instanceof LinearLayout) {
-                    ViewGroup texts = (ViewGroup) child;
-                    if (texts.getChildCount() > 0 && texts.getChildAt(0) instanceof TextView) {
-                        ((TextView) texts.getChildAt(0))
-                                .setText(props.optString("title", ""));
+            if (group.getChildCount() != 3 || !(group.getChildAt(1) instanceof TextView)) {
+                return false;
+            }
+            TextView value = (TextView) group.getChildAt(1);
+            String text = String.valueOf(props.optInt("value", 0));
+            if (!text.contentEquals(value.getText())) {
+                value.setText(text);
+            }
+            return true;
+        }
+
+        if ("ProgressText".equals(type) && view instanceof ViewGroup) {
+            ViewGroup box = (ViewGroup) view;
+            if (box.getChildCount() != 2
+                    || !(box.getChildAt(0) instanceof ProgressBar)
+                    || !(box.getChildAt(1) instanceof TextView)) {
+                return false;
+            }
+            setScaledProgress((ProgressBar) box.getChildAt(0), props);
+            setTextAndVisibility((TextView) box.getChildAt(1), props.optString("text", ""), false);
+            return true;
+        }
+
+        if (view instanceof Spinner) {
+            // A Spinner is an AdapterView, i.e. a ViewGroup holding its item
+            // view; the generic walk saw one native child against zero in the
+            // tree and forced a full rebuild. Sync the selection instead.
+            Spinner spinner = (Spinner) view;
+            JSONArray options = props.optJSONArray("options");
+            int count = options == null ? 0 : options.length();
+            android.widget.SpinnerAdapter adapter = spinner.getAdapter();
+            if (adapter == null || adapter.getCount() != count) {
+                return false;
+            }
+            for (int i = 0; i < count; i++) {
+                if (!options.optString(i, "").equals(String.valueOf(adapter.getItem(i)))) {
+                    return false;  // options changed: rebuild with the new list
+                }
+            }
+            String selected = props.optString("value", "");
+            for (int i = 0; i < count; i++) {
+                if (options.optString(i, "").equals(selected)) {
+                    if (spinner.getSelectedItemPosition() != i) {
+                        spinner.setSelection(i);
                     }
+                    break;
                 }
             }
             return true;
         }
 
-        // Components that build a composite view from props but serialise as a
-        // leaf (no "children" in the tree). The generic ViewGroup walk below
-        // would compare the live child count against zero and return false,
-        // forcing a full rebuild of the ENTIRE screen on every render — which
-        // closes the keyboard, resets scroll and loses widget state. So update
-        // them in place as leaves instead.
-        if ("Stepper".equals(type) && view instanceof ViewGroup) {
-            // Layout: [minus button][value text][plus button]
-            ViewGroup group = (ViewGroup) view;
-            for (int i = 0; i < group.getChildCount(); i++) {
-                View child = group.getChildAt(i);
-                if (child instanceof TextView) {
-                    ((TextView) child).setText(String.valueOf(props.optInt("value", 0)));
-                }
-            }
-            return true;
-        }
         if ("SegmentedButtons".equals(type) && view instanceof ViewGroup) {
             ViewGroup group = (ViewGroup) view;
             String selected = props.optString("value", "");
@@ -1388,11 +2322,11 @@ final class ViewBuilder {
                     boolean isSelected = ((TextView) child).getText().toString()
                             .equals(selected);
                     if (isSelected) {
-                        child.setBackgroundColor(Color.parseColor("#3F51B5"));
-                        ((TextView) child).setTextColor(Color.parseColor("#FFFFFF"));
+                        child.setBackgroundColor(colorPrimary);
+                        ((TextView) child).setTextColor(colorOnPrimary);
                     } else {
                         child.setBackgroundColor(Color.TRANSPARENT);
-                        ((TextView) child).setTextColor(Color.parseColor("#212121"));
+                        ((TextView) child).setTextColor(colorText);
                     }
                 }
             }
@@ -1435,16 +2369,18 @@ final class ViewBuilder {
         }
 
         if (view instanceof RadioGroup) {
+            // Each radio is patched from its own node (its `selected` and
+            // `text`). Matching the group's `value` against the labels checked
+            // every radio that shared the selected text.
             RadioGroup group = (RadioGroup) view;
-            String selected = props.optString("value", "");
-            for (int i = 0; i < group.getChildCount(); i++) {
-                View child = group.getChildAt(i);
-                if (child instanceof RadioButton) {
-                    boolean on = String.valueOf(((RadioButton) child).getText())
-                            .equals(selected);
-                    if (((RadioButton) child).isChecked() != on) {
-                        ((RadioButton) child).setChecked(on);
-                    }
+            JSONArray radios = node.optJSONArray("children");
+            int count = radios == null ? 0 : radios.length();
+            if (group.getChildCount() != count) {
+                return false;
+            }
+            for (int i = 0; i < count; i++) {
+                if (!updateNode(group.getChildAt(i), radios.getJSONObject(i))) {
+                    return false;
                 }
             }
             return true;
@@ -1463,6 +2399,18 @@ final class ViewBuilder {
             return true;
         }
 
+        if (view instanceof Switch) {
+            // Switch extends CompoundButton extends Button: this must run
+            // before the Button branch, which used to swallow it (setText("")
+            // and `checked` never synced — the old Switch branch was dead code).
+            Switch toggle = (Switch) view;
+            boolean checked = props.optBoolean("checked", false);
+            if (toggle.isChecked() != checked) {
+                toggle.setChecked(checked);
+            }
+            return true;
+        }
+
         if (view instanceof CheckBox) {
             // CheckBox extends CompoundButton extends Button, so this must come
             // before the Button branch. CompoundButton has no public getter for
@@ -1476,12 +2424,7 @@ final class ViewBuilder {
             return true;
         }
         if (view instanceof SeekBar) {
-            SeekBar seek = (SeekBar) view;
-            double minimum = props.optDouble("minimum", 0);
-            int progress = (int) Math.round(props.optDouble("value", 0) - minimum);
-            if (seek.getProgress() != progress) {
-                seek.setProgress(progress);
-            }
+            applySliderScale((SeekBar) view, props);
             return true;
         }
         if (view instanceof RatingBar) {
@@ -1495,8 +2438,15 @@ final class ViewBuilder {
             }
             return true;
         }
-        if (view instanceof Spinner) {
-            // Selection is user-driven; do not overwrite it from Python.
+        if (("DatePicker".equals(type) || "TimePicker".equals(type)) && view instanceof Button) {
+            // Pickers are Buttons without a "text" prop: the Button branch
+            // below blanked them on every patch.
+            String value = props.optString("value", "");
+            String shown = !value.isEmpty() ? value
+                    : ("DatePicker".equals(type) ? "Pick date" : "Pick time");
+            if (!shown.contentEquals(((Button) view).getText())) {
+                ((Button) view).setText(shown);
+            }
             return true;
         }
         if (view instanceof Button) {
@@ -1508,29 +2458,43 @@ final class ViewBuilder {
                     Color.parseColor("#1F000000")));
             return true;
         }
-        if (view instanceof Switch) {
-            Switch toggle = (Switch) view;
-            boolean checked = props.optBoolean("checked", false);
-            if (toggle.isChecked() != checked) {
-                toggle.setChecked(checked);
-            }
-            return true;
-        }
         if (view instanceof EditText) {
-            // Never write back into a focused field: it would move the caret
-            // and dismiss the keyboard mid-typing.
+            // A focused field is not overwritten with an echo of what the user
+            // typed a moment ago (that moved the caret mid-typing). But when
+            // Python changed the value itself — clear() after "Send" — the
+            // widget's revision is bumped and the new text is applied even
+            // while the field has focus.
             EditText input = (EditText) view;
             String value = props.optString("value", "");
-            if (!input.hasFocus() && !value.contentEquals(input.getText())) {
+            int revision = props.optInt("revision", 0);
+            Integer known = inputRevisions.get(input);
+            boolean programmatic = known == null || known != revision;
+            inputRevisions.put(input, revision);
+            if (!value.contentEquals(input.getText()) && (programmatic || !input.hasFocus())) {
                 input.setText(value);
+                if (input.hasFocus()) {
+                    input.setSelection(input.getText().length());
+                }
+            }
+            String hint = props.optString("placeholder", "");
+            CharSequence currentHint = input.getHint();
+            if (!hint.contentEquals(currentHint == null ? "" : currentHint)) {
+                input.setHint(hint);
             }
             return true;
         }
         if (view instanceof ProgressBar) {
             ProgressBar bar = (ProgressBar) view;
-            if (!bar.isIndeterminate()) {
-                bar.setProgress((int) props.optDouble("value", 0));
+            if (bar.isIndeterminate() != props.optBoolean("indeterminate", false)) {
+                return false;  // a different kind of bar: rebuild
             }
+            if (!bar.isIndeterminate()) {
+                setScaledProgress(bar, props);
+            }
+            return true;
+        }
+        if (view instanceof ImageView) {
+            applyImage((ImageView) view, props);
             return true;
         }
         if (view instanceof TextView) {
@@ -1574,26 +2538,38 @@ final class ViewBuilder {
     // -- styling ----------------------------------------------------------
 
     private void applyStyle(View view, JSONObject style) {
+        if (view instanceof TextView) {
+            // Runs even without a style so that removing bold/italic resets
+            // the typeface. setTypeface(tf, NORMAL) keeps a bold tf bold, so
+            // the variant is created explicitly.
+            TextView text = (TextView) view;
+            boolean bold = style != null && style.optBoolean("bold", false);
+            boolean italic = style != null && style.optBoolean("italic", false);
+            int flags = (bold ? Typeface.BOLD : 0) | (italic ? Typeface.ITALIC : 0);
+            Typeface current = text.getTypeface();
+            int currentFlags = current == null ? Typeface.NORMAL : current.getStyle();
+            if (currentFlags != flags) {
+                text.setTypeface(Typeface.create(current, flags));
+            }
+        }
         if (style == null) {
             return;
         }
         if (view instanceof TextView) {
             TextView text = (TextView) view;
             if (style.has("color")) {
-                text.setTextColor(parseColor(style.optString("color"), Color.BLACK));
+                text.setTextColor(parseColor(style.optString("color"), colorText));
             }
             if (style.has("font_size")) {
                 text.setTextSize(TypedValue.COMPLEX_UNIT_SP, (float) style.optDouble("font_size"));
             }
-            boolean bold = style.optBoolean("bold", false);
-            boolean italic = style.optBoolean("italic", false);
-            if (bold || italic) {
-                int flags = (bold ? Typeface.BOLD : 0) | (italic ? Typeface.ITALIC : 0);
-                text.setTypeface(text.getTypeface(), flags);
-            }
             String align = style.optString("align", "");
             if ("center".equals(align)) {
                 text.setGravity(Gravity.CENTER);
+            } else if ("end".equals(align) || "right".equals(align)) {
+                text.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+            } else if ("start".equals(align) || "left".equals(align)) {
+                text.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
             }
         }
 
@@ -1621,7 +2597,7 @@ final class ViewBuilder {
             // A shadow needs something opaque to fall from; a view with no
             // background casts none, which looks like elevation being ignored.
             if (!style.has("background")) {
-                view.setBackgroundColor(Color.WHITE);
+                view.setBackgroundColor(colorSurface);
             }
         }
 
@@ -1706,5 +2682,186 @@ final class ViewBuilder {
         } catch (IllegalArgumentException error) {
             return fallback;
         }
+    }
+
+    // -- snackbar -----------------------------------------------------------
+    // Not a widget of the tree: App.snackbar() sends it next to the tree as
+    // root["snackbar"], and it floats over the screen at the bottom.
+
+    private static final String SNACKBAR_ID = "__snackbar__";
+    private LinearLayout snackbar;
+    private TextView snackbarText;
+    private TextView snackbarAction;
+    private int snackbarToken = -1;
+    private boolean snackbarHiding;
+
+    /** Whether a view is the snackbar (MainActivity keeps it when rebuilding). */
+    boolean isSnackbar(View view) {
+        return view != null && view == snackbar;
+    }
+
+    /** Show, update or hide the snackbar described by root["snackbar"]. */
+    void syncSnackbar(FrameLayout container, JSONObject data) {
+        if (data == null) {
+            hideSnackbar();
+            return;
+        }
+        if (snackbar == null) {
+            createSnackbar();
+        }
+        if (snackbar.getParent() != container) {
+            if (snackbar.getParent() instanceof ViewGroup) {
+                ((ViewGroup) snackbar.getParent()).removeView(snackbar);
+            }
+            FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                    Gravity.BOTTOM);
+            int margin = dp(12);
+            params.setMargins(margin, margin, margin, margin);
+            container.addView(snackbar, params);
+        } else if (container.indexOfChild(snackbar) != container.getChildCount() - 1) {
+            snackbar.bringToFront();
+        }
+        styleSnackbar();
+        final int token = data.optInt("token", 0);
+        snackbarText.setText(data.optString("message", ""));
+        String action = data.optString("action", "");
+        snackbarAction.setText(action);
+        snackbarAction.setVisibility(action.isEmpty() ? View.GONE : View.VISIBLE);
+        snackbarAction.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                Native.dispatchEvent(SNACKBAR_ID, "press", String.valueOf(token));
+            }
+        });
+        if (token != snackbarToken || snackbar.getVisibility() != View.VISIBLE || snackbarHiding) {
+            snackbarToken = token;
+            snackbarHiding = false;
+            snackbar.animate().cancel();
+            snackbar.setVisibility(View.VISIBLE);
+            snackbar.setTranslationX(0f);
+            snackbar.setAlpha(1f);
+            snackbar.setTranslationY(dp(96));
+            snackbar.animate().translationY(0f).setDuration(200).start();
+        }
+    }
+
+    private void hideSnackbar() {
+        if (snackbar == null || snackbar.getVisibility() != View.VISIBLE || snackbarHiding) {
+            return;
+        }
+        snackbarHiding = true;
+        snackbarToken = -1;
+        snackbar.animate().cancel();
+        snackbar.animate().translationY(dp(96)).alpha(0f).setDuration(180)
+                .withEndAction(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (snackbarHiding) {
+                            snackbar.setVisibility(View.GONE);
+                            snackbarHiding = false;
+                        }
+                    }
+                })
+                .start();
+    }
+
+    private void createSnackbar() {
+        snackbar = new LinearLayout(context);
+        snackbar.setOrientation(LinearLayout.HORIZONTAL);
+        snackbar.setGravity(Gravity.CENTER_VERTICAL);
+        snackbar.setPadding(dp(16), dp(6), dp(8), dp(6));
+        snackbar.setMinimumHeight(dp(48));
+        snackbar.setVisibility(View.GONE);
+        snackbar.setClickable(true);  // taps must not fall through to the screen
+        if (android.os.Build.VERSION.SDK_INT >= 21) {
+            snackbar.setElevation(dp(6));
+        }
+        snackbarText = new TextView(context);
+        snackbarText.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        snackbarText.setMaxLines(2);
+        snackbar.addView(snackbarText, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        snackbarAction = new TextView(context);
+        snackbarAction.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        snackbarAction.setTypeface(Typeface.DEFAULT_BOLD);
+        snackbarAction.setPadding(dp(12), dp(10), dp(12), dp(10));
+        snackbarAction.setClickable(true);
+        if (android.os.Build.VERSION.SDK_INT >= 21) {
+            android.content.res.TypedArray a = context.obtainStyledAttributes(
+                    new int[]{android.R.attr.selectableItemBackground});
+            snackbarAction.setBackgroundResource(a.getResourceId(0, 0));
+            a.recycle();
+        }
+        snackbar.addView(snackbarAction, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        snackbar.setOnTouchListener(new View.OnTouchListener() {
+            private float downX;
+            private boolean dragging;
+
+            @Override
+            public boolean onTouch(View v, MotionEvent event) {
+                switch (event.getActionMasked()) {
+                    case MotionEvent.ACTION_DOWN:
+                        downX = event.getRawX();
+                        dragging = false;
+                        return true;
+                    case MotionEvent.ACTION_MOVE: {
+                        float dx = event.getRawX() - downX;
+                        if (!dragging && Math.abs(dx) > ViewConfiguration.get(context).getScaledTouchSlop()) {
+                            dragging = true;
+                        }
+                        if (dragging) {
+                            v.setTranslationX(dx);
+                            v.setAlpha(Math.max(0.2f, 1f - Math.abs(dx) / Math.max(1f, v.getWidth())));
+                        }
+                        return true;
+                    }
+                    case MotionEvent.ACTION_UP:
+                    case MotionEvent.ACTION_CANCEL: {
+                        float dx = v.getTranslationX();
+                        if (dragging && Math.abs(dx) > v.getWidth() / 3f) {
+                            // Swiped away: gone for good, whatever its timer says.
+                            final int token = snackbarToken;
+                            snackbarHiding = true;
+                            v.animate().translationX(Math.signum(dx) * v.getWidth()).alpha(0f)
+                                    .setDuration(150).withEndAction(new Runnable() {
+                                        @Override
+                                        public void run() {
+                                            snackbar.setVisibility(View.GONE);
+                                            snackbarHiding = false;
+                                            Native.dispatchEvent(SNACKBAR_ID, "dismiss",
+                                                    String.valueOf(token));
+                                        }
+                                    }).start();
+                        } else {
+                            v.animate().translationX(0f).alpha(1f).setDuration(150).start();
+                        }
+                        dragging = false;
+                        return true;
+                    }
+                    default:
+                        return false;
+                }
+            }
+        });
+    }
+
+    /** Inverse colours: a dark bar on a light theme and a light bar on a dark one. */
+    private void styleSnackbar() {
+        GradientDrawable shape = new GradientDrawable();
+        shape.setCornerRadius(dp(4));
+        shape.setColor(darkTheme ? Color.parseColor("#E6E6E6") : Color.parseColor("#323232"));
+        snackbar.setBackground(shape);
+        snackbarText.setTextColor(darkTheme ? Color.parseColor("#212121") : Color.WHITE);
+        int action = colorPrimary;
+        if (!darkTheme) {
+            // Lighten the primary colour so the action reads on the dark bar.
+            int r = Color.red(action) + (255 - Color.red(action)) * 45 / 100;
+            int g = Color.green(action) + (255 - Color.green(action)) * 45 / 100;
+            int b = Color.blue(action) + (255 - Color.blue(action)) * 45 / 100;
+            action = Color.rgb(r, g, b);
+        }
+        snackbarAction.setTextColor(action);
     }
 }

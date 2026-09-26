@@ -3,6 +3,233 @@
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project uses [semantic versioning](https://semver.org/).
 
+## [0.8.0] — 2026-09-26
+
+### Added
+
+- **Typed `find()`.** `screen.find("name", TextInput)` returns
+  `TextInput | None` for editors and mypy; `screen.get(id, Cls)` raises
+  `WidgetNotFoundError` (a `LookupError`, with a *did you mean* hint) instead
+  of returning `None`; `widget.find_all(Cls)`. A widget of another class raises
+  `WidgetTypeError` (a `TypeError`). Closes #FND-07.
+- **Numbers, dates and money by language:** `format_number`, `format_percent`,
+  `format_currency`, `format_date`, `format_time`, `format_datetime` for 16
+  languages and their regional variants (grouping, decimal separator, symbol
+  placement, month names in the right grammatical case), no dependencies.
+  Catalogue placeholders take the same formats: `{sum:currency:UAH}`,
+  `{day:date:long}`, `{n:number:2}`, `{p:percent}`, `{t:time}`. Closes #I18-08.
+- **List gestures**, built into the renderer (no AndroidX):
+  - `ListTile(on_swipe_left=…, on_swipe_right=…)` — drag a row sideways past a
+    third of its width (or fling it) and it slides out; `swipe_left_color` /
+    `swipe_right_color`; `tile.swipe("left")` in tests.
+  - `List(on_refresh=…)` — pull to refresh with a spinner that keeps turning
+    while a returned job / HTTP future runs; `refreshing`, `pull_to_refresh()`.
+  - `List.scroll_to(index, animated=True)` now really scrolls the enclosing
+    `ScrollView` to the row (it only built the rows before).
+- **Snackbar:** `app.snackbar("Deleted", action="Undo", on_action=restore)` —
+  a bottom bar with one action that hides itself (4 s, 7 s with an action),
+  can be swiped away and survives navigation; `app.current_snackbar`.
+- **x86_64 emulator builds without the NDK:** the prebuilt JNI bridge ships for
+  x86_64 too; `pymobile build --native --abi x86_64` produces
+  `my-app-1.0.0-x86_64.apk`.
+- **`preview --png` draws a mockup of the screen** as the phone lays it out —
+  Material-style buttons, fields, switches, list rows, dialogs, the snackbar,
+  theme colours, dp sizes — instead of the rasterised text picture
+  (`--text` keeps that). `--size 360x640`, `--theme dark`; `watch --png` too.
+  From Python: `render_mockup(tree, "home.png")`.
+- The Tk and browser previews show the snackbar, ⟵ / ⟶ swipe buttons on rows,
+  a *Pull to refresh* button, and the browser scrolls for `scroll_to()`.
+
+### Changed — behaviour
+
+- **Callbacks run on the UI side.** `set_interval` / `set_timeout` callbacks,
+  `app.run_job(...).then(...)` and `app.http.*_async(...).then(...)` now run
+  where UI state lives — the event-loop thread on a device, the Tk thread in
+  `run --gui`, under the UI lock elsewhere — and draw one frame. They used to
+  run on background threads and race with event handling. Blocking timer work:
+  `set_interval(..., background=True)`. A standalone `HttpClient()` /
+  `JobManager()` keeps the old behaviour. See *Threads and the UI* in the README.
+- **`app.dispatch(fn)` runs `fn` on the event-loop thread** on a device (the
+  loop is woken through the bridge); it used to run on the calling thread.
+- **Validator:** a field without `optional` is validated even when empty —
+  `["email"]` rejects `""`, `optional` is no longer a no-op. `required` rejects
+  whitespace-only strings; `integer` rejects `"4_2"`; `number` rejects `nan`/`inf`.
+  `{"matches": "password"}` fails for an empty confirmation while the password
+  is filled.
+- **Plurals follow CLDR rules of the catalogue's language** (Polish 21 →
+  `many`, Ukrainian 21 → `one`, French 0 → `one`, …) instead of guessing from
+  which forms the catalogue contains. `plural_category(n, lang)` is public.
+- **Assigning any public widget attribute redraws** (`style`, `placeholder`,
+  `Badge.color`, `Avatar.image`, `ProgressText.label`, …), not only
+  text/value/checked/visible/enabled. Unchanged values still render nothing.
+- **`List` loads more rows on scroll.** It showed `visible_count` rows and
+  never more; the renderer now sends `load_more` when the last row becomes
+  visible and the next page is appended in place (scroll position kept).
+  `loaded`, `has_more`, `load_more()`, `scroll_to()`; the previews show a
+  *Load more* button.
+- **`RadioGroup` tracks buttons by position:** duplicate labels work;
+  `selected_index`, `select_index()`.
+- **Android 7.0 (API 24) is the minimum.** The python.org build of CPython
+  3.14 that pymobile embeds targets API 24 (`libpython3.14.so` needs
+  `preadv`, `pwritev`, `lockf`), so APKs that declared API 21 installed on
+  Android 5–6 and died at launch. New projects say `min_sdk = 24`; a
+  `min_sdk = 21`–`23` in an existing `pymobile.toml` still builds, but the APK
+  declares 24 and the build warns (`ProjectConfig.effective_min_sdk`,
+  `RUNTIME_MIN_SDK`). `pymobile info` shows both values.
+- New projects start with `optimize = false` (bytecode needs a Python 3.14
+  host); the template no longer calls `self.app.render()`.
+
+### Fixed — threads and lifecycle
+
+- An exception in `JobHandle.then(on_success)` was swallowed, set `result` to
+  None and skipped `on_error`. It is logged with its traceback and passed to
+  `on_error`; the job's result is kept.
+- `JobHandle.cancel()` marked a still-running job `done`.
+- A `TypeError` raised inside an app's handler was logged as "value '' is not
+  valid for a Button" without a traceback.
+- `replace()` / `reset()` with a screen whose `build()` fails left an empty
+  stack; the new screen is now built before the old one is taken down.
+- Every `App()` stayed subscribed to the global `translations` forever.
+
+### Fixed — widgets and API
+
+- `Style(padding=8)` was accepted and crashed later in `to_dict()`
+  (`AttributeError: 'int' object has no attribute 'to_list'`). `padding` and
+  `margin` take `8` (all sides) or `(left, top, right, bottom)` besides
+  `EdgeInsets`; an ambiguous pair, a negative value or another type raises at
+  construction with an example of the right spelling.
+- `Link(url=...).press()` always crashed (`ModuleNotFoundError`).
+- `TextInput(value=..., max_length=n)` kept an over-long initial value.
+- Conflicting aliases (`Slider(minimum=0, min=10)`) raise instead of silently
+  picking one; `RatingBar.value` is settable.
+- Auto-ids of widgets created outside `build()` collided with ids inside it.
+- `StubBridge.toast()` / `PlatformBridge.toast()` default to `long=False`;
+  `app.toast()` is documented.
+
+### Fixed — events, HTTP, storage, build
+
+- `app.off(event, self.handler)` never removed a bound method; `App.off()`
+  added. `Subscription.cancel()` removed other subscriptions of the same
+  function too.
+- `HttpSecurityPolicy(allowed_hosts=...)` compared host names
+  case-sensitively and accepted a bare string.
+- A store file named after the package with dots (`com.example.app.json`) was
+  ignored; it is adopted when the dashed name is missing. A broken
+  `pymobile.toml` that made `App()` fall back to the shared
+  `org.pymobile.app` store is now a warning, not a debug message.
+- The incremental build ignored the framework: after upgrading pymobile,
+  `build --native` answered "up to date" with an APK containing the old
+  renderer. The fingerprint now covers the framework version, the dex, the JNI
+  bridge and `PYMOBILE_BUILD_JNI`.
+
+### Fixed — JNI bridge
+
+- **`pymobile_jni.c` did not compile** (`event_free` used before its
+  definition), so `PYMOBILE_BUILD_JNI=1` always fell back to the prebuilt
+  bridge, and the prebuilt `libpymobile.so` predated the 0.7.x lifecycle
+  fixes (no `pythonIsInitialized`, stop flag never reset). Fixed and rebuilt.
+- `value != ""` compared pointers; a failed `GetStaticMethodID` left a pending
+  exception before the next JNI call (undefined behaviour, a CheckJNI abort).
+- New `wake()` pushes the dispatch wake-up straight into the event queue;
+  older bridges fall back to a marker passed through `Native.render()`.
+
+### Documentation
+
+- New *Threads and the UI* section; `HttpSecurityPolicy`, `app.toast()`,
+  Validator empty-value rules, CLDR plurals, `List` paging, `RadioGroup`
+  indices, the desktop store file name.
+- New sections: typed `find()`, *Numbers, dates and money*, *Swipe and pull
+  to refresh*, *Snackbar*, *Running on the emulator (x86_64)*, the PNG mockup.
+- Removed the fixed #PLG-12, #FND-07 and #I18-08 from *Known issues*; the FAQ has its heading back;
+  the HTTP cache example no longer imports twice.
+
+## [0.7.4] — 2026-09-26
+
+### Security
+
+- **HTTP redirects bypassed `HttpSecurityPolicy`:** only the first URL was
+  checked, so `https://allowed/redirect` → `http://localhost/secret` succeeded.
+  Every redirect hop is now validated against the policy.
+- **HTTP cache leaked responses between accounts:** the key was the URL only.
+  It now includes a fingerprint of `Authorization`/`Cookie`/`X-API-Key`, and the
+  cache is bounded (`max_entries`, oldest evicted first).
+- **Signing passwords on the command line:** `PYMOBILE_KS_PASS` /
+  `PYMOBILE_KEY_PASS` are read from the environment and handed to `apksigner`
+  as `env:` references, so they no longer appear in `ps`. Passing `--ks-pass`
+  still works but prints a warning.
+- **`allowBackup` is now `false`** by default (the private store often holds
+  tokens). Opt in with `allow_backup = true` in `pymobile.toml`.
+
+### Fixed — Android
+
+- **The prebuilt `classes.dex` was stale since v0.3.0.** It is what ships when
+  no JDK is installed, and it lacked 20 of the 37 widget types (Dialog,
+  ListTile, BottomNavigation, Slider, DatePicker, Stepper …), so none of the
+  renderer fixes of the last releases reached a device. It is rebuilt from the
+  current sources and a test now fails when it falls behind. `Native.java`
+  gained `vibrate(long)` and the four-argument `notify(...)` overloads the
+  prebuilt `libpymobile.so` still calls.
+- **Full screen rebuild on every render** when a screen contained a titled
+  Dialog, a BottomNavigation or a Dropdown: these (and ListTile, Stepper,
+  ProgressText, SegmentedButtons) are now patched in place.
+- ListTile updated only its title; Stepper showed "10 10 10" after an update;
+  the Switch branch was unreachable (Switch extends Button) so `checked` never
+  synced; Date/TimePicker went blank after an update; `Image.source` and
+  `bold=False` were ignored; Slider ignored `step`; ProgressText had no label.
+- `TextInput.clear()` (any programmatic change) was dropped while the field had
+  focus. Text inputs carry a `revision` prop: programmatic changes are applied
+  even with focus, echoes of what the user typed are not.
+- Theme colours were hard-coded in Java. The device renderer now receives the
+  palette (`theme` in the root of the tree) and dark themes paint dark surfaces.
+- `Dialog` is a real modal `android.app.Dialog`; back / tap outside calls
+  `Dialog.dismiss()` (`ConfirmDialog` → cancel, `AlertDialog` → acknowledge).
+- Changing the system language or font size recreated the Activity and
+  restarted Python (all in-memory state lost). `configChanges` now includes
+  `locale|layoutDirection|fontScale|density|smallestScreenSize`; the screen is
+  redrawn and a language change is published as the `app:locale` event.
+- Concurrent permission requests shared one latch; each request has its own.
+  Back uses `OnBackInvokedCallback` on Android 13+ (predictive back).
+
+### Fixed — build
+
+- **The debug keystore lived in `build/`**, so `pymobile clean`, `build --clean`
+  or a fresh CI checkout created a new key and the next APK could not be
+  installed over the previous one. The key is kept in
+  `~/.pymobile/keystores/<package>-debug.jks` (`PYMOBILE_KEYSTORE_DIR` to
+  override); a key found in `build/` is adopted automatically.
+- **`build --native --keystore …` produced a debug-signed APK**: the release
+  signing options were never passed to the native backend.
+- `optimize = true` was silently ignored for native builds. It is honoured when
+  the build runs on Python 3.14 (the device's version) and warns otherwise.
+- Desktop-only framework files (compiler, CLI, Tk/web previews, watcher, Java
+  sources and prebuilt artefacts) are no longer copied into every APK.
+- `pymobile/logging.py` shadowed the standard library for scripts started from
+  inside the package. It is `pymobile.log` now; `pymobile.logging` remains an
+  alias.
+
+### Fixed — storage
+
+- A corrupt store file was silently treated as empty and overwritten on the
+  next write (data loss). It is moved aside to `<name>.corrupt-<timestamp>`
+  and a warning is logged.
+- `transaction()` is all-or-nothing: changes are written once when the outermost
+  block ends; if it raises, memory is rolled back and the file is not touched.
+- A non-JSON value is rejected before it reaches memory (it used to break every
+  later write of any key); `get()` returns a copy, so in-place mutation can no
+  longer diverge from the file.
+- Writes `fsync` the file and its directory; a warning is logged when another
+  process changed the file since it was loaded.
+- `App()` uses the `package` from `pymobile.toml`, so desktop projects no longer
+  share one store file.
+
+### Fixed — HTTP
+
+- An exception in `HttpFuture.then(on_success)` was swallowed and `get()` then
+  raised it instead of returning the response. It is logged with its traceback
+  and passed to `on_error`; `get()` returns the response.
+- `HttpFuture.then()` documented that callbacks run "on the calling thread";
+  they run on the worker thread, and the docstring now says so.
+
 ## [0.7.3] — 2026-09-25
 
 ### Security

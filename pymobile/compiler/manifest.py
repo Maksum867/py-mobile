@@ -47,7 +47,7 @@ class ManifestBuilder:
         self._attr(manifest, "versionName", config.version)
 
         uses_sdk = ET.SubElement(manifest, "uses-sdk")
-        self._attr(uses_sdk, "minSdkVersion", str(config.min_sdk))
+        self._attr(uses_sdk, "minSdkVersion", str(config.effective_min_sdk))
         self._attr(uses_sdk, "targetSdkVersion", str(config.target_sdk))
 
         for permission in sorted({normalize(p) for p in config.permissions}):
@@ -57,8 +57,13 @@ class ManifestBuilder:
         application = ET.SubElement(manifest, "application")
         self._attr(application, "label", config.name)
         self._attr(application, "icon", "@mipmap/icon")
-        self._attr(application, "allowBackup", "true")
+        # Backups copy the private store (tokens, personal data) off the
+        # device; opt in with `allow_backup = true`.
+        self._attr(application, "allowBackup", "true" if config.allow_backup else "false")
         self._attr(application, "hardwareAccelerated", "true")
+        # Back gestures arrive through OnBackInvokedCallback (API 33+);
+        # onBackPressed() is deprecated and ignored with predictive back.
+        self._attr(application, "enableOnBackInvokedCallback", "true")
 
         activity = ET.SubElement(application, "activity")
         self._attr(activity, "name", self.activity)
@@ -66,10 +71,15 @@ class ManifestBuilder:
         self._attr(activity, "exported", "true")
         self._attr(activity, "launchMode", "singleTask")
         self._attr(activity, "screenOrientation", _ORIENTATION_MAP[config.orientation])
+        # Every change listed here is handled by MainActivity instead of the
+        # activity being destroyed and recreated — recreation used to restart
+        # the embedded Python interpreter and lose all in-memory app state
+        # when the user changed the system language or the font size.
         self._attr(
             activity,
             "configChanges",
-            "keyboard|keyboardHidden|orientation|screenSize|screenLayout|uiMode",
+            "keyboard|keyboardHidden|orientation|screenSize|smallestScreenSize|"
+            "screenLayout|uiMode|locale|layoutDirection|fontScale|density",
         )
 
         intent_filter = ET.SubElement(activity, "intent-filter")

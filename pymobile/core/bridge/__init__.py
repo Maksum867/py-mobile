@@ -6,7 +6,7 @@ caches it. Tests and previews override it with :func:`set_bridge`.
 
 from __future__ import annotations
 
-from ...logging import get_logger
+from ...log import get_logger
 from ..platform import is_android
 from .android import AndroidBridge
 from .base import Bridge, BridgeCall, NotificationSpec

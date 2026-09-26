@@ -5,9 +5,11 @@ can render the last-known-good data while offline, or avoid refetching data
 that rarely changes. Built on the same JSON store the framework uses for local
 storage, so it adds no dependency and lives in the app's data directory.
 
-The cache is deliberately simple: keys are URLs (with query strings), a ``ttl``
-bounds freshness, and stale entries are still returned so callers can show
-something rather than nothing. Use :class:`HttpCache` directly or hand it to
+The cache is deliberately simple: keys are URLs (with query strings) plus a
+fingerprint of the request's credentials, so responses fetched for one account
+are never served to another; a ``ttl`` bounds freshness, stale entries are
+still returned so callers can show something rather than nothing, and the
+oldest entries are evicted beyond ``max_entries``. Use :class:`HttpCache` directly or hand it to
 :class:`~pymobile.core.net.http.HttpClient` via ``cache=``.
 """
 
@@ -21,7 +23,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from ...logging import get_logger
+from ...log import get_logger
 from ..api.storage import Storage
 
 __all__ = ["HttpCache"]
@@ -29,9 +31,13 @@ __all__ = ["HttpCache"]
 _log = get_logger("net.cache")
 
 
-def _key_for(url: str) -> str:
-    """A stable, filesystem-safe cache key for a URL."""
-    return hashlib.sha256(url.encode("utf-8")).hexdigest()
+def _key_for(url: str, variant: str = "") -> str:
+    """A stable, filesystem-safe cache key for a URL (and credential variant)."""
+    raw = url if not variant else f"{url}\n{variant}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+DEFAULT_MAX_ENTRIES = 200
 
 
 class HttpCache:
@@ -45,63 +51,106 @@ class HttpCache:
     Mutations and ``clear()`` are serialised through an internal lock so
     concurrent jobs and HTTP callbacks cannot race; readers take the same
     lock so ``clear()`` never exposes a half-wiped keyspace.
+
+
+    ``variant`` separates responses to the same URL fetched with different
+    credentials (``HttpClient`` passes a fingerprint of ``Authorization``/
+    ``Cookie``/``X-API-Key``). ``max_entries`` bounds the cache: the oldest
+    entries are evicted first (``None`` disables the limit).
     """
 
-    __slots__ = ("_storage", "_prefix", "_lock")
+    __slots__ = ("_storage", "_prefix", "_lock", "_max_entries")
 
-    def __init__(self, path: str | Path | None = None, *, prefix: str = "http:") -> None:
+    def __init__(
+        self,
+        path: str | Path | None = None,
+        *,
+        prefix: str = "http:",
+        max_entries: int | None = DEFAULT_MAX_ENTRIES,
+    ) -> None:
+        if max_entries is not None and max_entries < 1:
+            raise ValueError(f"max_entries must be >= 1 or None, got {max_entries}")
         # Defaults to the shared app data store (keys namespaced by prefix).
         self._storage = Storage(path) if path is not None else Storage()
         self._prefix = prefix
         self._lock = threading.Lock()
+        self._max_entries = max_entries
 
     @classmethod
     def at(cls, path: str | Path) -> HttpCache:
         """Create a cache backed by a specific file (useful for tests)."""
         return cls(path)
 
-    def _full_key(self, url: str) -> str:
-        return self._prefix + _key_for(url)
+    def _full_key(self, url: str, variant: str = "") -> str:
+        return self._prefix + _key_for(url, variant)
 
-    def get(self, url: str) -> dict[str, Any] | None:
+    def get(self, url: str, *, variant: str = "") -> dict[str, Any] | None:
         """Return the cached entry ``{status, headers, content, fetched_at}`` or ``None``."""
         with self._lock:
-            entry = self._storage.get(self._full_key(url))
+            entry = self._storage.get(self._full_key(url, variant))
         return entry if isinstance(entry, dict) else None
 
-    def get_stale(self, url: str, ttl: float) -> dict[str, Any] | None:
+    def get_stale(self, url: str, ttl: float, *, variant: str = "") -> dict[str, Any] | None:
         """Return a cached entry even if it is older than ``ttl``, or ``None``."""
-        return self.get(url)
+        return self.get(url, variant=variant)
 
-    def is_fresh(self, url: str, ttl: float) -> bool:
+    def is_fresh(self, url: str, ttl: float, *, variant: str = "") -> bool:
         """Whether a cached entry exists and is newer than ``ttl`` seconds."""
-        entry = self.get(url)
+        entry = self.get(url, variant=variant)
         if entry is None:
             return False
         return (time.time() - float(entry.get("fetched_at", 0))) < ttl
 
-    def set(self, url: str, status: int, headers: Mapping[str, str], content: bytes) -> None:
+    def set(
+        self,
+        url: str,
+        status: int,
+        headers: Mapping[str, str],
+        content: bytes,
+        *,
+        variant: str = "",
+    ) -> None:
         """Store a response for ``url``.
 
         The body is stored as base64 rather than a JSON array of bytes, which
-        used to inflate both disk and CPU for large payloads.
+        used to inflate both disk and CPU for large payloads. ``Set-Cookie``
+        is not stored: a session cookie has no business sitting in a cache
+        file. Beyond ``max_entries`` the oldest entries are evicted.
         """
-        with self._lock:
-            self._storage.set(
-                self._full_key(url),
+        kept_headers = {k: v for k, v in dict(headers).items() if k.lower() != "set-cookie"}
+        with self._lock, self._storage.transaction() as store:
+            store.set(
+                self._full_key(url, variant),
                 {
                     "status": status,
-                    "headers": dict(headers),
+                    "headers": kept_headers,
                     "content": base64.b64encode(content).decode("ascii"),
                     "encoding": "base64",
                     "fetched_at": time.time(),
                 },
             )
+            self._evict_locked()
 
-    def delete(self, url: str) -> bool:
+    def _evict_locked(self) -> None:
+        if self._max_entries is None:
+            return
+        entries = [
+            (float(value.get("fetched_at", 0)) if isinstance(value, dict) else 0.0, key)
+            for key, value in self._storage.items()
+            if key.startswith(self._prefix)
+        ]
+        overflow = len(entries) - self._max_entries
+        if overflow <= 0:
+            return
+        entries.sort()
+        for _, key in entries[:overflow]:
+            self._storage.delete(key)
+        _log.debug("evicted %d old HTTP cache entries", overflow)
+
+    def delete(self, url: str, *, variant: str = "") -> bool:
         """Remove a cached entry; returns whether it existed."""
         with self._lock:
-            return self._storage.delete(self._full_key(url))
+            return self._storage.delete(self._full_key(url, variant))
 
     def clear(self) -> None:
         """Drop every cached entry."""
@@ -111,8 +160,9 @@ class HttpCache:
         # drop the explicit ``.keys()`` call automatically.
         with self._lock:
             keys = [k for k in self._storage.keys() if k.startswith(self._prefix)]  # noqa: SIM118
-            for key in keys:
-                self._storage.delete(key)
+            with self._storage.transaction() as store:
+                for key in keys:
+                    store.delete(key)
 
     def __contains__(self, url: object) -> bool:
         return isinstance(url, str) and self.get(url) is not None

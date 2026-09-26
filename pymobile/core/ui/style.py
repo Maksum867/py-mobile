@@ -106,6 +106,49 @@ class EdgeInsets:
         return any(self.to_list())
 
 
+#: What ``Style(padding=...)`` / ``Style(margin=...)`` accept.
+InsetsLike = EdgeInsets | int | float | tuple[int, int, int, int] | list[int]
+
+
+def _is_number(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _coerce_insets(name: str, value: object) -> EdgeInsets | None:
+    """Normalise a padding/margin shorthand to :class:`EdgeInsets`.
+
+    ``8`` is ``EdgeInsets.all(8)`` and ``(l, t, r, b)`` follows the
+    :class:`EdgeInsets` argument order. A pair is rejected on purpose: CSS
+    reads it as (vertical, horizontal), :meth:`EdgeInsets.symmetric` the
+    other way round, and guessing wrong would be silent.
+    """
+    if value is None or isinstance(value, EdgeInsets):
+        return value
+    example = (
+        f"write Style({name}=8), Style({name}=(16, 8, 16, 8)) for left, top, right, bottom, "
+        f"or Style({name}=EdgeInsets.symmetric(horizontal=16, vertical=8))"
+    )
+    sides: list[int]
+    if _is_number(value):
+        sides = [round(value)] * 4  # type: ignore[call-overload]
+    elif isinstance(value, (tuple, list)) and len(value) == 4 and all(map(_is_number, value)):
+        sides = [round(side) for side in value]
+    elif isinstance(value, (tuple, list)) and len(value) == 2:
+        raise TypeError(
+            f"{name}={value!r} is ambiguous (vertical/horizontal or the other way round?); "
+            "use EdgeInsets.symmetric(horizontal=..., vertical=...) or four numbers "
+            "(left, top, right, bottom)"
+        )
+    else:
+        raise TypeError(
+            f"{name} must be a number of dp, an EdgeInsets or four numbers, "
+            f"got {value!r}; {example}"
+        )
+    if any(side < 0 for side in sides):
+        raise ValueError(f"{name} must not be negative, got {value!r}")
+    return EdgeInsets(*sides)
+
+
 @dataclass(frozen=True, slots=True)
 class Style:
     """Visual attributes of a widget; ``None`` means "inherit the default".
@@ -121,8 +164,10 @@ class Style:
     font_size: int | None = None
     bold: bool = False
     italic: bool = False
-    padding: EdgeInsets | None = None
-    margin: EdgeInsets | None = None
+    #: ``8`` or ``(left, top, right, bottom)`` are shorthands; after
+    #: construction the attribute always holds an :class:`EdgeInsets`.
+    padding: InsetsLike | None = None
+    margin: InsetsLike | None = None
     width: int | str | None = None
     height: int | str | None = None
     min_width: int | None = None
@@ -136,6 +181,10 @@ class Style:
     weight: float | None = None
 
     def __post_init__(self) -> None:
+        # Frozen dataclass: normalise through object.__setattr__. Without this
+        # Style(padding=8) was accepted and then crashed in to_dict().
+        for name in ("padding", "margin"):
+            object.__setattr__(self, name, _coerce_insets(name, getattr(self, name)))
         for value in (self.background, self.color):
             if value is not None:
                 if not isinstance(value, str):

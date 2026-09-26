@@ -27,7 +27,7 @@ from .compiler.pipeline import BuildPipeline
 from .compiler.scaffold import create_project
 from .core.config import CONFIG_FILENAME, ProjectConfig, load_config
 from .errors import PyMobileError
-from .logging import configure, get_logger, supports_color
+from .log import configure, get_logger, supports_color
 
 __all__ = ["main", "build_parser"]
 
@@ -121,10 +121,19 @@ def cmd_build(args: argparse.Namespace) -> int:
         config.minimal_stdlib = True
     if getattr(args, "no_ssl", False):
         config.no_ssl = True
+    if getattr(args, "abi", None):
+        # One APK per ABI: arm64-v8a for phones, x86_64 for the emulator.
+        config.abis = [args.abi]
     config.validate()
 
     if args.clean:
         _clean(config)
+
+    if getattr(args, "ks_pass", None) or getattr(args, "key_pass", None):
+        _out.warn(
+            "passwords on the command line end up in shell history and `ps`; "
+            "prefer PYMOBILE_KS_PASS / PYMOBILE_KEY_PASS"
+        )
 
     native = getattr(args, "native", False)
     if native:
@@ -185,6 +194,8 @@ def cmd_build(args: argparse.Namespace) -> int:
     _out.field("icon", "default" if result.icon_is_default else config.icon)
     if result.native:
         _out.field("install", f"adb install -r {result.apk.name}")
+        if config.abis and config.abis[0] == "x86_64":
+            _out.hint("x86_64 build: for the Android Studio emulator, not for a phone")
     if args.verbose:
         for timing in result.timings:
             _out.field(timing.name, f"{timing.seconds * 1000:.0f} ms")
@@ -323,7 +334,7 @@ def _reload(config: ProjectConfig, entry: Path, args: argparse.Namespace) -> Non
     of main.py would keep the stale version cached in sys.modules.
     """
     from .core.bridge import StubBridge, set_bridge
-    from .core.ui.preview import render_ascii, render_png
+    from .core.ui.preview import render_ascii, render_mockup, render_png
 
     started = time.perf_counter()
     bridge = StubBridge(verbose=False)
@@ -346,8 +357,21 @@ def _reload(config: ProjectConfig, entry: Path, args: argparse.Namespace) -> Non
         return
 
     elapsed = (time.perf_counter() - started) * 1000
-    if args.png:
+    if args.png and getattr(args, "text", False):
         render_png(tree, args.png)
+        _out.ok(f"wrote {args.png} in {elapsed:.0f} ms")
+    elif args.png:
+        from .core.app import App
+
+        app = App.current()
+        render_mockup(
+            tree,
+            args.png,
+            theme=app.theme if app is not None else None,
+            title=config.name,
+            assets=config.source_path,
+        )
+        elapsed = (time.perf_counter() - started) * 1000
         _out.ok(f"wrote {args.png} in {elapsed:.0f} ms")
     else:
         print(render_ascii(tree, show_ids=args.ids, title=config.name))
@@ -415,10 +439,26 @@ def _execute(config: ProjectConfig, entry: Path) -> dict[str, object]:
     return namespace
 
 
+def _parse_size(value: str | None) -> tuple[int, int | None]:
+    """``"360x640"`` → (360, 640); ``"400"`` → (400, None); None → defaults."""
+    if not value:
+        return 360, None
+    text = value.lower().replace("\u00d7", "x").strip()  # a typed multiplication sign works too
+    try:
+        if "x" in text:
+            w, h = text.split("x", 1)
+            return int(w), int(h)
+        return int(text), None
+    except ValueError:
+        raise PyMobileError(
+            f"Invalid --size {value!r}.", hint="Use WIDTHxHEIGHT in dp, e.g. 360x640."
+        ) from None
+
+
 def cmd_preview(args: argparse.Namespace) -> int:
     """Render the app's first screen as a picture on this machine."""
     from .core.bridge import StubBridge, set_bridge
-    from .core.ui.preview import render_ascii, render_png
+    from .core.ui.preview import render_ascii, render_mockup, render_png
 
     config = _load(args)
     entry = _entrypoint(config)
@@ -434,9 +474,26 @@ def cmd_preview(args: argparse.Namespace) -> int:
             hint="Make sure the entry point calls App(...).run(SomeScreen()).",
         )
 
-    if args.png:
+    if args.png and getattr(args, "text", False):
         path = render_png(tree, args.png)
-        _out.ok(f"wrote preview to {path}")
+        _out.ok(f"wrote the text preview to {path}")
+    elif args.png:
+        from .core.app import App
+
+        width, height = _parse_size(getattr(args, "size", None))
+        app = App.current()
+        theme = getattr(args, "theme", None) or (app.theme if app is not None else None)
+        path = render_mockup(
+            tree,
+            args.png,
+            width=width,
+            height=height,
+            theme=theme,
+            title=config.name,
+            assets=config.source_path,
+        )
+        _out.ok(f"wrote a mockup of the screen to {path}")
+        _out.hint("an approximation: fonts and system colours differ between phones")
     else:
         print(render_ascii(tree, show_ids=args.ids, title=config.name))
     return 0
@@ -454,7 +511,10 @@ def cmd_info(args: argparse.Namespace) -> int:
     _out.field("source", config.source_path)
     _out.field("output", config.output_path)
     _out.field("apk", config.apk_name)
-    _out.field("sdk", f"min {config.min_sdk} / target {config.target_sdk}")
+    min_sdk = str(config.effective_min_sdk)
+    if config.min_sdk != config.effective_min_sdk:
+        min_sdk += f" (pymobile.toml says {config.min_sdk})"
+    _out.field("sdk", f"min {min_sdk} / target {config.target_sdk}")
     _out.field("abis", ", ".join(config.abis))
     _out.field("icon", config.icon or "default")
     _out.field("optimize", config.optimize)
@@ -469,6 +529,11 @@ def cmd_clean(args: argparse.Namespace) -> int:
     config = _load(args)
     removed = _clean(config)
     _out.ok(f"removed {removed}" if removed else "nothing to clean")
+    from .compiler.backends.native import debug_keystore_path
+
+    # The debug key lives outside build/, so cleaning never changes the
+    # signature (a different key makes the next APK un-installable over this one).
+    _out.info(f"debug signing key kept at {debug_keystore_path(config.package)}")
     return 0
 
 
@@ -651,9 +716,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="ship .py sources even if pymobile.toml has optimize = true",
     )
     build.add_argument("--keystore", metavar="PATH", help="release keystore for --native signing")
-    build.add_argument("--ks-pass", metavar="PASS", help="keystore password (do not commit this)")
+    build.add_argument(
+        "--ks-pass",
+        metavar="PASS",
+        help="keystore password; prefer the PYMOBILE_KS_PASS environment variable",
+    )
     build.add_argument("--key-alias", metavar="ALIAS", help="key alias inside the keystore")
-    build.add_argument("--key-pass", metavar="PASS", help="key password (defaults to --ks-pass)")
+    build.add_argument(
+        "--key-pass",
+        metavar="PASS",
+        help="key password (defaults to the keystore password; or PYMOBILE_KEY_PASS)",
+    )
     build.add_argument(
         "--minimal-stdlib",
         action="store_true",
@@ -663,6 +736,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-ssl",
         action="store_true",
         help="omit OpenSSL and the CA bundle: ~4 MB smaller, but no HTTPS",
+    )
+    build.add_argument(
+        "--abi",
+        choices=("arm64-v8a", "x86_64"),
+        help=(
+            "CPU architecture of the APK: arm64-v8a (phones, the default) or "
+            "x86_64 (the Android Studio emulator); overrides `abis` in pymobile.toml"
+        ),
     )
     build.set_defaults(func=cmd_build)
 
@@ -688,7 +769,12 @@ def build_parser() -> argparse.ArgumentParser:
     watch = sub.add_parser(
         "watch", help="re-render automatically when a source file changes", parents=[common]
     )
-    watch.add_argument("--png", metavar="PATH", help="write a PNG on every reload")
+    watch.add_argument(
+        "--png", metavar="PATH", help="write a mockup of the screen as a PNG on every reload"
+    )
+    watch.add_argument(
+        "--text", action="store_true", help="with --png: write the text picture instead"
+    )
     watch.add_argument("--ids", action="store_true", help="annotate widgets with their id")
     watch.add_argument(
         "--interval",
@@ -702,7 +788,29 @@ def build_parser() -> argparse.ArgumentParser:
     preview = sub.add_parser(
         "preview", help="draw the first screen as a desktop picture", parents=[common]
     )
-    preview.add_argument("--png", metavar="PATH", help="write a PNG instead of text")
+    preview.add_argument(
+        "--png",
+        metavar="PATH",
+        help="save a mockup of the screen as the phone draws it (needs Pillow)",
+    )
+    preview.add_argument(
+        "--text",
+        action="store_true",
+        help="with --png: save the text picture instead of the mockup (the pre-0.8 output)",
+    )
+    preview.add_argument(
+        "--theme",
+        choices=("light", "dark"),
+        help="with --png: draw in this theme instead of the app's",
+    )
+    preview.add_argument(
+        "--size",
+        metavar="WxH",
+        help=(
+            "with --png: screen size in dp, e.g. 360x640 "
+            "(default: 360 wide, as tall as the content)"
+        ),
+    )
     preview.add_argument("--ids", action="store_true", help="annotate widgets with their id")
     preview.set_defaults(func=cmd_preview)
 

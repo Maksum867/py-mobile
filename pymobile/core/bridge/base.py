@@ -88,7 +88,7 @@ class Bridge(ABC):
 
     # -- ui ----------------------------------------------------------------
     @abstractmethod
-    def toast(self, message: str, long: bool) -> None:
+    def toast(self, message: str, long: bool = False) -> None:
         """Show a short platform toast."""
 
     @abstractmethod

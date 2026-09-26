@@ -18,7 +18,7 @@ import urllib.request
 from pathlib import Path
 
 from ..errors import PyMobileError
-from ..logging import get_logger
+from ..log import get_logger
 
 __all__ = ["ensure_runtime", "runtime_cache_dir", "PYTHON_VERSION", "ABI_TRIPLETS"]
 

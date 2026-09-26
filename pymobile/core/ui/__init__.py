@@ -43,6 +43,7 @@ from .navigation import BottomNavigation
 from .pickers import DatePicker, TimePicker
 from .registry import WidgetCapability, supported_by, widget_types
 from .screen import Navigator, Screen
+from .snackbar import Snackbar
 from .style import Align, Color, EdgeInsets, Style
 from .theme import Theme
 from .widget import Container, Widget
@@ -92,6 +93,7 @@ __all__ = [
     "Stack",
     "Screen",
     "Navigator",
+    "Snackbar",
     "Style",
     "Color",
     "Align",

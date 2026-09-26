@@ -14,7 +14,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..logging import get_logger
+from ..log import get_logger
 
 __all__ = ["BuildCache", "fingerprint_files"]
 

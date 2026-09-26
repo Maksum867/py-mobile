@@ -22,7 +22,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised on Python 3.10 only
 
 from ..errors import ConfigError
 
-__all__ = ["ProjectConfig", "load_config", "CONFIG_FILENAME"]
+__all__ = ["ProjectConfig", "load_config", "CONFIG_FILENAME", "RUNTIME_MIN_SDK"]
 
 CONFIG_FILENAME = "pymobile.toml"
 
@@ -30,6 +30,12 @@ _PACKAGE_RE = re.compile(r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$")
 _VERSION_RE = re.compile(r"^\d+(\.\d+){0,3}([-.][0-9A-Za-z.]+)?$")
 _ORIENTATIONS = ("portrait", "landscape", "sensor", "user")
 _ABI_CHOICES = ("arm64-v8a", "x86_64")  # only ABIs the packaged runtime ships
+
+#: Oldest Android the embedded interpreter runs on. The python.org Android
+#: builds of CPython 3.14 target API 24 (Android 7.0): ``libpython3.14.so``
+#: imports ``preadv``, ``pwritev`` and ``lockf``, which older bionic lacks, so
+#: on Android 5-6 the app died at launch. An APK never declares less than this.
+RUNTIME_MIN_SDK = 24
 
 
 @dataclass(slots=True)
@@ -47,11 +53,16 @@ class ProjectConfig:
     source_dir: str = "."
 
     # -- android -----------------------------------------------------------
-    min_sdk: int = 21
+    #: Projects created before 0.8.0 say ``min_sdk = 21``; that still loads,
+    #: but the APK declares :attr:`effective_min_sdk` and the build warns.
+    min_sdk: int = RUNTIME_MIN_SDK
     target_sdk: int = 35
     orientation: str = "portrait"
     permissions: list[str] = field(default_factory=lambda: ["android.permission.INTERNET"])
     icon: str | None = None
+    #: Let Android back up the app's private data (cloud backup, adb backup).
+    #: Off by default: the store often holds tokens and personal data.
+    allow_backup: bool = False
 
     # -- build -------------------------------------------------------------
     abis: list[str] = field(default_factory=lambda: ["arm64-v8a"])
@@ -81,6 +92,11 @@ class ProjectConfig:
     #: Directory the config was loaded from; all relative paths resolve here.
     root: Path = field(default_factory=Path.cwd)
 
+    @property
+    def effective_min_sdk(self) -> int:
+        """``min_sdk`` raised to :data:`RUNTIME_MIN_SDK`: what the APK declares."""
+        return max(self.min_sdk, RUNTIME_MIN_SDK)
+
     # -- validation --------------------------------------------------------
     def __post_init__(self) -> None:
         self.root = Path(self.root).resolve()
@@ -103,11 +119,16 @@ class ProjectConfig:
             raise ConfigError("`version_code` must be >= 1")
         if self.min_sdk < 21:
             raise ConfigError(
-                f"`min_sdk` is {self.min_sdk}, but PyMobile requires at least 21",
-                hint="Android 5.0 is the oldest release the runtime supports.",
+                f"`min_sdk` is {self.min_sdk}, but PyMobile requires at least {RUNTIME_MIN_SDK}",
+                hint=f"Set min_sdk = {RUNTIME_MIN_SDK}: Android 7.0 is the oldest release "
+                "the embedded CPython 3.14 runs on.",
             )
-        if self.target_sdk < self.min_sdk:
-            raise ConfigError("`target_sdk` must be >= `min_sdk`")
+        if self.target_sdk < self.effective_min_sdk:
+            raise ConfigError(
+                f"`target_sdk` ({self.target_sdk}) must be >= {self.effective_min_sdk}",
+                hint=f"The APK declares minSdkVersion {self.effective_min_sdk}; "
+                "target_sdk cannot be lower.",
+            )
         if self.orientation not in _ORIENTATIONS:
             raise ConfigError(
                 f"Invalid orientation {self.orientation!r}",
@@ -156,7 +177,11 @@ class ProjectConfig:
         safe = re.sub(r"[^A-Za-z0-9._-]+", "-", self.name).strip("-.").lower()
         if not safe:
             safe = self.package.rsplit(".", 1)[-1]
-        return f"{safe}-{self.version}.apk"
+        # An emulator build must not be mistaken for (or overwrite) the phone
+        # APK: it is suffixed with its ABI. The arm64 name is unchanged.
+        abi = self.abis[0] if self.abis else "arm64-v8a"
+        suffix = "" if abi == "arm64-v8a" else f"-{abi}"
+        return f"{safe}-{self.version}{suffix}.apk"
 
     # -- serialisation -----------------------------------------------------
     def to_dict(self) -> dict[str, Any]:

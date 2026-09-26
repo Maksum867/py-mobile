@@ -21,7 +21,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from ...logging import get_logger
+from ...log import get_logger
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     import tkinter as tk
@@ -62,10 +62,19 @@ def skeleton(node: dict[str, Any]) -> tuple[Any, ...]:
     Two trees with the same skeleton can be patched into one another; anything
     else needs a rebuild.
     """
+    props = node.get("props", {})
+    # Props that change which Tk widgets exist (a refresh button, swipe
+    # buttons) are structure too.
+    extra = tuple(
+        bool(props.get(name))
+        for name in ("refreshable", "refreshing", "swipe_left", "swipe_right")
+        if name in props
+    )
     return (
         node.get("type"),
         node.get("id"),
         node.get("visible", True),
+        extra,
         tuple(skeleton(child) for child in node.get("children", ())),
     )
 
@@ -120,6 +129,38 @@ class GuiPreview:
         )
         self._status.pack(fill="x")
 
+        # The snackbar strip sits between the screen and the status line and
+        # is only packed while App.snackbar() has one on screen.
+        self._snack = tk.Frame(self.root, bg="#323232")
+        self._snack_text = tk.Label(
+            self._snack, text="", bg="#323232", fg="#FFFFFF", anchor="w", padx=12, pady=8
+        )
+        self._snack_text.pack(side="left", fill="x", expand=True)
+        self._snack_close = tk.Button(
+            self._snack,
+            text="✕",
+            relief="flat",
+            bg="#323232",
+            fg="#BDBDBD",
+            bd=0,
+            highlightthickness=0,
+            activebackground="#424242",
+            command=lambda: self._dispatch("__snackbar__", "dismiss", self._snack_token),
+        )
+        self._snack_close.pack(side="right")
+        self._snack_action = tk.Button(
+            self._snack,
+            text="",
+            relief="flat",
+            bg="#323232",
+            fg="#8C9EFF",
+            bd=0,
+            highlightthickness=0,
+            activebackground="#424242",
+            command=lambda: self._dispatch("__snackbar__", "press", self._snack_token),
+        )
+        self._snack_token = ""
+
         #: Leaf widgets by widget id, used to patch instead of rebuild.
         self._widgets: dict[str, Any] = {}
         self._variables: dict[str, Any] = {}
@@ -170,6 +211,7 @@ class GuiPreview:
         else:
             self._back.pack_forget()
 
+        self._sync_snackbar(tree.get("snackbar"))
         shape = skeleton(tree)
         try:
             if shape == self._skeleton:
@@ -228,6 +270,22 @@ class GuiPreview:
 
         for child in node.get("children", ()):
             self._patch_node(child)
+
+    def _sync_snackbar(self, data: dict[str, Any] | None) -> None:
+        if not data:
+            self._snack.pack_forget()
+            return
+        self._snack_token = str(data.get("token", ""))
+        self._snack_text.configure(text=str(data.get("message", "")))
+        action = str(data.get("action", ""))
+        if action:
+            self._snack_action.configure(text=action)
+            # Packed after ✕ with side="right", so it sits just left of it.
+            self._snack_action.pack(side="right")
+        else:
+            self._snack_action.pack_forget()
+        if not self._snack.winfo_ismapped():
+            self._snack.pack(fill="x", before=self._status, padx=8, pady=(0, 6))
 
     def toast(self, message: str) -> None:
         """Show a transient message in the status strip."""
@@ -552,15 +610,47 @@ class GuiPreview:
             if kind == "List":
                 frame = tk.Frame(parent, bg=background)
                 frame.pack(fill="both", expand=True, pady=pad)
+                if props.get("refreshable"):
+                    # A mouse cannot pull: the gesture becomes a button.
+                    refreshing = bool(props.get("refreshing"))
+                    tk.Button(
+                        frame,
+                        text="⟳ Refreshing…" if refreshing else "↻ Pull to refresh",
+                        state="disabled" if refreshing else "normal",
+                        command=lambda: self._dispatch(widget_id, "refresh", ""),
+                    ).pack(fill="x", pady=pad)
                 self._build_children(frame, node, background)
+                if props.get("has_more"):
+                    loaded = str(props.get("loaded", len(node.get("children", ()))))
+                    tk.Button(
+                        frame,
+                        text=f"Load more ({loaded} of {props.get('item_count', '?')})",
+                        command=lambda: self._dispatch(widget_id, "load_more", loaded),
+                    ).pack(fill="x", pady=pad)
                 return
+            holder = parent
+            if props.get("swipe_left") or props.get("swipe_right"):
+                holder = tk.Frame(parent, bg=background)
+                holder.pack(fill="x", pady=pad)
+                for direction, arrow in (("left", "⟵"), ("right", "⟶")):
+                    if props.get(f"swipe_{direction}"):
+                        tk.Button(
+                            holder,
+                            text=arrow,
+                            bg=self._colour(props.get(f"swipe_{direction}_color"), "#757575"),
+                            fg="#FFFFFF",
+                            command=lambda d=direction: self._dispatch(widget_id, "swipe", d),
+                        ).pack(side="right")
             tile = tk.Button(
-                parent,
+                holder,
                 text=str(props.get("title", "")),
                 command=lambda: self._dispatch(widget_id, "press", ""),
                 anchor="w",
             )
-            tile.pack(fill="x", pady=pad)
+            if holder is parent:
+                tile.pack(fill="x", pady=pad)
+            else:
+                tile.pack(side="left", fill="x", expand=True)
             if props.get("long_pressable"):
                 # Right click stands in for touch-and-hold in the Tk window.
                 tile.bind(

@@ -19,7 +19,7 @@ from html import escape
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import TYPE_CHECKING, Any
 
-from ...logging import get_logger
+from ...log import get_logger
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from ..app import App
@@ -66,6 +66,16 @@ _PAGE = """<!doctype html>
              border-radius: 50%; font-weight: 600; }}
   .seg {{ display: flex; gap: 0; }}
   .seg button {{ flex: 1; border-radius: 0; }}
+  .phone {{ position: relative; }}
+  .swipe {{ width: auto; flex: 0 0 auto; padding: 9px 10px; color: #fff; border: 0; }}
+  .refresh {{ text-align: center; }}
+  #snack {{ position: absolute; left: 12px; right: 12px; bottom: 40px; display: none;
+            align-items: center; gap: 8px; padding: 6px 8px 6px 16px; min-height: 48px;
+            border-radius: 4px; background: {snack_bg}; color: {snack_fg};
+            box-shadow: 0 3px 10px rgba(0,0,0,.3); }}
+  #snack span {{ flex: 1; }}
+  #snack button {{ font: inherit; font-weight: 700; border: 0; background: none;
+                   color: {snack_action}; cursor: pointer; padding: 8px; }}
 </style>
 </head>
 <body>
@@ -75,9 +85,15 @@ _PAGE = """<!doctype html>
   </div>
   <div class="screen" id="screen">{body}</div>
   <div class="status" id="status"></div>
+  <div id="snack"><span id="snack-text"></span>
+    <button id="snack-action" onclick="send('__snackbar__','press',this.dataset.token)"></button>
+    <button title="dismiss" onclick="send('__snackbar__','dismiss',this.dataset.token)"
+            id="snack-close">✕</button>
+  </div>
 </div>
 <script>
 let version = {version};
+const scrolled = {{}};
 async function send(id, kind, value) {{
   const r = await fetch('/event', {{
     method: 'POST', headers: {{'Content-Type': 'application/json'}},
@@ -95,6 +111,23 @@ function apply(state) {{
   document.getElementById('title').textContent = state.title;
   document.getElementById('back').style.display = state.depth > 1 ? '' : 'none';
   document.getElementById('status').textContent = state.status || '';
+  const snack = document.getElementById('snack');
+  if (state.snackbar) {{
+    snack.style.display = 'flex';
+    document.getElementById('snack-text').textContent = state.snackbar.message;
+    const action = document.getElementById('snack-action');
+    action.textContent = state.snackbar.action || '';
+    action.style.display = state.snackbar.action ? '' : 'none';
+    action.dataset.token = state.snackbar.token;
+    document.getElementById('snack-close').dataset.token = state.snackbar.token;
+  }} else {{ snack.style.display = 'none'; }}
+  document.querySelectorAll('[data-scroll-serial]').forEach(function (list) {{
+    const serial = list.dataset.scrollSerial;
+    if (serial === '0' || scrolled[list.dataset.wid] === serial) return;
+    scrolled[list.dataset.wid] = serial;
+    const row = list.querySelector('[data-row="' + list.dataset.scrollTo + '"]');
+    if (row) row.scrollIntoView({{behavior: 'smooth', block: 'nearest'}});
+  }});
   if (keep) {{  // typing must survive a redraw
     let again = null;
     try {{
@@ -226,7 +259,47 @@ def render_html(node: dict[str, Any]) -> str:
     children = node.get("children", ())
     inner = "".join(render_html(child) for child in children)
 
-    if kind in ("Column", "Container", "SafeArea", "Stack", "RadioGroup", "List"):
+    if kind == "List":
+        # Rows are numbered so List.scroll_to() can find its target, and the
+        # pull gesture becomes a button (a mouse cannot pull).
+        inner = "".join(
+            f'<div class="col" data-row="{index}">{render_html(child)}</div>'
+            for index, child in enumerate(children)
+        )
+        if props.get("refreshable"):
+            if props.get("refreshing"):
+                head = '<div class="muted refresh">⟳ Refreshing…</div>'
+            else:
+                head = (
+                    f'<button class="w refresh" data-wid="{widget_id}"{disabled} '
+                    f"onclick=\"send(this.dataset.wid,'refresh','')\">"
+                    "↻ Pull to refresh</button>"
+                )
+            inner = head + inner
+
+    if kind == "List" and props.get("has_more"):
+        # The browser has no "last row became visible" hook wired up: a button
+        # stands in for scrolling to the end.
+        loaded = int(props.get("loaded", len(children)))
+        total = int(props.get("item_count", loaded))
+        inner += (
+            f'<button class="w" data-wid="{widget_id}" data-seen="{loaded}" '
+            f"onclick=\"send(this.dataset.wid,'load_more',this.dataset.seen)\">"
+            f"Load more ({loaded} of {total})</button>"
+        )
+
+    if kind == "List":
+        gap = props.get("spacing", 0)
+        align = _alignment(props.get("cross_align"))
+        serial = int(props.get("scroll_serial", 0) or 0)
+        target = int(props.get("scroll_to", -1) if props.get("scroll_to") is not None else -1)
+        extra = f"gap:{gap}px;align-items:{align};{css}"
+        return (
+            f'<div class="col" data-wid="{widget_id}" data-scroll-to="{target}" '
+            f'data-scroll-serial="{serial}" style="{extra}">{inner}</div>'
+        )
+
+    if kind in ("Column", "Container", "SafeArea", "Stack", "RadioGroup"):
         gap = props.get("spacing", 0)
         align = _alignment(props.get("cross_align"))
         extra = f"gap:{gap}px;align-items:{align};{css}"
@@ -493,13 +566,26 @@ def render_html(node: dict[str, Any]) -> str:
             if props.get("long_pressable")
             else ""
         )
-        return (
+        tile = (
             f'<button class="w" data-wid="{widget_id}"{disabled} style="text-align:left;{css}" '
             f"onclick=\"send(this.dataset.wid,'press','')\"{long_press}>"
             f"<div>{title}</div>"
             f'<div class="muted">{subtitle}</div>'
             f'<div class="muted">{trailing}</div></button>'
         )
+        if not (props.get("swipe_left") or props.get("swipe_right")):
+            return tile
+        # No finger to drag with: each swipe direction becomes a button.
+        buttons = ""
+        for direction, arrow in (("right", "⟶"), ("left", "⟵")):
+            if props.get(f"swipe_{direction}"):
+                colour = _css_colour(str(props.get(f"swipe_{direction}_color", "#757575")))
+                buttons += (
+                    f'<button class="w swipe" data-wid="{widget_id}"{disabled} '
+                    f'title="swipe {direction}" style="background:{colour}" '
+                    f"onclick=\"send(this.dataset.wid,'swipe','{direction}')\">{arrow}</button>"
+                )
+        return f'<div class="row" style="gap:4px;align-items:stretch">{tile}{buttons}</div>'
 
     if kind == "BottomNavigation":
         tabs = []
@@ -584,6 +670,7 @@ class WebPreview:
             "body": render_html(tree) if tree else "",
             "depth": self.app.navigator.depth,
             "status": status,
+            "snackbar": tree.get("snackbar") if tree else None,
         }
 
     def _theme_vars(self) -> dict[str, str]:
@@ -609,6 +696,9 @@ class WebPreview:
             "muted": pick("TEXT_MUTED", "#607d8b", "#9e9e9e"),
             "primary": pick("PRIMARY", "#3F51B5", "#9fa8da"),
             "line": "#333" if dark else "#e3e7ea",
+            "snack_bg": "#e6e6e6" if dark else "#323232",
+            "snack_fg": "#212121" if dark else "#ffffff",
+            "snack_action": pick("PRIMARY", "#8c9eff", "#3F51B5") if dark else "#8c9eff",
         }
 
     def page(self) -> str:

@@ -18,7 +18,7 @@ Build it with ``pymobile build``.
 
 from __future__ import annotations
 
-__version__ = "0.7.3"
+__version__ = "0.8.0"
 __author__ = "MAKSYM KHLYSTUN"
 __license__ = "MIT"
 
@@ -33,7 +33,18 @@ from .core.api import (
 from .core.app import App
 from .core.config import ProjectConfig, load_config
 from .core.events import Event, EventBus
-from .core.i18n import device_language, t, translations
+from .core.i18n import (
+    device_language,
+    format_currency,
+    format_date,
+    format_datetime,
+    format_number,
+    format_percent,
+    format_time,
+    plural_category,
+    t,
+    translations,
+)
 from .core.jobs import JobHandle, JobManager
 from .core.net import HttpCache, HttpClient, HttpFuture, HttpSecurityPolicy, Response
 from .core.platform import Platform, current_platform, is_android, is_desktop
@@ -80,6 +91,7 @@ from .core.ui import (
     SearchBar,
     SegmentedButtons,
     Slider,
+    Snackbar,
     Spacer,
     Stack,
     Stepper,
@@ -99,8 +111,10 @@ from .errors import (
     PlatformError,
     PyMobileError,
     ResourceError,
+    WidgetNotFoundError,
+    WidgetTypeError,
 )
-from .logging import get_diagnostics
+from .log import get_diagnostics
 
 __all__ = [
     "__version__",
@@ -132,6 +146,13 @@ __all__ = [
     "Response",
     # i18n
     "device_language",
+    "plural_category",
+    "format_number",
+    "format_percent",
+    "format_currency",
+    "format_date",
+    "format_time",
+    "format_datetime",
     "t",
     "translations",
     # ui
@@ -145,6 +166,7 @@ __all__ = [
     "ProgressBar",
     "Spacer",
     "Slider",
+    "Snackbar",
     "Checkbox",
     "RatingBar",
     "Dropdown",
@@ -203,4 +225,17 @@ __all__ = [
     "PermissionError_",
     "NetworkError",
     "ResourceError",
+    "WidgetNotFoundError",
+    "WidgetTypeError",
 ]
+
+# The logging helpers used to live in ``pymobile/logging.py``. A module named
+# like the standard library's shadows it for any script started from inside
+# the package directory, which broke every stdlib module that imports
+# ``logging``. It is ``pymobile.log`` now; the old import path keeps working.
+import sys as _sys
+
+from . import log as _log_module
+
+_sys.modules.setdefault(f"{__name__}.logging", _log_module)
+logging = _log_module

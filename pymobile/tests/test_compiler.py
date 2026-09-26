@@ -37,7 +37,7 @@ class TestManifest:
     def test_sdk_levels(self, project: ProjectConfig) -> None:
         sdk = ET.fromstring(build_manifest(project)).find("uses-sdk")
         assert sdk is not None
-        assert sdk.get(f"{ANDROID}minSdkVersion") == "21"
+        assert sdk.get(f"{ANDROID}minSdkVersion") == "24"
         assert sdk.get(f"{ANDROID}targetSdkVersion") == "35"
 
     def test_permissions_deduplicated(self, tmp_path: Path) -> None:

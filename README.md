@@ -11,11 +11,16 @@ Write a declarative UI, run one command, install the APK on your phone.
 [![Status](https://img.shields.io/badge/status-alpha-orange.svg)](https://github.com/Maksum867/py-mobile/issues)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](https://github.com/Maksum867/py-mobile/blob/main/LICENSE)
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/Maksum867/py-mobile/main/docs/demo.gif"
+       alt="PyMobile demo: from pip install to a native Android app" width="800">
+</p>
+
 </div>
 
 > ### ⚠️ Alpha software — known bugs, actively being fixed
 >
-> PyMobile is at **0.7.x** and is still in alpha. It builds and signs real,
+> PyMobile is at **0.8.x** and is still in alpha. It builds and signs real,
 > installable APKs today, but the API can change between minor releases and
 > there are known bugs. I am actively working on them: fixes ship in
 > every release — see the
@@ -25,7 +30,7 @@ Write a declarative UI, run one command, install the APK on your phone.
 > open.
 >
 > Good fit for personal apps, internal tools, prototypes and learning. If you
-> depend on it, pin an exact version (`pymobile-framework==0.7.2`) and read the
+> depend on it, pin an exact version (`pymobile-framework==0.8.0`) and read the
 > changelog before upgrading. Bug reports are genuinely welcome.
 
 ---
@@ -80,6 +85,7 @@ device. No Java, no Gradle, no Android Studio.
 - [Styling](#styling)
 - [Screens and navigation](#screens-and-navigation)
 - [Updating the screen](#updating-the-screen)
+- [Threads and the UI](#threads-and-the-ui)
 - [Themes](#themes)
 - [Storage](#storage)
 - [Background jobs](#background-jobs)
@@ -91,6 +97,7 @@ device. No Java, no Gradle, no Android Studio.
 - [Vibration](#vibration)
 - [Permissions](#permissions)
 - [HTTP requests](#http-requests)
+- [Languages](#languages)
 - [Events](#events)
 - [Timers](#timers)
 - [Configuration reference](#configuration-reference)
@@ -127,8 +134,8 @@ Verified on a physical device running Android 14.
 
 ## Installation
 
-**Requirements:** Python 3.10+, about 1 GB of free disk space, an Android 5.0+
-device.
+**Requirements:** Python 3.10+, about 1 GB of free disk space, an Android 7.0+
+(API 24) device.
 
 ```bash
 pip install pymobile-framework
@@ -315,7 +322,14 @@ group = RadioGroup(
     RadioButton("Option B"),
     on_select=lambda value: print(f"Selected: {value}"),
 )
+group.value              # "Option A" / None — the selected button's text
+group.selected_index     # 0 / None — position, works with duplicate labels
+group.select("Option B") # by text (the first button with that text)
+group.select_index(1)    # by position
 ```
+
+Buttons are tracked by position, so two options may share a label
+(`"Other"`, `"Other"`) and a label may be changed at run time.
 
 ### SegmentedButtons
 
@@ -439,7 +453,8 @@ Paths are relative to your project directory.
 
 ### List / ListTile
 
-Virtualised list — renders only visible rows, so 10 000 items scroll smoothly.
+A list that builds its rows lazily, a page at a time, so 10 000 items cost only
+what the user actually scrolls through.
 
 ```python
 List(
@@ -453,9 +468,67 @@ List(
 )
 ```
 
+The first `visible_count` rows (default 20) are built up front. When the last
+built row scrolls into view, the next page is appended in place — the scroll
+position is kept. The Tk and browser previews show a *Load more (N of M)*
+button instead. Rows stay built once loaded: this is incremental loading, not
+view recycling, so keep rows light.
+
+```python
+items = List(item_count=10000, builder=row, visible_count=30)
+items.loaded        # 30 rows built so far
+items.has_more      # True
+items.load_more()   # append the next page yourself (returns rows added)
+items.scroll_to(250)            # build rows up to 250 and scroll to it
+items.item_count = 12000; items.refresh()   # data changed
+```
+
+`scroll_to(index, animated=True)` really scrolls: the enclosing `ScrollView`
+brings row `index` to the top, smoothly unless `animated=False`. Calling it
+again with the same index scrolls again (the user may have scrolled away).
+The browser preview scrolls the row into view.
+
 `on_long_press` gives a row a second action — delete, archive, rename —
 without a permanent button on every row. The device vibrates on the hold; the
 Tk and browser previews map it to a right click.
+
+#### Swipe and pull to refresh
+
+```python
+def build(self):
+    return ScrollView(
+        List(
+            len(self.mails),
+            builder=lambda i: ListTile(
+                self.mails[i].subject,
+                on_swipe_left=lambda: self.delete(i),     # red, like a bin
+                on_swipe_right=lambda: self.archive(i),   # green
+            ),
+            on_refresh=self.reload,
+        )
+    )
+
+def reload(self):
+    return self.app.run_job(fetch_mail).then(self.show)   # spins until done
+```
+
+- **Swipe.** Dragging a row sideways tints it (`swipe_left_color` /
+  `swipe_right_color`, red and green by default). Let go past a third of the
+  width — or fling it — and the row slides out and the handler runs; a short
+  drag springs back. Only the directions that have a handler move. In tests,
+  `tile.swipe("left")` does what the gesture does.
+- **Pull to refresh.** Pulling down a list that is scrolled to the top shows
+  a spinner and calls `on_refresh`. If it returns something with `then()` (a
+  `run_job` handle, an `app.http` future), the spinner keeps turning until
+  that finishes, successfully or not; otherwise it stops when the handler
+  returns (a cancelled job never finishes: set `refreshing = False` then).
+  Set `items.refreshing = True/False` to drive the spinner yourself;
+  `items.pull_to_refresh()` simulates the gesture.
+- The Tk and browser previews have no finger: a swipe becomes ⟵ / ⟶ buttons
+  next to the row and the pull a *↻ Pull to refresh* button.
+
+Both gestures are implemented in the renderer itself — no AndroidX, nothing
+extra in the APK.
 
 ### BottomNavigation
 
@@ -493,6 +566,30 @@ fires `on_confirm`/`on_cancel`/`on_acknowledge`, so a handler never runs
 while the dialog still covers the screen. `AlertDialog` is a message plus one
 button; `BottomSheet(title=...)` anchors the same surface to the bottom edge
 with rounded top corners.
+
+### Snackbar
+
+A message at the bottom of the screen with an optional action — the classic
+*"Note deleted · UNDO"*:
+
+```python
+def delete(self, index):
+    note = self.notes.pop(index)
+    self.refresh()
+    self.app.snackbar(
+        "Note deleted",
+        action="Undo",
+        on_action=lambda: self.restore(index, note),
+    )
+```
+
+It hides itself after 4 s (7 s when it has an action; `duration_ms=0` keeps it
+until tapped or `dismiss()`ed), can be swiped away, and a new snackbar
+replaces the one on screen. It stays up across `push`/`pop`. `app.snackbar()`
+returns the `Snackbar`; `app.current_snackbar` is the one on screen (or
+`None`), so tests can check it and call `.press()` / `.dismiss()`. Unlike
+`toast()` it is drawn by the framework, so the previews and the PNG mockup
+show it too.
 
 ### DatePicker / TimePicker
 
@@ -622,6 +719,12 @@ Style(
 )
 ```
 
+`padding` and `margin` also take shorthands: `padding=16` is
+`EdgeInsets.all(16)` and `padding=(16, 8, 16, 8)` is left, top, right, bottom
+(the `EdgeInsets` order). A pair such as `(8, 16)` raises a `TypeError` —
+CSS and `EdgeInsets.symmetric` read it in opposite orders, so write
+`EdgeInsets.symmetric(horizontal=16, vertical=8)` instead.
+
 ### Spacing between specific neighbours
 
 `spacing` on a container applies the same gap everywhere. When one gap must
@@ -726,6 +829,19 @@ Find a widget anywhere in the current screen:
 self.find("counter").set_text("5")     # matches Label(..., id="counter")
 ```
 
+Pass the class to get a typed result — editors and mypy then know it is a
+`TextInput`, and a wrong guess fails right there instead of three calls later:
+
+```python
+name = self.find("name", TextInput)    # TextInput | None
+name = self.get("name", TextInput)     # TextInput, or WidgetNotFoundError
+labels = self.root.find_all(Label)     # list[Label]
+```
+
+`find()` returns `None` for a missing id; `get()` raises
+`WidgetNotFoundError` (a `LookupError`) with a *did you mean* hint. Both raise
+`WidgetTypeError` (a `TypeError`) when the widget is of another class.
+
 ---
 
 ## Updating the screen
@@ -746,16 +862,19 @@ class Home(Screen):
 ```
 
 `self.counter.text = ...` and `self.counter.set_text(...)` do the same thing.
-Every stateful property works this way: `text`, `value`, `checked`, `visible`
-and `enabled`. Those five are properties; anything else on a widget (notably
-`style`) is a plain attribute and does **not** schedule a redraw by itself.
-To restyle a live widget, assign the new style and say so:
+Every public attribute works this way — `text`, `value`, `checked`, `visible`,
+`enabled`, and also `style`, `placeholder`, `Badge.color`, `Avatar.image`,
+`ProgressText.label` and the rest: assigning a *different* value schedules a
+redraw.
 
 ```python
-label.style = Style(color=Color.ERROR, bold=True)
-label.invalidate()          # one widget changed
-# self.refresh()           # when the tree itself changed instead
+label.style = Style(color=Color.ERROR, bold=True)   # redraws by itself
 ```
+
+Mutating an object in place is invisible, though — `label.style.bold = True`
+changes the `Style`, not the widget. Assign a new object, or call
+`label.invalidate()` after the in-place change. When the tree itself changed
+(rows added or removed), call `self.refresh()`.
 
 Redraws are coalesced, so a handler that updates six widgets still produces a
 single frame. Assigning a value that has not changed renders nothing at all,
@@ -784,6 +903,50 @@ def on_data_loaded(self) -> None:
 
 `App("Demo", auto_render=False)` restores the old manual behaviour; in that
 mode the first missed redraw logs a warning rather than leaving you guessing.
+
+---
+
+## Threads and the UI
+
+Widgets are not thread-safe; the UI state belongs to one place. Everything the
+framework calls *for you* runs there:
+
+| Callback | Runs on |
+| --- | --- |
+| button / input handlers, `on_mount`, `on_show`, … | the UI side |
+| `app.set_interval` / `app.set_timeout` | the UI side (one frame per tick) |
+| `app.run_job(...).then(...)` | the UI side |
+| `app.http.get_async(...).then(...)` | the UI side |
+| `app.dispatch(fn, *args)` | the UI side |
+| the function passed to `run_job` / `repeat_job` | a worker thread |
+| `set_interval(..., background=True)` | the timer thread |
+| a standalone `HttpClient().get_async(...).then(...)` | the request thread |
+
+"The UI side" is the event-loop thread on a device and the Tk thread in
+`run --gui`; in tests and the browser preview it is whichever thread calls, but
+under the lock that event handlers and rendering hold, so the calls never
+interleave. So a job callback can simply update a widget:
+
+```python
+app.run_job(load_cards).then(lambda cards: self.show(cards))   # safe
+```
+
+From code that runs on your own thread — a `threading.Thread`, a `run_job`
+body, a `background=True` timer, a plain `HttpClient` — hand the update over:
+
+```python
+def worker() -> None:
+    data = slow_query()
+    app.dispatch(self.show, data)    # show(data) runs on the UI side, one frame
+```
+
+`dispatch` returns `False` once the app has stopped. Keep UI-side callbacks
+short: a timer that blocks for a second freezes the screen for a second —
+put blocking work in `run_job` or a `background=True` timer.
+
+`app.toast("Saved")` / `app.toast("Sync failed", long=True)` shows a short
+platform message (on the desktop it is printed / shown in the preview). For a
+message with an *Undo* button use [`app.snackbar()`](#snackbar).
 
 ---
 
@@ -827,9 +990,12 @@ app.storage.clear()                  # wipe everything
 ```
 
 Data persists across app restarts. On Android it uses the app's private files
-directory; on desktop `~/.pymobile/<your.package.id>.json`, so two projects
-open side by side never overwrite each other's data. Override the directory
-for every app with `PYMOBILE_STORAGE_DIR`.
+directory; on desktop `~/.pymobile/<package>.json` with the dots replaced by
+dashes (`com.example.notes` → `com-example-notes.json`), so two projects open
+side by side never overwrite each other's data. A file named with the dots
+(`com.example.notes.json`, e.g. restored by hand) is adopted automatically the
+first time the dashed one is missing. Override the directory for every app
+with `PYMOBILE_STORAGE_DIR`.
 
 ```python
 App("My App", storage_path="/custom/dir")         # a directory
@@ -873,6 +1039,12 @@ handle.cancel()            # stop when done
 
 `JobHandle` exposes `.done`, `.cancelled`, `.result`, `.error`.
 
+`then()` callbacks run on the UI side (see
+[Threads and the UI](#threads-and-the-ui)). If `on_success` raises, the
+error is logged with its traceback and passed to `on_error`; the job's own
+`result` is kept. `cancel()` suppresses the callbacks; Python cannot interrupt a
+function that is already running, so `done` turns true only when it returns.
+
 ---
 
 ## HTTP cache and offline mode
@@ -880,8 +1052,6 @@ handle.cancel()            # stop when done
 Disk-backed cache for GET requests.
 
 ```python
-from pymobile import HttpClient
-
 from pymobile import HttpCache, HttpClient
 
 client = HttpClient(
@@ -936,6 +1106,18 @@ errors = v.validate({"email": "bad", "name": ""})
 
 v.validate_or_raise({"email": "bad"})   # raises ValidationError
 ```
+
+Empty values — `None`, `""`, whitespace only, an empty list — follow three
+rules:
+
+* `required` reports `"is required"` (whitespace does not count as a value);
+* `optional` lets the field stay empty; its other rules run only when it is
+  filled — except `matches`, which still fails while the other field is
+  filled, so a password with an empty confirmation is rejected;
+* a field with neither is validated as is: `["email"]` rejects `""`.
+
+`integer` accepts plain digits with an optional sign (not `"4_2"`), and
+`number` rejects `"nan"` and `"inf"`.
 
 Validators come in two forms:
 
@@ -1151,6 +1333,27 @@ Retries cover connection failures and 408/425/429/5xx.
 HTTPS works out of the box: a bundle of root certificates is packaged into the
 APK, because Android provides no certificate file where OpenSSL looks for one.
 
+For production, restrict where the client may go:
+
+```python
+from pymobile import HttpClient, HttpSecurityPolicy
+
+client = HttpClient(
+    base_url="https://api.example.com",
+    security=HttpSecurityPolicy(
+        require_https=True,                        # plain http:// is refused
+        allowed_hosts={"api.example.com", "cdn.example.com"},
+    ),
+)
+```
+
+A blocked URL raises `NetworkError` before anything is sent. The policy is
+checked again on every redirect, so a server cannot bounce a request to
+another host or downgrade it to HTTP, and `Authorization`/`Cookie` headers are
+dropped when a redirect leaves the original origin. Host names are compared
+case-insensitively. The default policy allows everything, for local
+development.
+
 Remember to list `android.permission.INTERNET` in your config.
 
 ---
@@ -1187,8 +1390,14 @@ t("items", count=3)     # 3 елементи
 t("items", count=5)     # 5 елементів
 ```
 
-Plural forms cover `zero`, `one`, `few`, `many` and `other`, so Slavic rules
-work, not only the English one. Lookup falls back from `pt-br` to `pt` and
+The plural form is chosen by the CLDR rule of the catalogue's *language* —
+Ukrainian and Russian (`one`/`few`/`many`), Polish (21 → `many`: *21 plików*),
+Czech, Slovak, the Baltic and South Slavic languages, Romanian, Slovenian,
+Arabic, Hebrew, Irish, Welsh, French/Portuguese (0 and 1 → `one`), languages
+without plurals (Chinese, Japanese, Korean, …), and the English rule for the
+rest. A form missing from the catalogue falls back to `other`, then `many`.
+An explicit `zero` form is used for 0 in any language.
+`plural_category(21, "pl")` returns the category directly. Lookup falls back from `pt-br` to `pt` and
 then to the default language, and a missing key renders as the key itself
 (logged once) rather than raising in the middle of a screen.
 
@@ -1202,6 +1411,46 @@ a desktop. Force one during development with `PYMOBILE_LANGUAGE=uk`.
 Already using xgettext? `translations.install_gettext("app", "locale")` reads
 your compiled `.mo` catalogues instead.
 
+### Numbers, dates and money
+
+Formatting follows the language too — no Babel, no ICU, nothing to install:
+
+```python
+from pymobile import format_number, format_percent, format_currency, format_date
+
+format_number(1234567.891, 2)            # uk: 1 234 567,89   en: 1,234,567.89
+format_percent(0.256)                    # uk: 26%            de: 26 %
+format_currency(1250, "UAH")             # uk: 1 250,00 ₴     en: ₴1,250.00
+format_currency(9.5, "USD", language="en")   # $9.50
+format_date(date(2026, 10, 1), "long")   # uk: 1 жовтня 2026 р.  en: October 1, 2026
+format_date(day, pattern="d MMMM")       # uk: 1 жовтня (the genitive month)
+format_time(time(14, 5))                 # uk: 14:05          en: 2:05 PM
+```
+
+The language is the active catalogue's (`translations.use(...)`) unless you
+pass `language=`. Built in: English (US, GB, AU, CA, IE), Ukrainian, Russian,
+Polish, Czech, German (DE, AT, CH), French (FR, CA, CH), Spanish (ES, MX, US),
+Italian, Portuguese (BR, PT), Dutch, Romanian and Turkish; other languages use
+English formats. Numbers are rounded half-to-even from their decimal value,
+so `0.1 + 0.2` prints as `0.3`.
+
+Inside a catalogue the same formats are placeholder specifiers, so the
+translator decides the wording and the code passes raw values:
+
+```json
+{ "total": "Разом: {sum:currency:UAH}, до {day:date:long}" }
+```
+
+```python
+t("total", sum=1250, day=date(2026, 10, 1))   # Разом: 1 250,00 ₴, до 1 жовтня 2026 р.
+```
+
+Specifiers: `number`, `number:2`, `percent`, `percent:1`, `currency:EUR`,
+`date`, `date:long` (`short`/`medium`/`long`/`full`), `time`, `time:medium`,
+`datetime`. Anything else is Python's own format spec (`{x:.2f}`). A value
+that does not fit its specifier is logged and the text is shown unformatted
+rather than crashing the screen.
+
 ---
 
 ## Events
@@ -1213,6 +1462,7 @@ A synchronous event bus decouples UI from application logic.
 app.on("app:start",     lambda e: ...)
 app.on("app:stop",      lambda e: ...)
 app.on("app:render",    lambda e: ...)
+app.on("app:locale",    lambda e: ...)   # system language changed; e.source = "uk-UA"
 app.on("screen:change", lambda e: print(e.source))
 
 # your own events
@@ -1220,16 +1470,21 @@ app.events.emit("cart:updated", source="CartScreen", count=3)
 app.on("cart:updated", lambda e: print(e.get("count")))
 
 subscription = app.on("x", handler)
-subscription.cancel()          # always unsubscribe in on_unmount()
+subscription.cancel()          # removes THIS subscription only
 
 # remove handlers
 app.off("cart:updated")                 # removes all, returns count
-app.off("cart:updated", handler)        # removes specific, returns 0/1
-app.events.off_all("cart:updated")      # same, via EventBus
+app.off("cart:updated", handler)        # every registration of handler
+app.off("cart:updated", self.on_cart)   # bound methods work too
+app.events.off_all("cart:updated")      # same as off(name), via EventBus
 ```
 
-`app.on("event", None)` now raises `TypeError` immediately instead of failing
-silently later. `app.off(event)` without handler removes all subscribers.
+`app.on("event", None)` raises `TypeError` immediately instead of failing
+silently later. Handlers are compared with `==`, so `off()` recognises a bound
+method even though `self.on_cart` is a new object each time. If the same
+function is subscribed twice (two screens), each `Subscription.cancel()` removes
+only its own registration. Inside a screen, `self.on(...)` is cancelled for you
+when the screen unmounts.
 
 An exception inside one handler is logged and never prevents the others from
 running.
@@ -1238,9 +1493,11 @@ running.
 
 ## Timers
 
-Schedule work without importing `threading`. Callbacks fire on a background
-thread on every platform, so the UI never blocks, and the same code runs on
-desktop and device.
+Schedule work without importing `threading`. Callbacks run on the UI side,
+like a button handler, so a tick can update widgets directly and draws one
+frame; the same code runs on desktop and device. For blocking work — a network
+poll — pass `background=True` and hand results over with `app.dispatch()`
+(see [Threads and the UI](#threads-and-the-ui)).
 
 ```python
 # every second — drive a clock, poll a sensor, tick a game
@@ -1300,7 +1557,7 @@ entrypoint = "main.py"
 source_dir = "."
 
 # --- Android platform ---
-min_sdk = 21                    # Android 5.0
+min_sdk = 24                    # Android 7.0 — the lowest CPython 3.14 runs on
 target_sdk = 35                 # Android 15
 orientation = "portrait"        # portrait | landscape | sensor | user
 
@@ -1313,6 +1570,7 @@ permissions = [
 
 # --- resources ---
 icon = "assets/icon.png"        # optional; default icon used otherwise
+allow_backup = false            # keep the private store out of cloud/adb backups
 
 # --- build ---
 abis = ["arm64-v8a"]
@@ -1330,14 +1588,15 @@ exclude = ["tests/**", "**/__pycache__/**"]
 | `version_code` | `1` | internal build number |
 | `entrypoint` | `main.py` | module to execute |
 | `source_dir` | `.` | root of your sources |
-| `min_sdk` | `21` | oldest supported Android |
+| `min_sdk` | `24` | oldest supported Android; lower values are raised to 24 with a warning |
 | `target_sdk` | `35` | Android version you target |
 | `orientation` | `portrait` | screen orientation |
 | `permissions` | `["…INTERNET"]` | manifest permissions |
 | `icon` | *(none)* | path to a square PNG |
+| `allow_backup` | `false` | let Android back up the app's private data |
 | `abis` | `["arm64-v8a"]` | architectures |
 | `output_dir` | `build` | where the APK is written |
-| `optimize` | `false` in `ProjectConfig`; `true` in the `init` template | package `.pyc` when enabled |
+| `optimize` | `false` in `ProjectConfig`; `true` in the `init` template | package `.pyc` when enabled; for `--native` only when the build runs on Python 3.14 (the device's version), otherwise sources are shipped with a warning |
 | `strip_debug` | `true` | compile with `-OO` |
 | `exclude` | see above | glob patterns to skip |
 
@@ -1365,6 +1624,7 @@ pymobile build --native --output dist      # different directory
 pymobile build --native --no-optimize      # ship .py for debugging
 pymobile build --native --minimal-stdlib   # drop desktop-only stdlib
 pymobile build --native --no-ssl           # drop OpenSSL (no HTTPS)
+pymobile build --native --abi x86_64       # for the emulator
 ```
 
 > Without `--native` you get a lightweight structural package used for quick
@@ -1397,6 +1657,48 @@ the clock; the signature block itself (`META-INF/*.RSA`) is produced by
 `apksigner` and is the one part that may differ between two runs. The file is
 written to a temporary path and moved into place, so an interrupted build never
 leaves a corrupt artifact.
+
+### Running on the emulator (x86_64)
+
+The Android Studio emulator runs x86_64 system images, and an arm64 APK
+does not start there. Build an x86_64 one — the prebuilt bridge ships for
+both architectures, so still no NDK:
+
+```bash
+pymobile build --native --abi x86_64       # → build/my-app-1.0.0-x86_64.apk
+adb install -r build/my-app-1.0.0-x86_64.apk
+```
+
+`--abi` overrides `abis` from `pymobile.toml` for one build. The emulator APK
+gets an `-x86_64` suffix so it never overwrites the phone build. Create the
+virtual device in Android Studio (*Device Manager → Create device*, an
+**x86_64** image with API 24 or newer), start it, then `adb install` as with a
+phone; `adb logcat -s pymobile python` shows your app's output.
+
+### Signing
+
+Android installs an update only if it is signed with the same key as the
+installed app.
+
+**Debug builds** are signed with a per-app key created on the first build in
+`~/.pymobile/keystores/<package>-debug.jks` — outside `build/`, so
+`pymobile clean` and `build --clean` keep the signature. Set
+`PYMOBILE_KEYSTORE_DIR` to share the key between machines or CI runs (store it
+as a CI secret). A key left in `build/` by pymobile ≤ 0.7.3 is adopted
+automatically.
+
+**Release builds** use your own keystore. Pass the passwords through the
+environment, not the command line (arguments end up in shell history and
+`ps`):
+
+```bash
+export PYMOBILE_KS_PASS='…'          # keystore password
+export PYMOBILE_KEY_PASS='…'         # key password (defaults to the keystore's)
+pymobile build --native --keystore release.jks --key-alias upload
+```
+
+`--ks-pass` / `--key-pass` still work but print a warning. Keep the keystore
+and its passwords backed up: without them you cannot publish updates.
 
 ### Size
 
@@ -1485,7 +1787,7 @@ close the window.
 from pymobile import get_diagnostics
 
 info = get_diagnostics()
-# {"framework_version": "0.7.1", "platform": "android",
+# {"framework_version": "0.8.0", "platform": "android",
 #  "python": "3.14.0", "log_level": "debug", "handlers": [...]}
 ```
 
@@ -1605,10 +1907,33 @@ bridge and draws the resulting widget tree:
 ```bash
 pymobile preview            # text picture in the terminal
 pymobile preview --ids      # annotate each widget with its id
-pymobile preview --png ui.png   # save a raster image (needs Pillow)
+pymobile preview --png ui.png   # a mockup of the screen as the phone draws it (needs Pillow)
+pymobile preview --png ui.png --size 360x640 --theme dark
+pymobile preview --png ui.png --text    # the text picture as an image (the pre-0.8 output)
 ```
 
-The PNG uses the first Unicode TrueType face it finds on the system, so
+`--png` draws a **mockup**: the tree is laid out with the rules of the
+Android renderer (columns stretch their children, rows wrap them,
+`Expanded` shares the free space, `Stack` overlays, `Grid` has equal columns)
+and painted with Material-style widgets in your theme's colours — raised grey
+buttons, underlined text fields, switches, list rows, dialogs over a dimmed
+screen and the snackbar — under a status bar and an action bar with the app
+name. Sizes are in dp, so spacing and proportions match the device.
+
+It is an approximation, not a screenshot: the phone uses Roboto while the
+mockup uses the sans-serif face your machine has, and system colours (the
+action bar, the tint of switches) vary between Android versions and vendors —
+the mockup uses your `PRIMARY` colour for them. By default the picture is 360
+dp wide and as tall as the content, so a long scrolling screen is shown whole;
+`--size 360x640` shows exactly the first screenful. From Python:
+
+```python
+from pymobile.core.ui.preview import render_mockup
+render_mockup(bridge.last_tree, "home.png", theme="dark", height=640)
+image = render_mockup(screen.root)       # without a path: a PIL.Image
+```
+
+The text PNG (`--text`) uses the first Unicode TrueType face it finds on the system, so
 Cyrillic, Greek and accented text render as text rather than boxes. Point
 `PYMOBILE_PREVIEW_FONT` at a `.ttf` to choose your own. The canvas is measured
 with the real glyph advances of that face, so long lines are never clipped.
@@ -1681,7 +2006,7 @@ inspector tells you exactly which widget a node is.
 
 ```bash
 pymobile watch                  # text picture on every save
-pymobile watch --png ui.png     # write an image instead
+pymobile watch --png ui.png     # write a mockup instead (--text for the text picture)
 pymobile watch --interval 0.1   # poll faster
 ```
 
@@ -1705,10 +2030,10 @@ end the session.
 | --- | --- |
 | `pymobile init [dir]` | create a project (`-n` name, `-p` package, `-f` force) |
 | `pymobile setup-sdk` | install the Android toolchain (`--with-ndk`, `--path`) |
-| `pymobile build --native` | build a signed, installable APK (`--minimal-stdlib`, `--no-ssl`) |
+| `pymobile build --native` | build a signed, installable APK (`--minimal-stdlib`, `--no-ssl`, `--abi x86_64`) |
 | `pymobile run` | run the app on your machine (`--gui` window, `--web` browser) |
-| `pymobile watch` | re-render on every save (`--png`, `--ids`, `--interval`) |
-| `pymobile preview` | draw the first screen as a picture (`--png`, `--ids`) |
+| `pymobile watch` | re-render on every save (`--png`, `--text`, `--ids`, `--interval`) |
+| `pymobile preview` | draw the first screen as a picture (`--png`, `--size`, `--theme`, `--text`, `--ids`) |
 | `pymobile info` | show the resolved configuration (`--json`) |
 | `pymobile doctor` | check environment and project health |
 | `pymobile clean` | remove build artifacts |
@@ -1754,12 +2079,15 @@ class Slider(Widget):
 
 ## Limitations
 
-- **arm64-v8a is the packaged prebuilt ABI.** `x86_64` is accepted in config
-  and reuses the arm64 launcher dex; a native `.so` for emulators still needs
-  `PYMOBILE_BUILD_JNI=1` and the NDK. There is no iOS backend.
+- **Two ABIs: arm64-v8a (phones) and x86_64 (the emulator)**, one per APK —
+  `pymobile build --native --abi x86_64`. 32-bit devices are not supported,
+  and there is no iOS backend.
 - **APK size is about 16.6 MB** (11.7 MB with `--minimal-stdlib --no-ssl`),
   dominated by the interpreter and standard library.
-- **Android 5.0 (API 21) minimum.**
+- **Android 7.0 (API 24) minimum.** The python.org build of CPython 3.14
+  requires it (earlier pymobile releases declared API 21, but the app could
+  not start there). A `min_sdk = 21` left in an older `pymobile.toml` still
+  builds: the APK declares 24 and the build prints a warning.
 - The renderer covers the components documented here; more are being added.
 
 ---
@@ -1773,19 +2101,18 @@ ones most likely to bite a new user.
 
 | Symptom | Workaround | Tracked under |
 | --- | --- | --- |
-| A second `App` in the same process (a test, a preview restart) silently skips plugin `activate()` calls | Call `plugins.activate_all(app)` after constructing the second `App` | [#PLG-12] |
 | `Avatar("foo")` accepts a string with no path separators as initials and a string that looks like a path as an image source — there is no way to force a plain string with a forward slash to be initials | Pass `Avatar("name", image=path)` for an image, `Avatar("name")` for initials; avoid ambiguous inputs like `"foo/bar"` | [#AVT-04] |
 | `App.current()` is a process-global; accessing it from a worker thread can race with `app.stop()` | Read `app.current()` from the UI thread (any widget callback), not from a `run_job` callback | [#APP-09] |
 | `Container.add` raises `PyMobileError` (not `ValueError`) when a widget already has a parent | Catch `PyMobileError`; if you previously caught `ValueError`, add the new base class | [#CNT-02] |
-| `find()` returns `Widget`, not the concrete type, so editors cannot narrow without a cast | Assign the result of `build()` to a `self.x = …` attribute and use that attribute directly | [#FND-07] |
 | `pymobile watch` ignores saves on some tmpfs and overlayfs mounts (coarse mtime granularity) | Use `pymobile watch --interval 0.1` to poll more aggressively, or run from a real filesystem | [#WAT-03] |
-| i18n has no format-string plural rules for dates and currency (only for cardinal counts) | Pre-format dates and currency in your application code before passing to `t()` | [#I18-08] |
 | `Grid` exists but there is no `Wrap` (flow layout) | Lay out a `Row` or `Column` manually, or build a `Wrap` from `ScrollView` and `Row` | [#LAY-05] |
 
 Report a new issue with a reproducer (`main.py` + `pymobile.toml`) and the
 device or platform. Bug reports with a regression test land faster.
 
 ---
+
+## FAQ
 
 **Why doesn't my UI update?**
 It should: assigning to a widget property redraws the screen by itself. If the
@@ -1825,8 +2152,11 @@ The same screen object cannot be pushed twice. Create a new instance.
 To logcat: `adb logcat -s pymobile.stdout`.
 
 **How do I make the APK smaller?**
-Keep `optimize = true` and `strip_debug = true`, trim files with `exclude`, and
-list a single ABI.
+Build with `--minimal-stdlib --no-ssl` if the app allows it, trim files with
+`exclude`, and list a single ABI. `optimize = true` (bytecode instead of
+sources) also helps, but only takes effect when the build runs on Python 3.14 —
+the device's version; elsewhere it is skipped with a warning, which is why new
+projects start with `optimize = false`.
 
 **Can I keep the config in `pyproject.toml`?**
 Yes, under `[tool.pymobile]`. If both files exist, `pymobile.toml` wins.

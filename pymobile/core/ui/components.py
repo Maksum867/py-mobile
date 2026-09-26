@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
 
-from ...logging import get_logger
+from ...log import get_logger
 from .style import Color
 from .widget import Container, Widget, callback_name, in_build_scope
 
@@ -48,6 +48,20 @@ __all__ = [
 ]
 
 _WINDOWS_DRIVE_PATH = re.compile(r"^[A-Za-z]:[\\/]")
+
+
+def _alias(kwargs: dict[str, Any], alias: str, name: str, value: Any, default: Any) -> Any:
+    """Resolve a shorthand keyword (``max=`` for ``maximum=``).
+
+    ``value`` is ``None`` when the full name was not passed. Comparing with the
+    default instead (``if maximum != 100``) let ``Slider(minimum=0, min=10)``
+    through silently, because the explicit ``0`` looked like "not passed".
+    """
+    if alias in kwargs:
+        if value is not None:
+            raise ValueError(f"pass either {name} or {alias}, not both")
+        return kwargs.pop(alias)
+    return default if value is None else value
 
 class Label(Widget):
     """Non-interactive text.
@@ -133,7 +147,9 @@ class TextInput(Widget):
     """Single- or multi-line text field."""
 
     type_name = "TextInput"
-    __slots__ = ("_value", "placeholder", "multiline", "password", "max_length", "on_change")
+    __slots__ = (
+        "_value", "placeholder", "multiline", "password", "max_length", "on_change", "_revision"
+    )
 
     def __init__(
         self,
@@ -154,12 +170,17 @@ class TextInput(Widget):
         super().__init__(**kwargs)
         if max_length is not None and max_length <= 0:
             raise ValueError("max_length must be positive")
-        self._value = value
+        # The limit applies to the initial value too (README: "extra
+        # characters are trimmed automatically"); it used to be kept whole.
+        self._value = value if max_length is None else value[:max_length]
         self.placeholder = placeholder
         self.multiline = multiline
         self.password = password
         self.max_length = max_length
         self.on_change = on_change
+        # Bumped whenever the value is changed by code rather than by typing,
+        # so the device renderer knows to apply it even to a focused field.
+        self._revision = 0
 
     @property
     def value(self) -> str:
@@ -172,17 +193,31 @@ class TextInput(Widget):
 
     def set_value(self, value: str) -> None:
         """Update the text, truncating to ``max_length`` and notifying listeners."""
+        self._apply(value, from_ui=False)
+
+    def _ui_set_value(self, value: str) -> None:
+        """Apply text typed on the device (an echo, not a programmatic change)."""
+        self._apply(value, from_ui=True)
+
+    def _apply(self, value: str, *, from_ui: bool) -> None:
+        typed = value
         if self.max_length is not None:
             value = value[: self.max_length]
         if value == self._value:
+            if from_ui and value != typed:
+                # Truncated input: the field shows more than the value holds.
+                self._revision += 1
+                self.invalidate()
             return
+        if not from_ui or value != typed:
+            self._revision += 1
         self._value = value
         self.invalidate()
         if self.on_change is not None and not in_build_scope():
             self.on_change(value)
 
     def clear(self) -> None:
-        """Empty the field."""
+        """Empty the field (also while it has focus on the device)."""
         self.set_value("")
 
     def props(self) -> dict[str, Any]:
@@ -194,6 +229,7 @@ class TextInput(Widget):
             "password": self.password,
             "max_length": self.max_length,
             "on_change": callback_name(self.on_change),
+            "revision": self._revision,
         }
 
 
@@ -359,15 +395,12 @@ class ProgressBar(Widget):
         self,
         value: float = 0.0,
         *,
-        maximum: float = 100.0,
+        maximum: float | None = None,
         indeterminate: bool = False,
         **kwargs: Any,
     ) -> None:
-        # Alias: max -> maximum (common shorthand)
-        if "max" in kwargs:
-            if maximum != 100.0:  # user passed both
-                raise ValueError("pass either maximum or max, not both")
-            maximum = kwargs.pop("max")
+        # Alias: max -> maximum (common shorthand); default 100.
+        maximum = _alias(kwargs, "max", "maximum", maximum, 100.0)
         super().__init__(**kwargs)
         if maximum <= 0:
             raise ValueError("maximum must be positive")
@@ -437,21 +470,15 @@ class Slider(Widget):
         self,
         value: float = 0.0,
         *,
-        minimum: float = 0.0,
-        maximum: float = 100.0,
+        minimum: float | None = None,
+        maximum: float | None = None,
         step: float | None = None,
         on_change: Callable[[float], None] | None = None,
         **kwargs: Any,
     ) -> None:
-        # Aliases: min -> minimum, max -> maximum
-        if "min" in kwargs:
-            if minimum != 0.0:
-                raise ValueError("pass either minimum or min, not both")
-            minimum = kwargs.pop("min")
-        if "max" in kwargs:
-            if maximum != 100.0:
-                raise ValueError("pass either maximum or max, not both")
-            maximum = kwargs.pop("max")
+        # Aliases: min -> minimum (default 0), max -> maximum (default 100)
+        minimum = _alias(kwargs, "min", "minimum", minimum, 0.0)
+        maximum = _alias(kwargs, "max", "maximum", maximum, 100.0)
         super().__init__(**kwargs)
         if maximum <= minimum:
             raise ValueError(
@@ -577,14 +604,11 @@ class RatingBar(Widget):
         rating: float | None = None,
         *,
         value: float | None = None,
-        maximum: int = 5,
+        maximum: int | None = None,
         on_change: Callable[[float], None] | None = None,
         **kwargs: Any,
     ) -> None:
-        if "max" in kwargs:
-            if maximum != 5:
-                raise ValueError("pass either maximum or max, not both")
-            maximum = kwargs.pop("max")
+        maximum = _alias(kwargs, "max", "maximum", maximum, 5)
         super().__init__(**kwargs)
         if rating is not None and value is not None:
             raise ValueError("pass either rating or value, not both")
@@ -606,8 +630,12 @@ class RatingBar(Widget):
 
     @property
     def value(self) -> float:
-        """Alias of :attr:`rating` so the app's generic ``change`` event works."""
+        """Alias of :attr:`rating`; assigning to it schedules a redraw."""
         return self._rating
+
+    @value.setter
+    def value(self, value: float) -> None:
+        self.set_value(value)
 
     def set_value(self, value: float) -> None:
         """Clamp ``value`` to ``0..maximum`` and notify listeners."""
@@ -814,20 +842,14 @@ class Stepper(Widget):
         self,
         value: int = 0,
         *,
-        minimum: int = 0,
-        maximum: int = 100,
+        minimum: int | None = None,
+        maximum: int | None = None,
         step: int = 1,
         on_change: Callable[[int], None] | None = None,
         **kwargs: Any,
     ) -> None:
-        if "min" in kwargs:
-            if minimum != 0:
-                raise ValueError("pass either minimum or min, not both")
-            minimum = kwargs.pop("min")
-        if "max" in kwargs:
-            if maximum != 100:
-                raise ValueError("pass either maximum or max, not both")
-            maximum = kwargs.pop("max")
+        minimum = _alias(kwargs, "min", "minimum", minimum, 0)
+        maximum = _alias(kwargs, "max", "maximum", maximum, 100)
         super().__init__(**kwargs)
         if maximum < minimum:
             raise ValueError("maximum must be >= minimum")
@@ -886,7 +908,7 @@ class SearchBar(Widget):
     """
 
     type_name = "SearchBar"
-    __slots__ = ("_value", "placeholder", "on_change", "on_search")
+    __slots__ = ("_value", "placeholder", "on_change", "on_search", "_revision")
 
     def __init__(
         self,
@@ -902,6 +924,7 @@ class SearchBar(Widget):
         self.placeholder = placeholder
         self.on_change = on_change
         self.on_search = on_search
+        self._revision = 0  # see TextInput._revision
 
     @property
     def value(self) -> str:
@@ -913,7 +936,16 @@ class SearchBar(Widget):
         self.set_value(value)
 
     def set_value(self, value: str) -> None:
+        self._apply(value, from_ui=False)
+
+    def _ui_set_value(self, value: str) -> None:
+        """Apply text typed on the device (an echo, not a programmatic change)."""
+        self._apply(value, from_ui=True)
+
+    def _apply(self, value: str, *, from_ui: bool) -> None:
         if value != self._value:
+            if not from_ui:
+                self._revision += 1
             self._value = value
             self.invalidate()
             if self.on_change is not None and not in_build_scope():
@@ -933,6 +965,7 @@ class SearchBar(Widget):
             **super().props(),
             "value": self._value,
             "placeholder": self.placeholder,
+            "revision": self._revision,
             "on_change": callback_name(self.on_change),
             "on_search": callback_name(self.on_search),
         }
@@ -993,7 +1026,7 @@ class RadioButton(Widget):
             return
         parent = self.parent
         if isinstance(parent, RadioGroup):
-            parent.select(self.text)
+            parent._choose(self)
         if self.on_press is not None:
             self.on_press()
 
@@ -1010,11 +1043,16 @@ class RadioGroup(Container):
     """A group of :class:`RadioButton`\\ s where at most one is selected.
 
     Selecting a radio in the group unselects the others. ``value`` is the text
-    of the selected radio (or ``None``). ``on_select`` fires on a change.
+    of the selected radio (or ``None``) and ``selected_index`` its position.
+    ``on_select`` fires on a change.
+
+    The selection belongs to a radio, not to a label: two options may share
+    the same text (e.g. "Other" in two sections) — the group used to key its
+    radios by text, so the second one replaced the first.
     """
 
     type_name = "RadioGroup"
-    __slots__ = ("_value", "on_select", "_radios")
+    __slots__ = ("_selected", "on_select")
 
     def __init__(
         self,
@@ -1023,55 +1061,71 @@ class RadioGroup(Container):
         on_select: Callable[[str], None] | None = None,
         **kwargs: Any,
     ) -> None:
-        # _radios must exist before add() runs (Container.extend calls add()).
-        self._radios: dict[str, RadioButton] = {}
+        self._selected: RadioButton | None = None
         super().__init__(*children, **kwargs)
         self.on_select = on_select
-        self._value: str | None = None
         # Set the initial selection WITHOUT firing on_select — a constructor
         # should observe user edits, not report setup.
         if value is not None:
-            self._select_silent(value)
-        elif children:
-            for radio in children:
+            self._select_silent(self._radio_for(value))
+        else:
+            for radio in self._radios:
                 if radio.selected:
-                    self._select_silent(radio.text)
+                    self._select_silent(radio)
                     break
 
-    def _select_silent(self, text: str) -> None:
-        """Set the selected radio and update visuals without calling on_select."""
-        if text not in self._radios:
-            raise ValueError(
-                f"{text!r} is not a radio in this group; "
-                f"available: {list(self._radios.keys())!r}"
-            )
-        self._value = text
-        for label, radio in self._radios.items():
-            radio.set_selected(label == text)
+    @property
+    def _radios(self) -> list[RadioButton]:
+        return [child for child in self.children if isinstance(child, RadioButton)]
 
-    def _register(self, radio: RadioButton) -> None:
-        if not isinstance(radio, RadioButton):
-            raise ValueError("RadioGroup children must be RadioButton instances")
-        self._radios[radio.text] = radio
+    def _radio_for(self, text: str) -> RadioButton:
+        for radio in self._radios:
+            if radio.text == text:
+                return radio
+        raise ValueError(
+            f"{text!r} is not a radio in this group; "
+            f"available: {[radio.text for radio in self._radios]!r}"
+        )
+
+    def _select_silent(self, chosen: RadioButton) -> None:
+        """Set the selected radio and update visuals without calling on_select."""
+        self._selected = chosen
+        for radio in self._radios:
+            radio.set_selected(radio is chosen)
+
+    def _choose(self, chosen: RadioButton) -> None:
+        if chosen is self._selected:
+            return
+        self._select_silent(chosen)
+        self.invalidate()
+        if self.on_select is not None:
+            self.on_select(chosen.text)
 
     @property
     def value(self) -> str | None:
         """The currently selected radio's text, or ``None``."""
-        return self._value
+        return self._selected.text if self._selected is not None else None
+
+    @property
+    def selected_index(self) -> int | None:
+        """Position of the selected radio among the group's radios, or ``None``."""
+        if self._selected is None:
+            return None
+        for index, radio in enumerate(self._radios):
+            if radio is self._selected:
+                return index
+        return None
 
     def select(self, text: str) -> None:
-        """Choose the radio labelled ``text``, unselecting the others."""
-        if text not in self._radios:
-            raise ValueError(
-                f"{text!r} is not a radio in this group; "
-                f"available: {list(self._radios.keys())!r}"
-            )
-        if text == self._value:
-            return
-        self._select_silent(text)
-        self.invalidate()
-        if self.on_select is not None:
-            self.on_select(text)
+        """Choose the (first) radio labelled ``text``, unselecting the others."""
+        self._choose(self._radio_for(text))
+
+    def select_index(self, index: int) -> None:
+        """Choose the radio at ``index`` — unambiguous when labels repeat."""
+        radios = self._radios
+        if not 0 <= index < len(radios):
+            raise IndexError(f"radio index {index} out of range (0..{len(radios) - 1})")
+        self._choose(radios[index])
 
     def set_value(self, value: str) -> None:
         """Generic setter used by the app's ``change`` event handler."""
@@ -1080,12 +1134,10 @@ class RadioGroup(Container):
     def add(self, child: Widget) -> Widget:
         if not isinstance(child, RadioButton):
             raise ValueError("RadioGroup children must be RadioButton instances")
-        result = super().add(child)
-        self._register(child)
-        return result
+        return super().add(child)
 
     def props(self) -> dict[str, Any]:
-        return {**super().props(), "value": self._value}
+        return {**super().props(), "value": self.value, "selected_index": self.selected_index}
 
 
 class SegmentedButtons(Widget):
@@ -1175,15 +1227,12 @@ class ProgressText(Widget):
         self,
         value: float = 0.0,
         *,
-        maximum: float = 100.0,
+        maximum: float | None = None,
         format: str | None = None,
         label: str = "",
         **kwargs: Any,
     ) -> None:
-        if "max" in kwargs:
-            if maximum != 100.0:
-                raise ValueError("pass either maximum or max, not both")
-            maximum = kwargs.pop("max")
+        maximum = _alias(kwargs, "max", "maximum", maximum, 100.0)
         super().__init__(**kwargs)
         if maximum <= 0:
             raise ValueError("maximum must be positive")
@@ -1281,9 +1330,16 @@ class Link(Widget):
         if not self.enabled:
             return
         if self.url:
-            from ...bridge import get_bridge
+            # This used to import ``pymobile.bridge``, which does not exist,
+            # so every Link with a url raised ModuleNotFoundError off-device.
+            screen = self.screen
+            app = screen.app if screen is not None else None
+            if app is not None:
+                app.bridge.open_url(self.url)
+            else:
+                from ..bridge import get_bridge
 
-            get_bridge().open_url(self.url)
+                get_bridge().open_url(self.url)
         if self.on_press is not None:
             self.on_press()
 

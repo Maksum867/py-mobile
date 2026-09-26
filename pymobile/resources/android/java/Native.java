@@ -23,8 +23,21 @@ public final class Native {
 
     // -- calls made by the native module ---------------------------------
 
+    /**
+     * Payload Python sends through render() to wake its own event loop.
+     * The prebuilt libpymobile.so has no dedicated "post event" call, so a
+     * background Python thread reaches the C event queue through here.
+     */
+    static final String WAKE = "{\"__wake__\":true}";
+
     /** Render a serialised widget tree (JSON). */
     public static void render(String json) {
+        if (WAKE.equals(json)) {
+            // Runs on the calling (background Python) thread: only queues an
+            // event, the interpreter's loop thread picks it up.
+            dispatchEvent("", "__wake__", "");
+            return;
+        }
         MainActivity activity = MainActivity.current();
         if (activity != null) {
             activity.renderTree(json);
@@ -42,6 +55,17 @@ public final class Native {
     /** Vibrate once. */
     public static void vibrate(long milliseconds, int amplitude) {
         DeviceServices.vibrate(MainActivity.current(), milliseconds, amplitude);
+    }
+
+    /**
+     * Vibrate once at the default strength.
+     *
+     * Kept for the prebuilt libpymobile.so, which was compiled against the
+     * older one-argument signature. Without it the prebuilt bridge logs
+     * "method not found: vibrate(J)V" and the phone stays still.
+     */
+    public static void vibrate(long milliseconds) {
+        vibrate(milliseconds, -1);
     }
 
     /** Play a vibration pattern. */
@@ -62,6 +86,16 @@ public final class Native {
                 + " title=" + title + " id=" + id);
         DeviceServices.notify(activity, title, body, id, ongoing,
                 channelId, channelName, smallIcon);
+    }
+
+    /**
+     * Post a notification on the default channel.
+     *
+     * Kept for the prebuilt libpymobile.so (older four-argument signature);
+     * see {@link #vibrate(long)}.
+     */
+    public static void notify(String title, String body, int id, boolean ongoing) {
+        notify(title, body, id, ongoing, null, null, null);
     }
 
     /** Create a notification channel with the configured identity. */

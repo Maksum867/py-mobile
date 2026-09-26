@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ...logging import get_logger
+from ...log import get_logger
 from .base import Bridge, BridgeCall, NotificationSpec
 
 __all__ = ["StubBridge"]
@@ -101,7 +101,7 @@ class StubBridge(Bridge):
         return result
 
     # -- ui ----------------------------------------------------------------
-    def toast(self, message: str, long: bool) -> None:
+    def toast(self, message: str, long: bool = False) -> None:
         self._record("toast", message=message, long=long)
 
     def render(self, tree: dict[str, Any]) -> None:

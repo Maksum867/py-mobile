@@ -2,8 +2,19 @@
 
 Designed for small mobile apps: settings, user prefs, a high score, a small
 cache. Values are any JSON-serialisable object. Every write persists to disk
-atomically (write-to-temp then rename), so a crash mid-write cannot corrupt the
-store.
+atomically (write-to-temp, fsync, then rename), so a crash mid-write cannot
+corrupt the store.
+
+Values are *copied* on the way in and on the way out: what you get back is
+exactly what a restart would load from disk, and mutating it in place never
+changes the store behind your back — write it back with :meth:`Storage.set`.
+
+A file that cannot be parsed is never silently overwritten: it is moved aside
+to ``<name>.corrupt-<timestamp>`` and a warning is logged before the store
+starts empty.
+
+The store is meant to be owned by one process (the app). Writes from another
+process are detected and logged, not merged.
 
 The file lives in the app's data directory — on Android inside the app's
 private storage, on the desktop in a per-app folder under the user's data dir
@@ -16,13 +27,14 @@ import json
 import os
 import tempfile
 import threading
+import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Any
 
 from ...errors import ResourceError
-from ...logging import get_logger
+from ...log import get_logger
 
 __all__ = ["Storage", "default_storage_path"]
 
@@ -94,9 +106,11 @@ class Storage:
     Individual operations are atomic. A read-modify-write **sequence** written
     by hand is not — use :meth:`update`, :meth:`increment` or the
     :meth:`transaction` context manager when several steps must be one unit.
+    A transaction is all-or-nothing: if the block raises, every change made
+    inside it is rolled back and nothing reaches the disk.
     """
 
-    __slots__ = ("_path", "_data", "_loaded", "_lock")
+    __slots__ = ("_path", "_data", "_loaded", "_lock", "_tx_depth", "_tx_dirty", "_disk_stamp")
 
     def __init__(self, path: str | Path | None = None) -> None:
         self._path = _resolve_store_path(path)
@@ -105,6 +119,12 @@ class Storage:
         # A re-entrant lock makes every single operation atomic, and backs the
         # explicit `transaction()` block for multi-step sequences.
         self._lock = threading.RLock()
+        # Transactions defer the disk write to the end of the outermost block.
+        self._tx_depth = 0
+        self._tx_dirty = False
+        # (mtime_ns, size) of the file as we last read or wrote it — used to
+        # notice another process writing the same store.
+        self._disk_stamp: tuple[int, int] | None = None
 
     # -- lifecycle ---------------------------------------------------------
     @property
@@ -112,87 +132,143 @@ class Storage:
         """Filesystem location of the store."""
         return self._path
 
+    def _stamp(self) -> tuple[int, int] | None:
+        try:
+            st = self._path.stat()
+        except OSError:
+            return None
+        return (st.st_mtime_ns, st.st_size)
+
     def _load(self) -> None:
         with self._lock:
             if self._loaded:
                 return
-            self._loaded = True
             try:
-                data = json.loads(self._path.read_text(encoding="utf-8"))
-                if isinstance(data, dict):
-                    self._data.update(data)
-            except (OSError, ValueError):
-                # Missing or corrupt store = start fresh; the next save rewrites it.
-                self._data = {}
+                text = self._path.read_text(encoding="utf-8")
+            except FileNotFoundError:
+                self._loaded = True
+                return
+            except OSError as exc:
+                # Unreadable (permissions, I/O error …) is NOT "empty": starting
+                # fresh here would make the next write destroy the user's data.
+                raise ResourceError(
+                    f"Could not read the store {self._path}: {exc}",
+                    hint="Check the file permissions; the store was left untouched.",
+                ) from exc
+            try:
+                data = json.loads(text)
+                if not isinstance(data, dict):
+                    raise ValueError(f"top-level value is {type(data).__name__}, not an object")
+            except ValueError as exc:
+                self._quarantine(exc)
+                data = {}
+            self._data.update(data)
+            self._loaded = True
+            self._disk_stamp = self._stamp()
+
+    def _quarantine(self, reason: Exception) -> None:
+        """Move an unparsable store aside instead of letting a write replace it."""
+        backup = self._path.with_name(
+            f"{self._path.name}.corrupt-{time.strftime('%Y%m%d-%H%M%S')}"
+        )
+        try:
+            os.replace(self._path, backup)
+        except OSError as exc:
+            raise ResourceError(
+                f"The store {self._path} is corrupt ({reason}) and could not be moved aside: {exc}",
+                hint="Fix or remove the file by hand; nothing was overwritten.",
+            ) from exc
+        _log.warning(
+            "store %s could not be parsed (%s); it was moved to %s and the store starts empty",
+            self._path, reason, backup,
+        )
 
     def save(self) -> None:
         """Persist the store to disk atomically and under its process lock."""
         with self._lock:
             self._load()
-            try:
-                self._path.parent.mkdir(parents=True, exist_ok=True)
-                fd, temp_name = tempfile.mkstemp(
-                    dir=str(self._path.parent), suffix=".tmp", prefix=self._path.name
-                )
-            except OSError as exc:
-                raise ResourceError(
-                    f"Could not open the storage directory {self._path.parent}: {exc}",
-                    hint="Check that the path is writable and is not a file.",
-                ) from exc
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                    json.dump(self._data, handle, ensure_ascii=False, indent=2)
-                os.replace(temp_name, self._path)
-            except IsADirectoryError as exc:
-                with suppress(OSError):
-                    os.unlink(temp_name)
-                raise ResourceError(
-                    f"The storage path {self._path} is a directory, not a file.",
-                    hint=(
-                        "Pass a file such as "
-                        f"{self._path / DEFAULT_STORE_FILENAME}, or a directory that "
-                        "does not yet exist; PYMOBILE_STORAGE_DIR takes the directory."
-                    ),
-                ) from exc
-            except TypeError as exc:
-                with suppress(OSError):
-                    os.unlink(temp_name)
-                raise ResourceError(
-                    f"Storage value is not JSON serializable: {exc}",
-                    hint="Use only JSON types: str, int, float, bool, None, list, dict. "
-                    "Convert sets, tuples, or custom objects to list/dict first.",
-                ) from exc
-            except BaseException:
-                with suppress(OSError):
-                    os.unlink(temp_name)
-                raise
+            self._write_locked()
+
+    def _persist(self) -> None:
+        """Write now, or at the end of the enclosing transaction; caller holds ``_lock``."""
+        if self._tx_depth:
+            self._tx_dirty = True
+        else:
+            self._write_locked()
+
+    def _save_locked(self) -> None:
+        """Backward-compatible name used by subclasses/tests; caller holds ``_lock``."""
+        self._persist()
+
+    def _write_locked(self) -> None:
+        """Atomically and durably persist the in-memory store; caller holds ``_lock``."""
+        # Serialise first: a bad value must fail before any file is touched.
+        try:
+            payload = json.dumps(self._data, ensure_ascii=False, indent=2)
+        except (TypeError, ValueError) as exc:
+            raise ResourceError(
+                f"Storage value is not JSON serializable: {exc}",
+                hint="Use only JSON types: str, int, float, bool, None, list, dict. "
+                "Convert sets, tuples, or custom objects to list/dict first.",
+            ) from exc
+        stamp = self._stamp()
+        if self._disk_stamp is not None and stamp is not None and stamp != self._disk_stamp:
+            _log.warning(
+                "store %s was modified by another process since it was loaded; "
+                "those changes are being overwritten", self._path,
+            )
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            fd, temp_name = tempfile.mkstemp(
+                dir=str(self._path.parent), suffix=".tmp", prefix=self._path.name
+            )
+        except OSError as exc:
+            raise ResourceError(
+                f"Could not open the storage directory {self._path.parent}: {exc}",
+                hint="Check that the path is writable and is not a file.",
+            ) from exc
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp_name, self._path)
+        except IsADirectoryError as exc:
+            with suppress(OSError):
+                os.unlink(temp_name)
+            raise ResourceError(
+                f"The storage path {self._path} is a directory, not a file.",
+                hint=(
+                    "Pass a file such as "
+                    f"{self._path / DEFAULT_STORE_FILENAME}, or a directory that "
+                    "does not yet exist; PYMOBILE_STORAGE_DIR takes the directory."
+                ),
+            ) from exc
+        except BaseException:
+            with suppress(OSError):
+                os.unlink(temp_name)
+            raise
+        _fsync_dir(self._path.parent)
+        self._disk_stamp = self._stamp()
 
     # -- mapping API -------------------------------------------------------
     def get(self, key: str, default: Any = None) -> Any:
         """Return the value for ``key``, or ``default`` when absent."""
         with self._lock:
             self._load()
-            return self._data.get(key, default)
+            if key not in self._data:
+                return default
+            return _copy(self._data[key])
 
     def set(self, key: str, value: Any) -> Any:
         """Set ``key`` atomically within this process and persist it."""
         if not isinstance(key, str) or not key:
             raise ValueError("storage key must be a non-empty string")
-        # Early check for JSON serializability to give clear error before save
-        try:
-            json.dumps(value)
-        except TypeError as exc:
-            from ...errors import PyMobileError
-
-            raise PyMobileError(
-                f"Storage value for {key!r} is not JSON serializable: {exc}",
-                hint="Use JSON types: str, int, float, bool, None, list, dict. "
-                "E.g. list(my_set) instead of my_set.",
-            ) from exc
+        stored = _checked_copy(key, value)
         with self._lock:
             self._load()
-            self._data[key] = value
-            self.save()
+            self._data[key] = stored
+            self._persist()
             return value
 
     def delete(self, key: str) -> bool:
@@ -201,7 +277,7 @@ class Storage:
             self._load()
             if key in self._data:
                 del self._data[key]
-                self.save()
+                self._persist()
                 return True
             return False
 
@@ -230,7 +306,7 @@ class Storage:
         with self._lock:
             self._data = {}
             self._loaded = True
-            self.save()
+            self._persist()
 
     # -- atomic sequences --------------------------------------------------
     @contextmanager
@@ -245,12 +321,31 @@ class Storage:
                 cart.append(item)
                 store["cart"] = cart
 
-        Writes inside the block persist as they happen, and the whole block is
-        serialised against other threads in this process.
+        The block is serialised against other threads in this process and is
+        all-or-nothing: the changes are written to disk once, when the
+        outermost block finishes; if it raises, every change made inside it is
+        rolled back in memory and the file is not touched.
         """
         with self._lock:
             self._load()
-            yield self
+            snapshot = _copy(self._data)
+            outer_dirty = self._tx_dirty
+            self._tx_depth += 1
+            try:
+                yield self
+            except BaseException:
+                self._data = snapshot
+                self._tx_dirty = outer_dirty
+                raise
+            finally:
+                self._tx_depth -= 1
+            if self._tx_depth == 0 and self._tx_dirty:
+                self._tx_dirty = False
+                try:
+                    self._write_locked()
+                except BaseException:
+                    self._data = snapshot
+                    raise
 
     def update(self, key: str, function: Callable[[Any], Any], default: Any = None) -> Any:
         """Atomically replace ``key`` with ``function(current_value)``.
@@ -263,45 +358,14 @@ class Storage:
         """
         with self._lock:
             self._load()
-            new_value = function(self._data.get(key, default))
-            self._data[key] = new_value
-            # Inline the persist: ``self.set`` would re-acquire the lock, and
-            # even with the RLock the inner save() would release it across
-            # the disk write, opening a window for a third writer to slip in.
-            self._save_locked()
+            current = _copy(self._data[key]) if key in self._data else _copy(default)
+            new_value = function(current)
+            # Validate before touching memory: a non-JSON result must not end
+            # up in the store and break every later write of any key.
+            stored = _checked_copy(key, new_value)
+            self._data[key] = stored
+            self._persist()
             return new_value
-
-    def _save_locked(self) -> None:
-        """Atomically persist the in-memory store; the caller holds ``_lock``."""
-        try:
-            self._path.parent.mkdir(parents=True, exist_ok=True)
-            fd, temp_name = tempfile.mkstemp(
-                dir=str(self._path.parent), suffix=".tmp", prefix=self._path.name
-            )
-        except OSError as exc:
-            raise ResourceError(
-                f"Could not open the storage directory {self._path.parent}: {exc}",
-                hint="Check that the path is writable and is not a file.",
-            ) from exc
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                json.dump(self._data, handle, ensure_ascii=False, indent=2)
-            os.replace(temp_name, self._path)
-        except IsADirectoryError as exc:
-            with suppress(OSError):
-                os.unlink(temp_name)
-            raise ResourceError(
-                f"The storage path {self._path} is a directory, not a file.",
-                hint=(
-                    "Pass a file such as "
-                    f"{self._path / DEFAULT_STORE_FILENAME}, or a directory that "
-                    "does not yet exist; PYMOBILE_STORAGE_DIR takes the directory."
-                ),
-            ) from exc
-        except BaseException:
-            with suppress(OSError):
-                os.unlink(temp_name)
-            raise
 
     def increment(self, key: str, amount: float = 1) -> float:
         """Atomically add ``amount`` to a numeric entry and return the result.
@@ -316,22 +380,14 @@ class Storage:
 
     def setdefault(self, key: str, default: Any) -> Any:
         """Return ``key``, storing and returning ``default`` when it is absent."""
-        try:
-            json.dumps(default)
-        except TypeError as exc:
-            from ...errors import PyMobileError
-
-            raise PyMobileError(
-                f"Storage value for {key!r} is not JSON serializable: {exc}",
-                hint="Use JSON types: str, int, float, bool, None, list, dict.",
-            ) from exc
+        stored = _checked_copy(key, default)
         with self._lock:
             self._load()
             if key in self._data:
-                return self._data[key]
-            self._data[key] = default
-            self._save_locked()
-            return default
+                return _copy(self._data[key])
+            self._data[key] = stored
+            self._persist()
+            return _copy(stored)
 
     def keys(self) -> list[str]:
         """All stored keys."""
@@ -343,14 +399,14 @@ class Storage:
         """All ``(key, value)`` pairs."""
         with self._lock:
             self._load()
-            return list(self._data.items())
+            return [(key, _copy(value)) for key, value in self._data.items()]
 
     def __getitem__(self, key: str) -> Any:
         with self._lock:
             self._load()
             if key not in self._data:
                 raise KeyError(key)
-            return self._data[key]
+            return _copy(self._data[key])
 
     def __setitem__(self, key: str, value: Any) -> None:
         self.set(key, value)
@@ -369,8 +425,54 @@ class Storage:
         return isinstance(key, str) and self.contains(key)
 
     def __len__(self) -> int:
-        self._load()
-        return len(self._data)
+        with self._lock:
+            self._load()
+            return len(self._data)
 
     def __repr__(self) -> str:  # pragma: no cover - debugging aid
         return f"<Storage path={self._path}>"
+
+
+_IMMUTABLE = (str, int, float, bool, type(None))
+
+
+def _copy(value: Any) -> Any:
+    """Deep copy of a JSON value (cheap for the common scalar case)."""
+    if isinstance(value, _IMMUTABLE):
+        return value
+    if isinstance(value, dict):
+        return {k: _copy(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_copy(v) for v in value]
+    return json.loads(json.dumps(value))
+
+
+def _checked_copy(key: str, value: Any) -> Any:
+    """Validate ``value`` as JSON and return the form a restart would load."""
+    try:
+        text = json.dumps(value, ensure_ascii=False)
+    except (TypeError, ValueError) as exc:
+        from ...errors import PyMobileError
+
+        raise PyMobileError(
+            f"Storage value for {key!r} is not JSON serializable: {exc}",
+            hint="Use JSON types: str, int, float, bool, None, list, dict. "
+            "E.g. list(my_set) instead of my_set.",
+        ) from exc
+    return json.loads(text)
+
+
+def _fsync_dir(directory: Path) -> None:
+    """Make the rename itself durable (POSIX; a no-op where unsupported)."""
+    if os.name == "nt":
+        return
+    try:
+        fd = os.open(str(directory), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    except OSError:
+        pass
+    finally:
+        os.close(fd)

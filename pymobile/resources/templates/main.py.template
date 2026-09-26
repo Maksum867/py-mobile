@@ -48,9 +48,9 @@ class HomeScreen(Screen):
         """Increment the counter and give haptic feedback."""
         self.taps += 1
         self.counter.set_text(f"Taps: {self.taps}")
+        # set_text() redraws the screen by itself: no render() call needed.
         if self.app is not None:
             self.app.vibrate(30)
-            self.app.render()
 
     def on_notify(self) -> None:
         """Post a local notification."""

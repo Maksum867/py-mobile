@@ -17,7 +17,7 @@ from collections.abc import Iterable, Iterator, Sequence
 from pathlib import Path
 from typing import Any
 
-from ..logging import get_logger
+from ..log import get_logger
 
 __all__ = ["FileWatcher", "watch_paths"]
 

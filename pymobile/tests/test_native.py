@@ -1405,7 +1405,7 @@ class TestPermissionDialogTiming:
     def test_gate_precedes_the_request(self) -> None:
         source = self._activity()
         block = source[source.index("static boolean requestPermissionBlocking") :]
-        block = block[: block.index("return permissionGranted")]
+        block = block[: block.index("return request.granted")]
         assert block.index("resumedLatch.await") < block.index("requestPermissions(")
 
 

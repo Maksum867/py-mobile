@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..errors import ConfigError
-from ..logging import get_logger
+from ..log import get_logger
 
 __all__ = ["Toolchain", "find_toolchain", "ToolchainError"]
 

@@ -16,6 +16,8 @@ __all__ = [
     "PermissionError_",
     "NetworkError",
     "ResourceError",
+    "WidgetNotFoundError",
+    "WidgetTypeError",
 ]
 
 
@@ -57,3 +59,33 @@ class NetworkError(PyMobileError):
 
 class ResourceError(PyMobileError):
     """A packaged resource (template, icon) could not be read."""
+
+
+class WidgetNotFoundError(PyMobileError, LookupError):
+    """``get()`` found no widget with the requested id.
+
+    Also a :class:`LookupError`, so ``except LookupError`` catches it.
+    """
+
+    def __init__(self, widget_id: str, *, hint: str | None = None) -> None:
+        super().__init__(f"no widget with id {widget_id!r}", hint=hint)
+        self.widget_id = widget_id
+
+
+class WidgetTypeError(PyMobileError, TypeError):
+    """``find()``/``get()`` found the id, but the widget has another type.
+
+    Also a :class:`TypeError`, so ``except TypeError`` catches it.
+    """
+
+    def __init__(self, widget_id: str, expected: type, actual: type) -> None:
+        super().__init__(
+            f"widget {widget_id!r} is a {actual.__name__}, not a {expected.__name__}",
+            hint=(
+                f"Pass the class the widget really is (find({widget_id!r}, {actual.__name__})), "
+                "or give the widget you meant a different id."
+            ),
+        )
+        self.widget_id = widget_id
+        self.expected = expected
+        self.actual = actual

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from itertools import count
 
-from ...logging import get_logger
+from ...log import get_logger
 from ..bridge import Bridge, NotificationSpec, get_bridge
 
 __all__ = ["Notifications", "IMPORTANCE_DEFAULT", "IMPORTANCE_HIGH", "IMPORTANCE_LOW"]

@@ -31,7 +31,17 @@ from collections.abc import Callable, Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
-from ..logging import get_logger
+from ..log import get_logger
+from .formatting import (
+    Localized,
+    format_currency,
+    format_date,
+    format_datetime,
+    format_number,
+    format_percent,
+    format_time,
+    supported_format_languages,
+)
 
 __all__ = [
     "Translations",
@@ -39,12 +49,144 @@ __all__ = [
     "t",
     "device_language",
     "normalise_language",
+    "plural_category",
+    "format_number",
+    "format_percent",
+    "format_currency",
+    "format_date",
+    "format_time",
+    "format_datetime",
+    "supported_format_languages",
 ]
 
 _log = get_logger("i18n")
 
 #: Languages where "one" covers 1 only and everything else is plural.
 _DEFAULT_PLURAL_KEYS = ("one", "other")
+
+
+# CLDR cardinal plural rules for whole numbers, keyed by base language. The
+# category depends on the LANGUAGE, not on which forms a catalogue happens to
+# contain: Polish 21 is "many" (21 plików), Ukrainian 21 is "one" (21 файл).
+def _east_slavic(n: int) -> str:
+    if n % 10 == 1 and n % 100 != 11:
+        return "one"
+    if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
+        return "few"
+    return "many"
+
+
+def _south_slavic(n: int) -> str:
+    category = _east_slavic(n)
+    return "other" if category == "many" else category
+
+
+def _polish(n: int) -> str:
+    if n == 1:
+        return "one"
+    if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14:
+        return "few"
+    return "many"
+
+
+def _czech(n: int) -> str:
+    return "one" if n == 1 else "few" if 2 <= n <= 4 else "other"
+
+
+def _lithuanian(n: int) -> str:
+    if n % 10 == 1 and not 11 <= n % 100 <= 19:
+        return "one"
+    if 2 <= n % 10 <= 9 and not 11 <= n % 100 <= 19:
+        return "few"
+    return "other"
+
+
+def _latvian(n: int) -> str:
+    if n % 10 == 0 or 11 <= n % 100 <= 19:
+        return "zero"
+    return "one" if n % 10 == 1 and n % 100 != 11 else "other"
+
+
+def _romanian(n: int) -> str:
+    if n == 1:
+        return "one"
+    return "few" if n == 0 or 2 <= n % 100 <= 19 else "other"
+
+
+def _slovenian(n: int) -> str:
+    return {1: "one", 2: "two", 3: "few", 4: "few"}.get(n % 100, "other")
+
+
+def _arabic(n: int) -> str:
+    if n in (0, 1, 2):
+        return ("zero", "one", "two")[n]
+    if 3 <= n % 100 <= 10:
+        return "few"
+    return "many" if 11 <= n % 100 <= 99 else "other"
+
+
+def _hebrew(n: int) -> str:
+    return "one" if n == 1 else "two" if n == 2 else "other"
+
+
+def _irish(n: int) -> str:
+    if n in (1, 2):
+        return ("one", "two")[n - 1]
+    return "few" if 3 <= n <= 6 else "many" if 7 <= n <= 10 else "other"
+
+
+def _welsh(n: int) -> str:
+    return {0: "zero", 1: "one", 2: "two", 3: "few", 6: "many"}.get(n, "other")
+
+
+def _zero_or_one(n: int) -> str:
+    return "one" if n in (0, 1) else "other"
+
+
+def _icelandic(n: int) -> str:
+    return "one" if n % 10 == 1 and n % 100 != 11 else "other"
+
+
+def _no_plural(n: int) -> str:
+    return "other"
+
+
+def _english(n: int) -> str:
+    return "one" if n == 1 else "other"
+
+
+_PLURAL_RULES: dict[str, Callable[[int], str]] = {
+    **dict.fromkeys(("uk", "ru", "be"), _east_slavic),
+    **dict.fromkeys(("hr", "sr", "bs", "sh"), _south_slavic),
+    "pl": _polish,
+    **dict.fromkeys(("cs", "sk"), _czech),
+    "lt": _lithuanian,
+    "lv": _latvian,
+    **dict.fromkeys(("ro", "mo"), _romanian),
+    "sl": _slovenian,
+    "ar": _arabic,
+    **dict.fromkeys(("he", "iw"), _hebrew),
+    "ga": _irish,
+    "cy": _welsh,
+    **dict.fromkeys(("fr", "pt", "hi", "bn", "fa", "gu", "kn", "mr", "zu", "am"), _zero_or_one),
+    **dict.fromkeys(("is", "mk"), _icelandic),
+    **dict.fromkeys(
+        ("zh", "ja", "ko", "vi", "th", "id", "ms", "lo", "my", "km", "yue"), _no_plural
+    ),
+}
+
+
+def plural_category(count: float, language: str) -> str:
+    """The CLDR plural category (zero/one/two/few/many/other) of ``count``.
+
+    Languages without a rule here use the English one. Fractions are
+    "other" (the category every one of these languages uses for them, bar a
+    few "many" cases that catalogues rarely distinguish).
+    """
+    if isinstance(count, float) and not count.is_integer():
+        return "other"
+    rule = _PLURAL_RULES.get(normalise_language(language).split("-")[0], _english)
+    return rule(abs(int(count)))
 
 
 def normalise_language(tag: str) -> str:
@@ -233,11 +375,16 @@ class Translations:
 
     def lookup(self, key: str, *, language: str | None = None) -> Any:
         """Return the raw entry for ``key``, or ``None`` when it is unknown."""
-        for tag in self._chain(normalise_language(language or self._language)):
+        return self._lookup(key, language)[0]
+
+    def _lookup(self, key: str, language: str | None) -> tuple[Any, str]:
+        """The entry for ``key`` and the language of the catalogue it came from."""
+        requested = normalise_language(language or self._language)
+        for tag in self._chain(requested):
             catalogue = self._catalogues.get(tag)
             if catalogue is not None and key in catalogue:
-                return catalogue[key]
-        return None
+                return catalogue[key], tag
+        return None, requested
 
     def has(self, key: str, *, language: str | None = None) -> bool:
         """Whether ``key`` resolves in the given (or current) language."""
@@ -260,7 +407,7 @@ class Translations:
         key is logged once, so a gap is visible during development without
         flooding the log from inside a render loop.
         """
-        entry = self.lookup(key, language=language)
+        entry, found_in = self._lookup(key, language)
         if entry is None:
             if key not in self._missing:
                 self._missing.add(key)
@@ -268,49 +415,38 @@ class Translations:
             entry = key if default is None else default
 
         if isinstance(entry, Mapping):
-            entry = self._plural(entry, count)
+            entry = self._plural(entry, count, found_in)
 
         text = str(entry)
         if count is not None:
             params.setdefault("count", count)
         if not params:
             return text
+        # Parameters are wrapped so a catalogue can ask for locale formats:
+        # "{sum:currency:UAH}", "{day:date:long}", "{n:number:2}". The formats
+        # follow the language of the catalogue the entry came from.
+        wrapped = {name: Localized(value, found_in) for name, value in params.items()}
         try:
-            return text.format(**params)
-        except (KeyError, IndexError, ValueError):
+            return text.format(**wrapped)
+        except (KeyError, IndexError, ValueError, TypeError):
             # A malformed placeholder must not take the screen down.
             _log.warning("could not interpolate %r with %r", key, sorted(params))
             return text
 
-    def _plural(self, forms: Mapping[str, Any], count: int | None) -> Any:
-        """Pick a plural form.
+    def _plural(self, forms: Mapping[str, Any], count: int | None, language: str = "en") -> Any:
+        """Pick the plural form of ``count`` by the CLDR rule of ``language``.
 
-        The rule is the English/Germanic one — ``one`` for exactly 1, ``other``
-        otherwise — with explicit ``zero``/``few``/``many`` honoured when the
-        catalogue provides them, which covers Slavic languages such as
-        Ukrainian without pulling in a CLDR dependency.
+        ``language`` is the catalogue the entry was found in, so a key that
+        falls back to the default language is also pluralised by its rule.
+        An explicit ``zero`` form is honoured for 0 in every language. When
+        the catalogue lacks the category, ``other`` is used, then ``many``.
         """
         if count is None:
             return forms.get("other") or next(iter(forms.values()), "")
         if count == 0 and "zero" in forms:
             return forms["zero"]
-
-        if any(key in forms for key in ("few", "many")):
-            modulo10, modulo100 = count % 10, count % 100
-            if modulo10 == 1 and modulo100 != 11 and "one" in forms:
-                return forms["one"]
-            if 2 <= modulo10 <= 4 and not 12 <= modulo100 <= 14 and "few" in forms:
-                return forms["few"]
-            if "many" in forms:
-                return forms["many"]
-
-        if count == 1 and "one" in forms:
-            return forms["one"]
-        # Anything other than 1 is plural here, so "other" must be preferred
-        # over "one" — checking in catalogue order would return the singular.
-        if "other" in forms:
-            return forms["other"]
-        for key in _DEFAULT_PLURAL_KEYS:
+        category = plural_category(count, language)
+        for key in (category, "other", "many", *_DEFAULT_PLURAL_KEYS):
             if key in forms:
                 return forms[key]
         return next(iter(forms.values()), "")

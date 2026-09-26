@@ -7,9 +7,10 @@ forwards rendered trees and toasts to a Tk window.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from ...logging import get_logger
+from ...log import get_logger
 from .stub import StubBridge
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -45,6 +46,13 @@ class GuiBridge(StubBridge):
         super().toast(message, long)
         if self._preview is not None:
             self._preview.toast(message)
+
+    def call_soon(self, function: Callable[[], None]) -> bool:
+        """Run ``function`` on the Tk thread; ``False`` when no window is open."""
+        if self._preview is None:
+            return False
+        self._preview.root.after(0, function)
+        return True
 
     def vibrate(self, milliseconds: int, amplitude: int = -1) -> None:
         super().vibrate(milliseconds, amplitude)

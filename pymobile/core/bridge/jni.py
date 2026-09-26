@@ -13,7 +13,7 @@ from functools import cached_property
 from typing import Any, ClassVar
 
 from ...errors import BridgeError
-from ...logging import get_logger
+from ...log import get_logger
 from .base import Bridge, NotificationSpec
 
 __all__ = ["JNIBridge"]

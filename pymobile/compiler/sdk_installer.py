@@ -19,7 +19,7 @@ import zipfile
 from pathlib import Path
 
 from ..errors import PyMobileError
-from ..logging import get_logger
+from ..log import get_logger
 
 __all__ = ["install_sdk", "default_sdk_home", "REQUIRED_PACKAGES"]
 

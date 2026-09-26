@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..errors import ConfigError
-from ..logging import get_logger
+from ..log import get_logger
 from ..resources import read_template
 
 __all__ = ["create_project", "ScaffoldResult", "slugify", "default_package"]
